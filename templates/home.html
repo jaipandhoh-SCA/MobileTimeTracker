@@ -1,0 +1,627 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="w-full">
+    {% if long_running %}
+    <div class="mb-6 flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800" role="alert">
+        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        <div>
+            <p class="font-semibold text-sm">Your clock has been running for more than 24 hours.</p>
+            <p class="text-xs mt-0.5">Please review and stop your shift below.</p>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ===== Top Row: Clock + Weekly Chart + Quick Stats ===== -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-6">
+
+        <!-- Clock Card -->
+        <div class="lg:col-span-3">
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-6 h-full flex flex-col">
+                <h1 class="text-lg font-semibold text-slate-900 mb-1">Welcome back,</h1>
+                <p class="text-2xl font-bold text-slate-900 mb-5 truncate">{{ current_user.display_name }}</p>
+
+                {% if active_clock %}
+                <div class="flex-1 flex flex-col bg-emerald-50 ring-1 ring-emerald-200 rounded-xl p-4">
+                    <p class="text-xs font-medium text-emerald-700 uppercase tracking-wide mb-1">Active Shift</p>
+                    <p class="text-xs text-emerald-600 mb-1">Started: <span id="start-time" class="font-medium"></span></p>
+                    <p class="text-3xl font-bold text-emerald-700 tabular-nums mb-4" id="elapsed-time">00:00:00</p>
+
+                    <div class="grid grid-cols-2 gap-2 mb-3">
+                        <button id="break-15-btn" disabled
+                                class="bg-slate-200 text-slate-400 font-medium py-2 px-3 rounded-lg text-xs cursor-not-allowed transition">
+                            15-min Break
+                        </button>
+                        <button id="lunch-btn" disabled
+                                class="bg-slate-200 text-slate-400 font-medium py-2 px-3 rounded-lg text-xs cursor-not-allowed transition">
+                            1-hr Lunch
+                        </button>
+                    </div>
+
+                    <a href="{{ url_for('stop_clock') }}"
+                       class="mt-auto block text-center bg-rose-600 hover:bg-rose-700 text-white font-semibold py-3 px-4 rounded-xl touch-target transition shadow-sm">
+                        Stop Shift
+                    </a>
+                </div>
+                {% else %}
+                <div class="flex-1 flex flex-col bg-brand-50 ring-1 ring-brand-200 rounded-xl p-4">
+                    <p class="text-xs font-medium text-brand-700 uppercase tracking-wide mb-1">Ready to work?</p>
+                    <p class="text-sm text-brand-600 mb-4">Start tracking your time with one tap.</p>
+                    <form method="POST" action="{{ url_for('start_clock') }}" class="mt-auto">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                        <button type="submit"
+                                class="w-full bg-brand-600 hover:bg-brand-700 text-white font-semibold py-3 px-4 rounded-xl touch-target transition shadow-sm">
+                            Start Shift
+                        </button>
+                    </form>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Weekly Hours Chart (visual centerpiece) -->
+        <div class="lg:col-span-6">
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-6 h-full flex flex-col">
+                <div class="mb-4">
+                    <h2 class="text-lg font-semibold text-slate-900">Your Week at a Glance</h2>
+                    <p class="text-sm text-slate-500 mt-0.5">Hours you logged each day over the last 7 days.</p>
+                </div>
+
+                {% set total_week = weekly_hours | sum(attribute='hours') %}
+
+                {% if total_week > 0 %}
+                <div class="flex-1 min-h-0" style="min-height: 220px;">
+                    <canvas id="weeklyChart"></canvas>
+                </div>
+                {% else %}
+                <!-- Zero state -->
+                <div class="flex-1 flex flex-col items-center justify-center text-center py-8">
+                    <div class="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mb-4">
+                        <svg class="w-8 h-8 text-slate-300" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/>
+                        </svg>
+                    </div>
+                    <p class="text-base font-medium text-slate-500">No hours logged this week</p>
+                    <p class="text-sm text-slate-400 mt-1">Start a shift or add a manual entry to see your chart here.</p>
+                    <div class="flex gap-3 mt-5">
+                        <a href="{{ url_for('quick_log') }}" class="text-sm font-medium text-brand-600 hover:text-brand-700 transition">Add Entry</a>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Quick Stats Cards -->
+        <div class="lg:col-span-3 grid grid-cols-2 lg:grid-cols-1 gap-4">
+            {% set week_total = weekly_hours | sum(attribute='hours') %}
+            {% set days_with_hours = weekly_hours | selectattr('hours', 'gt', 0) | list | length %}
+            {% set daily_avg = (week_total / days_with_hours) | round(2) if days_with_hours > 0 else 0 %}
+            {% set best_day_val = weekly_hours | map(attribute='hours') | max %}
+
+            <!-- Total This Week -->
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5 flex flex-col">
+                <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">This Week</p>
+                {% if week_total > 0 %}
+                <p class="text-3xl font-bold text-slate-900 mt-1" data-countup="{{ '%.2f' | format(week_total) }}">0</p>
+                <p class="text-xs text-slate-400 mt-auto">hours total</p>
+                {% else %}
+                <p class="text-3xl font-bold text-slate-300 mt-1">&mdash;</p>
+                <p class="text-xs text-slate-400 mt-auto">No hours yet</p>
+                {% endif %}
+            </div>
+
+            <!-- Daily Average -->
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5 flex flex-col">
+                <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">Daily Average</p>
+                {% if daily_avg > 0 %}
+                <p class="text-3xl font-bold text-brand-600 mt-1" data-countup="{{ '%.2f' | format(daily_avg) }}">0</p>
+                <p class="text-xs text-slate-400 mt-auto">hours per day</p>
+                {% else %}
+                <p class="text-3xl font-bold text-slate-300 mt-1">&mdash;</p>
+                <p class="text-xs text-slate-400 mt-auto">No data yet</p>
+                {% endif %}
+            </div>
+
+            <!-- Days Worked -->
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5 flex flex-col">
+                <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">Days Worked</p>
+                {% if days_with_hours > 0 %}
+                <p class="text-3xl font-bold text-emerald-600 mt-1" data-countup="{{ days_with_hours }}">0</p>
+                <p class="text-xs text-slate-400 mt-auto">of 7 days</p>
+                {% else %}
+                <p class="text-3xl font-bold text-slate-300 mt-1">&mdash;</p>
+                <p class="text-xs text-slate-400 mt-auto">of 7 days</p>
+                {% endif %}
+            </div>
+
+            <!-- Best Day -->
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5 flex flex-col">
+                <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">Best Day</p>
+                {% if best_day_val > 0 %}
+                <p class="text-3xl font-bold text-amber-600 mt-1" data-countup="{{ '%.2f' | format(best_day_val) }}">0</p>
+                <p class="text-xs text-slate-400 mt-auto">hours in one day</p>
+                {% else %}
+                <p class="text-3xl font-bold text-slate-300 mt-1">&mdash;</p>
+                <p class="text-xs text-slate-400 mt-auto">No data yet</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Quick Actions (mobile row, hidden on desktop where sidebar covers it) ===== -->
+    <div class="grid grid-cols-3 gap-3 mb-6 lg:hidden">
+        <a href="{{ url_for('quick_log') }}" class="bg-white rounded-xl ring-1 ring-slate-200 shadow-sm p-4 text-center hover:bg-brand-50 transition touch-target">
+            <svg class="w-6 h-6 text-brand-600 mx-auto mb-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+            <p class="text-xs font-medium text-slate-700">Manual Entry</p>
+        </a>
+        <a href="{{ url_for('my_logs') }}" class="bg-white rounded-xl ring-1 ring-slate-200 shadow-sm p-4 text-center hover:bg-brand-50 transition touch-target">
+            <svg class="w-6 h-6 text-brand-600 mx-auto mb-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+            <p class="text-xs font-medium text-slate-700">My Logs</p>
+        </a>
+        <a href="{{ url_for('clients') }}" class="bg-white rounded-xl ring-1 ring-slate-200 shadow-sm p-4 text-center hover:bg-brand-50 transition touch-target">
+            <svg class="w-6 h-6 text-brand-600 mx-auto mb-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <p class="text-xs font-medium text-slate-700">Clients</p>
+        </a>
+    </div>
+
+    <!-- ===== Bottom Row: Opportunities + Activity + Next Steps ===== -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        <!-- Left: Quick Actions (desktop only) -->
+        <div class="hidden lg:block lg:col-span-3 space-y-6">
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-6">
+                <h2 class="text-sm font-semibold text-slate-900 uppercase tracking-wide mb-4">Quick Actions</h2>
+                <div class="space-y-2">
+                    <a href="{{ url_for('quick_log') }}" class="flex items-center gap-3 p-3 rounded-xl hover:bg-brand-50 ring-1 ring-slate-200 hover:ring-brand-200 transition">
+                        <div class="w-9 h-9 bg-brand-50 rounded-lg flex items-center justify-center flex-shrink-0">
+                            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                        </div>
+                        <div>
+                            <p class="text-sm font-medium text-slate-900">Manual Entry</p>
+                            <p class="text-xs text-slate-500">Log time by hand</p>
+                        </div>
+                    </a>
+                    <a href="{{ url_for('my_logs') }}" class="flex items-center gap-3 p-3 rounded-xl hover:bg-brand-50 ring-1 ring-slate-200 hover:ring-brand-200 transition">
+                        <div class="w-9 h-9 bg-brand-50 rounded-lg flex items-center justify-center flex-shrink-0">
+                            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                        </div>
+                        <div>
+                            <p class="text-sm font-medium text-slate-900">My Logs</p>
+                            <p class="text-xs text-slate-500">View your time entries</p>
+                        </div>
+                    </a>
+                    <a href="{{ url_for('clients') }}" class="flex items-center gap-3 p-3 rounded-xl hover:bg-brand-50 ring-1 ring-slate-200 hover:ring-brand-200 transition">
+                        <div class="w-9 h-9 bg-brand-50 rounded-lg flex items-center justify-center flex-shrink-0">
+                            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        </div>
+                        <div>
+                            <p class="text-sm font-medium text-slate-900">Clients</p>
+                            <p class="text-xs text-slate-500">Browse client list</p>
+                        </div>
+                    </a>
+                    {% if current_user.is_supervisor %}
+                    <a href="{{ url_for('admin_dashboard') }}" class="flex items-center gap-3 p-3 rounded-xl hover:bg-brand-50 ring-1 ring-slate-200 hover:ring-brand-200 transition">
+                        <div class="w-9 h-9 bg-brand-50 rounded-lg flex items-center justify-center flex-shrink-0">
+                            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                        </div>
+                        <div>
+                            <p class="text-sm font-medium text-slate-900">Admin Dashboard</p>
+                            <p class="text-xs text-slate-500">View all entries and stats</p>
+                        </div>
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Middle: Opportunities + Recent -->
+        <div class="lg:col-span-6 space-y-6">
+
+            <!-- Opportunities Dashboard -->
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-100 flex flex-wrap justify-between items-center gap-3">
+                    <h2 class="text-base font-semibold text-slate-900">
+                        {% if current_user.is_supervisor %}
+                            {% if selected_user %}{{ selected_user.display_name }}'s Opportunities
+                            {% else %}Company Opportunities{% endif %}
+                        {% else %}My Opportunities{% endif %}
+                    </h2>
+                    {% if current_user.is_supervisor %}
+                    <select id="user-filter"
+                            onchange="window.location.href='{{ url_for('home') }}?filter_user=' + this.value"
+                            class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-500 bg-white">
+                        <option value="">All Company Data</option>
+                        {% for user in all_users %}
+                        <option value="{{ user.id }}" {% if selected_user and selected_user.id == user.id %}selected{% endif %}>{{ user.display_name }}</option>
+                        {% endfor %}
+                    </select>
+                    {% endif %}
+                </div>
+                <div class="p-6">
+                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        {% set opp_cards = [
+                            ('Lead', status_counts['Lead'], status_values['Lead'], 'bg-emerald-50 ring-emerald-200 text-emerald-700'),
+                            ('Prospect', status_counts['Prospect'], status_values['Prospect'], 'bg-sky-50 ring-sky-200 text-sky-700'),
+                            ('Active', status_counts['Active'], status_values['Active'], 'bg-brand-50 ring-brand-200 text-brand-700'),
+                            ('On Hold', status_counts['On Hold'], status_values['On Hold'], 'bg-amber-50 ring-amber-200 text-amber-700'),
+                            ('Completed', status_counts['Completed'], status_values['Completed'], 'bg-slate-100 ring-slate-200 text-slate-600'),
+                            ('All', my_clients|length, total_value, 'bg-white ring-slate-200 text-slate-700')
+                        ] %}
+                        {% for label, count, value, classes in opp_cards %}
+                        <button onclick="showFilteredClients('{{ label }}')"
+                                class="text-left rounded-xl p-4 ring-1 hover:shadow-md transition cursor-pointer {{ classes }}">
+                            <p class="text-2xl font-bold">{{ count }}</p>
+                            <p class="text-xs font-medium mt-0.5">{{ 'Total' if label == 'All' else label }}{{ 's' if label != 'All' and label != 'On Hold' else '' }}</p>
+                            <p class="text-sm font-semibold mt-1">${{ '{:,.0f}'.format(value) }}</p>
+                        </button>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Filtered Clients (hidden by default) -->
+            <div id="filtered-clients-section" class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm hidden">
+                <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
+                    <h2 id="filtered-clients-title" class="text-base font-semibold text-slate-900">All Clients</h2>
+                    <button onclick="hideFilteredClients()" class="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition" aria-label="Close">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
+                <div id="filtered-clients-content" class="p-6"></div>
+            </div>
+
+            <!-- Recent Clients -->
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-100">
+                    <h2 class="text-base font-semibold text-slate-900">Recent Clients</h2>
+                </div>
+                <div class="p-6">
+                    {% if recent_clients %}
+                    <div class="space-y-2">
+                        {% for client in recent_clients[:5] %}
+                        <a href="{{ url_for('edit_client', client_id=client.id) }}"
+                           class="block p-3 rounded-xl ring-1 ring-slate-200 hover:ring-brand-300 hover:bg-brand-50/50 transition">
+                            <div class="flex justify-between items-start">
+                                <div class="flex-1 min-w-0">
+                                    <h4 class="font-semibold text-slate-900 text-sm truncate">{{ client.name }}</h4>
+                                    <p class="text-xs text-slate-500 mt-0.5 truncate">{{ client.address }}</p>
+                                </div>
+                                <div class="ml-3 text-right flex-shrink-0">
+                                    {% set badge_map = {
+                                        'Lead': 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+                                        'Prospect': 'bg-sky-50 text-sky-700 ring-sky-200',
+                                        'Active': 'bg-brand-50 text-brand-700 ring-brand-200',
+                                        'Completed': 'bg-slate-100 text-slate-600 ring-slate-200',
+                                        'On Hold': 'bg-amber-50 text-amber-700 ring-amber-200'
+                                    } %}
+                                    <span class="inline-block px-2 py-0.5 text-[11px] font-medium rounded-md ring-1 {{ badge_map.get(client.status, 'bg-slate-100 text-slate-600 ring-slate-200') }}">{{ client.status }}</span>
+                                    {% if client.assigned_to and current_user.is_supervisor %}
+                                    <p class="text-[11px] text-slate-400 mt-1">{{ client.assigned_to.display_name }}</p>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% if client.opportunity_value %}
+                            <p class="text-sm font-semibold text-slate-600 mt-1.5">${{ '{:,.0f}'.format(client.opportunity_value) }}</p>
+                            {% endif %}
+                        </a>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="text-center py-6">
+                        <p class="text-sm text-slate-400">No clients yet</p>
+                        <a href="{{ url_for('create_client') }}" class="text-sm font-medium text-brand-600 hover:text-brand-700 mt-1 inline-block">Add your first client</a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Recent Activity -->
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-100">
+                    <h2 class="text-base font-semibold text-slate-900">Recent Activity</h2>
+                </div>
+                <div class="p-6">
+                    {% if recent_activities %}
+                    <div class="space-y-3">
+                        {% for activity in recent_activities[:5] %}
+                        <div class="pb-3 border-b border-slate-100 last:border-0 last:pb-0">
+                            <a href="{{ url_for('edit_client', client_id=activity.client.id) }}" class="font-semibold text-slate-900 hover:text-brand-600 text-sm transition">
+                                {{ activity.client.name }}
+                            </a>
+                            <p class="text-sm font-medium text-slate-700 mt-0.5">{{ activity.activity_type }}</p>
+                            <div class="flex items-center gap-2 mt-0.5">
+                                <p class="text-xs text-slate-400">{{ activity.activity_date|format_datetime }}</p>
+                                {% if activity.user and current_user.is_supervisor %}
+                                <span class="text-slate-300">&middot;</span>
+                                <p class="text-xs text-slate-400">{{ activity.user.display_name }}</p>
+                                {% endif %}
+                            </div>
+                            {% if activity.note_text %}
+                            <p class="text-sm text-slate-500 mt-1">{{ activity.note_text|truncate(80) }}</p>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="text-sm text-slate-400 text-center py-6">No recent activity</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: Next Steps -->
+        <div class="lg:col-span-3 space-y-6">
+            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-100">
+                    <h2 class="text-base font-semibold text-slate-900">Upcoming Next Steps</h2>
+                </div>
+                <div class="p-6">
+                    {% if next_steps %}
+                    <div class="space-y-3">
+                        {% for activity in next_steps[:3] %}
+                        <div class="pb-3 border-b border-slate-100 last:border-0 last:pb-0">
+                            <a href="{{ url_for('edit_client', client_id=activity.client.id) }}" class="font-semibold text-slate-900 hover:text-brand-600 text-sm transition">
+                                {{ activity.client.name }}
+                            </a>
+                            <p class="text-sm font-medium text-slate-700 mt-0.5">{{ activity.next_step_description }}</p>
+                            <p class="text-xs text-slate-400 mt-1">{{ activity.next_step_date|format_datetime }}</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    {% if next_steps|length > 3 %}
+                    <details class="mt-4">
+                        <summary class="cursor-pointer text-sm text-brand-600 hover:text-brand-700 font-medium">
+                            Show {{ next_steps|length - 3 }} more
+                        </summary>
+                        <div class="space-y-3 mt-3">
+                            {% for activity in next_steps[3:] %}
+                            <div class="pb-3 border-b border-slate-100 last:border-0 last:pb-0">
+                                <a href="{{ url_for('edit_client', client_id=activity.client.id) }}" class="font-semibold text-slate-900 hover:text-brand-600 text-sm transition">
+                                    {{ activity.client.name }}
+                                </a>
+                                <p class="text-sm font-medium text-slate-700 mt-0.5">{{ activity.next_step_description }}</p>
+                                <p class="text-xs text-slate-400 mt-1">{{ activity.next_step_date|format_datetime }}</p>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </details>
+                    {% endif %}
+                    {% else %}
+                    <div class="text-center py-6">
+                        <div class="w-12 h-12 bg-slate-100 rounded-xl flex items-center justify-center mx-auto mb-3">
+                            <svg class="w-6 h-6 text-slate-300" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/></svg>
+                        </div>
+                        <p class="text-sm text-slate-400">No upcoming next steps</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// --- Client filtering (preserved from original) ---
+const allClients = [
+    {% for client in my_clients %}
+    {
+        id: {{ client.id }},
+        name: {{ client.name | tojson }},
+        address: {{ client.address | tojson }},
+        status: "{{ client.status }}",
+        opportunity_value: {{ client.opportunity_value or 0 }},
+        assigned_to_name: {{ (client.assigned_to.display_name if client.assigned_to else '') | tojson }},
+        edit_url: "{{ url_for('edit_client', client_id=client.id) }}"
+    }{% if not loop.last %},{% endif %}
+    {% endfor %}
+];
+
+const isSupervisor = {{ 'true' if current_user.is_supervisor else 'false' }};
+
+function getStatusBadge(status) {
+    const map = {
+        'Lead':      'bg-emerald-50 text-emerald-700 ring-emerald-200',
+        'Prospect':  'bg-sky-50 text-sky-700 ring-sky-200',
+        'Active':    'bg-brand-50 text-brand-700 ring-brand-200',
+        'Completed': 'bg-slate-100 text-slate-600 ring-slate-200',
+        'On Hold':   'bg-amber-50 text-amber-700 ring-amber-200'
+    };
+    const cls = map[status] || 'bg-slate-100 text-slate-600 ring-slate-200';
+    return `<span class="inline-block px-2 py-0.5 text-[11px] font-medium rounded-md ring-1 ${cls}">${status}</span>`;
+}
+
+function formatCurrency(v) {
+    return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
+function showFilteredClients(status) {
+    const section = document.getElementById('filtered-clients-section');
+    const title = document.getElementById('filtered-clients-title');
+    const content = document.getElementById('filtered-clients-content');
+
+    const filtered = status === 'All' ? allClients : allClients.filter(c => c.status === status);
+    title.textContent = status === 'All' ? 'All Clients' : status + ' Clients';
+
+    if (filtered.length === 0) {
+        content.innerHTML = '<p class="text-sm text-slate-400 text-center py-4">No clients found</p>';
+    } else {
+        let html = '<div class="space-y-2">';
+        filtered.forEach(c => {
+            html += `
+                <a href="${c.edit_url}" class="block p-3 rounded-xl ring-1 ring-slate-200 hover:ring-brand-300 hover:bg-brand-50/50 transition">
+                    <div class="flex justify-between items-start">
+                        <div class="flex-1 min-w-0">
+                            <h4 class="font-semibold text-slate-900 text-sm truncate">${c.name}</h4>
+                            <p class="text-xs text-slate-500 mt-0.5 truncate">${c.address}</p>
+                        </div>
+                        <div class="ml-3 text-right flex-shrink-0">
+                            ${getStatusBadge(c.status)}
+                            ${isSupervisor && c.assigned_to_name ? `<p class="text-[11px] text-slate-400 mt-1">${c.assigned_to_name}</p>` : ''}
+                        </div>
+                    </div>
+                    ${c.opportunity_value > 0 ? `<p class="text-sm font-semibold text-slate-600 mt-1.5">${formatCurrency(c.opportunity_value)}</p>` : ''}
+                </a>`;
+        });
+        html += '</div>';
+        content.innerHTML = html;
+    }
+
+    section.classList.remove('hidden');
+    setTimeout(() => section.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
+}
+
+function hideFilteredClients() {
+    document.getElementById('filtered-clients-section').classList.add('hidden');
+}
+
+// --- Clock update ---
+function updateClock() {
+    fetch('{{ url_for("clock_status") }}')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.active) return;
+            document.getElementById('elapsed-time').textContent = data.elapsed;
+            document.getElementById('start-time').textContent = data.start_time;
+
+            const b15 = document.getElementById('break-15-btn');
+            const lnch = document.getElementById('lunch-btn');
+            if (!b15 || !lnch) return;
+            const s = data.elapsed_seconds;
+
+            if (!data.break_15_taken && s >= 3600) {
+                b15.disabled = false;
+                b15.className = 'bg-amber-500 hover:bg-amber-600 text-white font-medium py-2 px-3 rounded-lg text-xs cursor-pointer transition';
+            } else if (data.break_15_taken) {
+                b15.textContent = 'Break Taken';
+                b15.className = 'bg-emerald-100 text-emerald-700 font-medium py-2 px-3 rounded-lg text-xs cursor-not-allowed transition';
+            }
+
+            if (!data.lunch_taken && s >= 7200) {
+                lnch.disabled = false;
+                lnch.className = 'bg-sky-500 hover:bg-sky-600 text-white font-medium py-2 px-3 rounded-lg text-xs cursor-pointer transition';
+            } else if (data.lunch_taken) {
+                lnch.textContent = 'Lunch Taken';
+                lnch.className = 'bg-emerald-100 text-emerald-700 font-medium py-2 px-3 rounded-lg text-xs cursor-not-allowed transition';
+            }
+        });
+}
+
+{% if active_clock %}
+updateClock();
+setInterval(updateClock, 1000);
+
+document.getElementById('break-15-btn').addEventListener('click', function() {
+    if (this.disabled) return;
+    fetch('{{ url_for("take_break_15") }}', { method: 'POST', headers: { 'X-CSRFToken': '{{ csrf_token() }}' }})
+        .then(r => r.json())
+        .then(d => { if (d.success) { alert('15-minute break recorded! This will be deducted from your shift total.'); updateClock(); } else { alert(d.message); } });
+});
+
+document.getElementById('lunch-btn').addEventListener('click', function() {
+    if (this.disabled) return;
+    fetch('{{ url_for("take_lunch") }}', { method: 'POST', headers: { 'X-CSRFToken': '{{ csrf_token() }}' }})
+        .then(r => r.json())
+        .then(d => { if (d.success) { alert('1-hour lunch break recorded! This will be deducted from your shift total.'); updateClock(); } else { alert(d.message); } });
+});
+{% endif %}
+
+// --- Weekly chart ---
+{% set total_week_check = weekly_hours | sum(attribute='hours') %}
+{% if total_week_check > 0 %}
+document.addEventListener('DOMContentLoaded', function() {
+    const weekData = {{ weekly_hours | tojson }};
+
+    // Format dates as short day names (Mon, Tue, ...)
+    const labels = weekData.map(d => {
+        const dt = new Date(d.date + 'T00:00:00');
+        return dt.toLocaleDateString('en-US', { weekday: 'short' });
+    });
+    const values = weekData.map(d => d.hours);
+
+    const ctx = document.getElementById('weeklyChart').getContext('2d');
+
+    // Gradient fill
+    const gradient = ctx.createLinearGradient(0, 0, 0, ctx.canvas.clientHeight || 220);
+    gradient.addColorStop(0, 'rgba(79, 70, 229, 0.15)');
+    gradient.addColorStop(1, 'rgba(79, 70, 229, 0.01)');
+
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Hours',
+                data: values,
+                backgroundColor: values.map(v => v > 0 ? 'rgba(79, 70, 229, 0.8)' : 'rgba(203, 213, 225, 0.4)'),
+                hoverBackgroundColor: 'rgba(79, 70, 229, 1)',
+                borderRadius: 8,
+                borderSkipped: false,
+                maxBarThickness: 48
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        title: function(items) {
+                            const idx = items[0].dataIndex;
+                            const dt = new Date(weekData[idx].date + 'T00:00:00');
+                            return dt.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+                        },
+                        label: function(item) {
+                            return item.parsed.y.toFixed(2) + ' hours';
+                        }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Hours',
+                        font: { size: 12, weight: '500' },
+                        color: '#94a3b8'
+                    },
+                    ticks: {
+                        stepSize: 2,
+                        callback: function(v) { return v + 'h'; }
+                    },
+                    grid: { color: 'rgba(226, 232, 240, 0.6)' },
+                    border: { display: false }
+                },
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Day of Week',
+                        font: { size: 12, weight: '500' },
+                        color: '#94a3b8'
+                    },
+                    grid: { display: false },
+                    border: { display: false }
+                }
+            },
+            animation: {
+                duration: 800,
+                easing: 'easeOutQuart'
+            }
+        }
+    });
+});
+{% endif %}
+
+// --- Count-up animations for stat cards ---
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('[data-countup]').forEach(function(el) {
+        const target = el.getAttribute('data-countup');
+        animateCountUp(el, target, 900);
+    });
+});
+</script>
+{% endblock %}
