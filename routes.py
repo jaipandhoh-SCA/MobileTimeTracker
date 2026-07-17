@@ -12,6 +12,8 @@ from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from sqlalchemy.orm import joinedload
 
+from collections import defaultdict
+
 from app import app, db
 from models import User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage
 from google_auth import require_login, require_supervisor, google_auth
@@ -21,6 +23,20 @@ from utils import (
     get_pay_period_dates, get_next_pay_period_dates, get_previous_pay_period_dates,
     get_last_30_days_dates, get_month_to_date_dates
 )
+
+
+def build_daily_hours(entries, period_start, period_end):
+    """Build a date->hours dict for every day in the period, filling gaps with 0."""
+    daily = defaultdict(float)
+    for e in entries:
+        if e.date and e.duration_hours:
+            daily[e.date] += float(e.duration_hours)
+    result = []
+    current = period_start
+    while current <= period_end:
+        result.append({'date': current.strftime('%Y-%m-%d'), 'hours': round(daily[current], 2)})
+        current += timedelta(days=1)
+    return result
 
 app.register_blueprint(google_auth)
 
@@ -137,7 +153,17 @@ def home():
             Client.assigned_to_user_id == current_user.id
         ).order_by(ClientActivity.activity_date.desc()).limit(5).all()
     
-    return render_template('home.html', 
+    # Build weekly hours for the last 7 days (for trend chart)
+    today = date.today()
+    week_start = today - timedelta(days=6)
+    week_entries = TimeEntry.query.filter(
+        TimeEntry.user_id == current_user.id,
+        TimeEntry.date >= week_start,
+        TimeEntry.date <= today
+    ).all()
+    weekly_hours = build_daily_hours(week_entries, week_start, today)
+
+    return render_template('home.html',
                          active_clock=active_clock,
                          long_running=long_running,
                          recent_entries=recent_entries,
@@ -149,7 +175,8 @@ def home():
                          next_steps=next_steps,
                          recent_activities=recent_activities,
                          all_users=all_users,
-                         selected_user=selected_user)
+                         selected_user=selected_user,
+                         weekly_hours=weekly_hours)
 
 
 @app.route('/clock/start', methods=['POST'])
@@ -422,9 +449,10 @@ def my_logs():
     summary_entry_count = len(summary_entries)
     summary_unique_clients = len(set(e.client_id for e in summary_entries if e.client_id))
     summary_pay = float(summary_hours) * float(current_user.hourly_rate or 0)
-    
-    return render_template('my_logs.html', 
-                         entries=entries, 
+    daily_hours = build_daily_hours(summary_entries, summary_start, summary_end)
+
+    return render_template('my_logs.html',
+                         entries=entries,
                          clients=clients,
                          date_from=date_from,
                          date_to=date_to,
@@ -438,29 +466,8 @@ def my_logs():
                          summary_billable=summary_billable,
                          summary_entry_count=summary_entry_count,
                          summary_unique_clients=summary_unique_clients,
-                         summary_pay=summary_pay)
-
-
-# Correction notes feature disabled - field doesn't exist in production DB
-# @app.route('/entry/<int:entry_id>/note', methods=['POST'])
-# @require_login
-# def add_correction_note(entry_id):
-#     entry = TimeEntry.query.get_or_404(entry_id)
-#     
-#     if entry.user_id != current_user.id:
-#         flash('You can only add notes to your own entries.', 'error')
-#         return redirect(url_for('my_logs'))
-#     
-#     note = request.form.get('note', '').strip()
-#     if not note:
-#         flash('Note cannot be empty.', 'error')
-#         return redirect(url_for('my_logs'))
-#     
-#     entry.correction_note = note
-#     db.session.commit()
-#     
-#     flash('Note added successfully. A supervisor will review it.', 'success')
-#     return redirect(url_for('my_logs'))
+                         summary_pay=summary_pay,
+                         daily_hours=daily_hours)
 
 
 @app.route('/clients')
@@ -563,17 +570,10 @@ def create_client():
     db.session.add(client)
     db.session.commit()
     
-    try:
-        from google_drive_helper import create_client_folder_structure
-        folder_ids = create_client_folder_structure(client.name, client.address)
-        client.gdrive_client_folder_id = folder_ids['client_folder_id']
-        client.gdrive_property_images_id = folder_ids['property_images_id']
-        client.gdrive_documents_id = folder_ids['documents_id']
-        client.gdrive_contracts_id = folder_ids['contracts_id']
-        db.session.commit()
-    except Exception as e:
-        print(f"Warning: Could not create Google Drive folders: {e}")
-    
+    from r2_storage_helper import build_client_prefix
+    client.storage_prefix = build_client_prefix(client.name, client.address)
+    db.session.commit()
+
     flash(f'Client "{name}" created successfully.', 'success')
     return redirect(url_for('clients'))
 
@@ -757,99 +757,79 @@ def add_activity(client_id):
             flash('Invalid next step date format.', 'error')
             return redirect(url_for('edit_client', client_id=client_id))
     
-    file_path = None
+    storage_key = None
     file_name = None
-    gdrive_file_id = None
-    gdrive_web_view_link = None
-    
+
     if 'file' in request.files:
         file = request.files['file']
         if file and file.filename:
-            
+
             filename = secure_filename(file.filename)
             if not filename:
                 flash('Invalid filename.', 'error')
                 return redirect(url_for('edit_client', client_id=client_id))
-            
+
             ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
-            
+
             if ext not in current_app.config['ALLOWED_EXTENSIONS']:
                 flash(f'File type .{ext} not allowed. Allowed types: PDF, DOC, DOCX, TXT, JPG, PNG, XLS, XLSX, CSV', 'error')
                 return redirect(url_for('edit_client', client_id=client_id))
-            
-            if not client.gdrive_documents_id:
-                try:
-                    from google_drive_helper import create_client_folder_structure
-                    folder_ids = create_client_folder_structure(client.name, client.address)
-                    client.gdrive_client_folder_id = folder_ids['client_folder_id']
-                    client.gdrive_property_images_id = folder_ids['property_images_id']
-                    client.gdrive_documents_id = folder_ids['documents_id']
-                    client.gdrive_contracts_id = folder_ids['contracts_id']
-                    db.session.commit()
-                except Exception as e:
-                    flash(f'Could not create Google Drive folders: {str(e)}', 'error')
-                    return redirect(url_for('edit_client', client_id=client_id))
-            
+
+            if not client.storage_prefix:
+                from r2_storage_helper import build_client_prefix
+                client.storage_prefix = build_client_prefix(client.name, client.address)
+                db.session.commit()
+
             timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
             unique_filename = f"{timestamp}_{filename}"
-            
+
             try:
                 import mimetypes
-                from google_drive_helper import upload_file_to_drive
-                
+                from r2_storage_helper import upload_file as r2_upload
+
                 file_content = file.read()
                 mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-                
-                upload_result = upload_file_to_drive(
-                    file_content,
-                    unique_filename,
-                    client.gdrive_documents_id,
-                    mime_type
-                )
-                
-                gdrive_file_id = upload_result['id']
-                gdrive_web_view_link = upload_result['web_view_link']
+                key = f"{client.storage_prefix}/documents/{unique_filename}"
+
+                r2_upload(file_content, key, mime_type)
+
+                storage_key = key
                 file_name = filename
             except Exception as e:
-                flash(f'Failed to save file to Google Drive: {str(e)}', 'error')
+                flash(f'Failed to upload file: {str(e)}', 'error')
                 return redirect(url_for('edit_client', client_id=client_id))
-    
+
     try:
         final_note_text = note_text
-        if gdrive_web_view_link and file_name:
-            final_note_text = f"{note_text}\n\nUploaded {file_name} to Google Drive ({gdrive_web_view_link})"
-        
+        if file_name:
+            final_note_text = f"{note_text}\n\nAttached: {file_name}"
+
         activity = ClientActivity(
             client_id=client_id,
             user_id=current_user.id,
             activity_type=activity_type,
             note_text=final_note_text,
             activity_date=activity_date_utc,
-            file_path=file_path,
+            file_path=storage_key,
             file_name=file_name,
             next_step_description=next_step_description if next_step_description else None,
             next_step_date=next_step_date_utc
         )
-        
+
         db.session.add(activity)
         db.session.commit()
-        
+
         flash('Activity added successfully.', 'success')
     except Exception as e:
         db.session.rollback()
-        if gdrive_file_id:
+        if storage_key:
             try:
-                from google_drive_helper import delete_file_from_drive
-                delete_file_from_drive(gdrive_file_id)
-            except:
-                pass
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
+                from r2_storage_helper import delete_file as r2_delete
+                r2_delete(storage_key)
             except:
                 pass
         flash('Failed to save activity. Please try again.', 'error')
-    
+
     return redirect(url_for('edit_client', client_id=client_id))
 
 
@@ -866,26 +846,25 @@ def download_activity_file(client_id, activity_id):
         flash('No file attached to this activity.', 'error')
         return redirect(url_for('edit_client', client_id=client_id))
     
-    import re
-    gdrive_url_match = re.search(r'(https://drive\.google\.com/[^\)]+)', activity.note_text or '')
-    if gdrive_url_match:
-        gdrive_url = gdrive_url_match.group(1)
-        return redirect(gdrive_url)
-    
+    if activity.file_path and activity.file_path.startswith('property-files/'):
+        from r2_storage_helper import generate_presigned_url
+        url = generate_presigned_url(activity.file_path)
+        return redirect(url)
+
     if activity.file_path:
         upload_folder = os.path.abspath(current_app.config['UPLOAD_FOLDER'])
         file_path = os.path.abspath(activity.file_path)
-        
+
         if not file_path.startswith(upload_folder):
             flash('Invalid file path.', 'error')
             return redirect(url_for('edit_client', client_id=client_id))
-        
+
         if not os.path.exists(file_path):
             flash('File not found.', 'error')
             return redirect(url_for('edit_client', client_id=client_id))
-        
+
         return send_file(file_path, as_attachment=True, download_name=activity.file_name)
-    
+
     flash('File not found.', 'error')
     return redirect(url_for('edit_client', client_id=client_id))
 
@@ -917,53 +896,40 @@ def upload_property_image(client_id):
     if ext not in ALLOWED_IMAGE_EXTENSIONS:
         return jsonify({'success': False, 'error': f'File type .{ext} not allowed. Only images (JPG, PNG, GIF, WebP) are accepted'}), 400
     
-    if not client.gdrive_property_images_id:
-        try:
-            from google_drive_helper import create_client_folder_structure
-            folder_ids = create_client_folder_structure(client.name, client.address)
-            client.gdrive_client_folder_id = folder_ids['client_folder_id']
-            client.gdrive_property_images_id = folder_ids['property_images_id']
-            client.gdrive_documents_id = folder_ids['documents_id']
-            client.gdrive_contracts_id = folder_ids['contracts_id']
-            db.session.commit()
-        except Exception as e:
-            return jsonify({'success': False, 'error': f'Could not create Google Drive folders: {str(e)}'}), 500
-    
+    if not client.storage_prefix:
+        from r2_storage_helper import build_client_prefix
+        client.storage_prefix = build_client_prefix(client.name, client.address)
+        db.session.commit()
+
     try:
-        from google_drive_helper import upload_file_to_drive
-        
+        from r2_storage_helper import upload_file as r2_upload
+
         file_content = file.read()
         mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-        
+
         timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
         unique_filename = f"property_{timestamp}_{filename}"
-        
-        upload_result = upload_file_to_drive(
-            file_content,
-            unique_filename,
-            client.gdrive_property_images_id,
-            mime_type
-        )
-        
+        key = f"{client.storage_prefix}/property-images/{unique_filename}"
+
+        r2_upload(file_content, key, mime_type)
+
         property_image = PropertyImage(
             client_id=client_id,
             file_name=filename,
-            gdrive_file_id=upload_result['id'],
-            gdrive_web_view_link=upload_result['web_view_link'],
+            storage_key=key,
             uploaded_by_user_id=current_user.id
         )
-        
+
         db.session.add(property_image)
         db.session.commit()
-        
+
         return jsonify({
             'success': True,
             'image_id': property_image.id,
             'file_name': property_image.file_name,
             'image_url': url_for('view_property_image', client_id=client_id, image_id=property_image.id),
-            'gdrive_link': upload_result['web_view_link']
         })
-        
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'success': False, 'error': f'Failed to save image: {str(e)}'}), 500
@@ -979,20 +945,20 @@ def view_property_image(client_id, image_id):
     
     property_image = PropertyImage.query.filter_by(id=image_id, client_id=client_id).first_or_404()
     
-    if property_image.gdrive_file_id:
+    if property_image.storage_key:
         try:
-            from google_drive_helper import get_file_content
-            file_content = get_file_content(property_image.gdrive_file_id)
-            
+            from r2_storage_helper import download_file
+            file_content = download_file(property_image.storage_key)
+
             mime_type = mimetypes.guess_type(property_image.file_name)[0] or 'image/jpeg'
-            
+
             return send_file(
                 io.BytesIO(file_content),
                 mimetype=mime_type,
                 as_attachment=False
             )
         except Exception as e:
-            flash(f'Error loading image from Google Drive: {str(e)}', 'error')
+            flash(f'Error loading image: {str(e)}', 'error')
             return redirect(url_for('edit_client', client_id=client_id))
     
     if property_image.file_path:
@@ -1018,28 +984,28 @@ def delete_property_image(client_id, image_id):
     
     property_image = PropertyImage.query.filter_by(id=image_id, client_id=client_id).first_or_404()
     
-    gdrive_file_id = property_image.gdrive_file_id
+    r2_key = property_image.storage_key
     file_path = property_image.file_path
-    
+
     try:
         db.session.delete(property_image)
         db.session.commit()
-        
-        if gdrive_file_id:
+
+        if r2_key:
             try:
-                from google_drive_helper import delete_file_from_drive
-                delete_file_from_drive(gdrive_file_id)
+                from r2_storage_helper import delete_file as r2_delete
+                r2_delete(r2_key)
             except Exception as e:
-                print(f"Warning: Could not delete file from Google Drive: {e}")
-        
+                print(f"Warning: Could not delete file from R2: {e}")
+
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
             except:
                 pass
-        
+
         return jsonify({'success': True})
-        
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'success': False, 'error': 'Failed to delete image'}), 500
@@ -1085,71 +1051,52 @@ def upload_to_folder(client_id):
         if ext not in ALLOWED_EXTENSIONS:
             return jsonify({'success': False, 'error': 'Only PDF or DOC files allowed'}), 400
     
-    folder_id_map = {
-        'property_images': client.gdrive_property_images_id,
-        'documents': client.gdrive_documents_id,
-        'contracts': client.gdrive_contracts_id
+    if not client.storage_prefix:
+        from r2_storage_helper import build_client_prefix
+        client.storage_prefix = build_client_prefix(client.name, client.address)
+        db.session.commit()
+
+    folder_key_segment = {
+        'property_images': 'property-images',
+        'documents': 'documents',
+        'contracts': 'contracts',
     }
-    target_folder_id = folder_id_map[folder_type]
-    
-    if not target_folder_id:
-        try:
-            from google_drive_helper import create_client_folder_structure
-            folder_ids = create_client_folder_structure(client.name, client.address)
-            client.gdrive_client_folder_id = folder_ids['client_folder_id']
-            client.gdrive_property_images_id = folder_ids['property_images_id']
-            client.gdrive_documents_id = folder_ids['documents_id']
-            client.gdrive_contracts_id = folder_ids['contracts_id']
-            db.session.commit()
-            
-            target_folder_id = folder_ids[folder_type + '_id']
-        except Exception as e:
-            print(f"ERROR creating folders: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return jsonify({'success': False, 'error': f'Could not create Google Drive folders: {str(e)}'}), 500
-    
+
     try:
-        from google_drive_helper import upload_file_to_drive
-        
+        from r2_storage_helper import upload_file as r2_upload
+
         file_content = file.read()
         mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-        
+
         timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
         unique_filename = f"{timestamp}_{filename}"
-        
-        upload_result = upload_file_to_drive(
-            file_content,
-            unique_filename,
-            target_folder_id,
-            mime_type
-        )
-        
+        key = f"{client.storage_prefix}/{folder_key_segment[folder_type]}/{unique_filename}"
+
+        r2_upload(file_content, key, mime_type)
+
         activity_type_map = {
             'property_images': 'Property image uploaded',
             'documents': 'Document uploaded',
             'contracts': 'Contract uploaded'
         }
-        
+
         activity = ClientActivity(
             client_id=client_id,
             user_id=current_user.id,
             activity_type=activity_type_map[folder_type],
-            note_text=f"Uploaded {filename} to Google Drive ({upload_result['web_view_link']})",
+            note_text=f"Uploaded {filename}",
             activity_date=datetime.utcnow(),
+            file_path=key,
             file_name=filename
         )
-        
+
         db.session.add(activity)
         db.session.commit()
-        
+
         return jsonify({'success': True, 'file_name': filename})
-        
+
     except Exception as e:
         db.session.rollback()
-        print(f"ERROR in upload_to_folder: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return jsonify({'success': False, 'error': f'Failed to upload file: {str(e)}'}), 500
 
 
@@ -1287,6 +1234,15 @@ def admin_dashboard():
                     'pay': filtered_pay
                 })
     
+    # Build daily totals for the current pay period (company-wide trend chart)
+    daily_totals = build_daily_hours(
+        TimeEntry.query.filter(
+            TimeEntry.date >= current_period_start,
+            TimeEntry.date <= current_period_end
+        ).all(),
+        current_period_start, current_period_end
+    )
+
     return render_template('admin_dashboard.html',
                          entries=entries,
                          total_hours=total_hours,
@@ -1307,7 +1263,8 @@ def admin_dashboard():
                          filters_applied=filters_applied,
                          filtered_payroll_data=filtered_payroll_data,
                          filtered_date_from=filtered_date_from,
-                         filtered_date_to=filtered_date_to)
+                         filtered_date_to=filtered_date_to,
+                         daily_totals=daily_totals)
 
 
 @app.route('/admin/entry/<int:entry_id>/edit', methods=['GET', 'POST'])
@@ -1403,7 +1360,8 @@ def rep_time_entries(user_id):
     summary_entry_count = len(summary_entries)
     summary_unique_clients = len(set(e.client_id for e in summary_entries if e.client_id))
     summary_pay = float(summary_hours) * float(rep.hourly_rate or 0)
-    
+    daily_hours = build_daily_hours(summary_entries, summary_start, summary_end)
+
     return render_template('rep_time_entries.html',
                          rep=rep,
                          entries=entries,
@@ -1420,7 +1378,8 @@ def rep_time_entries(user_id):
                          summary_billable=summary_billable,
                          summary_entry_count=summary_entry_count,
                          summary_unique_clients=summary_unique_clients,
-                         summary_pay=summary_pay)
+                         summary_pay=summary_pay,
+                         daily_hours=daily_hours)
 
 
 @app.route('/admin/export')
@@ -2126,26 +2085,6 @@ def remove_user(user_id):
     
     flash(flash_message, 'success')
     return redirect(url_for('manage_users'))
-
-
-@app.route('/admin/fix-folder-permissions')
-@require_login
-def fix_folder_permissions():
-    """Utility route to make existing Google Drive folders shareable.
-    Only accessible by supervisors.
-    """
-    if not current_user.is_supervisor:
-        flash('Access denied. Only supervisors can access this feature.', 'error')
-        return redirect(url_for('index'))
-    
-    try:
-        from google_drive_helper import update_existing_folders_permissions
-        updated_count = update_existing_folders_permissions()
-        flash(f'Successfully updated {updated_count} folder permissions. All client folders are now accessible to anyone with the link.', 'success')
-    except Exception as e:
-        flash(f'Error updating folder permissions: {str(e)}', 'error')
-    
-    return redirect(url_for('clients'))
 
 
 @app.template_filter('format_hours')
