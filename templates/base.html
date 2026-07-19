@@ -6,6 +6,11 @@
     <title>{% block title %}All Inclusive ADU Portal{% endblock %}</title>
     <link rel="icon" type="image/jpeg" href="{{ url_for('static', filename='favicon.jpg') }}">
 
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
     <!-- Tailwind CSS (Play CDN) -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -13,34 +18,79 @@
         theme: {
             extend: {
                 colors: {
-                    brand: {
-                        50:  '#EEF2FF',
-                        100: '#E0E7FF',
-                        200: '#C7D2FE',
-                        500: '#6366F1',
-                        600: '#4F46E5',
-                        700: '#4338CA',
-                    }
+                    /* Dark layered surface system — each step clearly separated */
+                    surface: {
+                        base: '#0B0F14',      /* deepest bg */
+                        raised: '#131820',    /* card bg — 12% lighter than base */
+                        overlay: '#1A2230',   /* dropdowns, modals — another step up */
+                        hover: '#1F2A3A',     /* hover on raised surfaces */
+                        active: '#253344',    /* active/pressed states */
+                    },
+                    /* Border system — cool-tinted for depth */
+                    edge: {
+                        DEFAULT: '#1E2A38',   /* subtle default border */
+                        strong: '#2A3A4E',    /* emphasized borders */
+                        glow: '#2D6A4F33',    /* green glow border for key cards */
+                    },
+                    /* Text hierarchy — high contrast on dark */
+                    txt: {
+                        primary: '#F1F5F9',   /* 15.4:1 on base — headlines, important */
+                        secondary: '#94A3B8', /* 7.2:1 — body text, descriptions */
+                        muted: '#64748B',     /* 4.6:1 — labels, timestamps */
+                        faint: '#475569',     /* 3.1:1 — disabled, placeholders */
+                    },
+                    /* Primary — Forest Green (bright variant for dark bg) */
+                    primary: {
+                        light: '#0F2A1F',     /* dark tinted bg for green contexts */
+                        DEFAULT: '#34D399',   /* bright mint-green — pops on dark */
+                        hover: '#2BB584',     /* slightly deeper on hover */
+                        ring: '#34D39940',    /* translucent ring */
+                        muted: '#2D6A4F',     /* original forest — used for fills */
+                    },
+                    /* Accent — Warm amber */
+                    accent: {
+                        light: '#1F1A0F',     /* dark amber tint */
+                        DEFAULT: '#F59E0B',   /* bright amber for dark mode */
+                    },
+                    /* Semantic — boosted for dark mode visibility */
+                    success: { light: '#052E16', DEFAULT: '#4ADE80' },
+                    warning: { light: '#1C1A05', DEFAULT: '#FBBF24' },
+                    danger:  { light: '#1F0A0A', DEFAULT: '#F87171' },
                 },
                 fontFamily: {
                     sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
+                    display: ['Fraunces', 'Georgia', 'serif'],
+                },
+                boxShadow: {
+                    'glow-sm': '0 0 15px -3px rgba(52, 211, 153, 0.15)',
+                    'glow-md': '0 0 25px -5px rgba(52, 211, 153, 0.2)',
+                    'card': '0 4px 24px -4px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(30, 42, 56, 0.8)',
+                    'card-hover': '0 8px 32px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(52, 211, 153, 0.2)',
                 }
             }
         }
     }
     </script>
 
-    <!-- Alpine.js (lightweight interactivity) -->
+    <!-- Alpine.js + collapse plugin -->
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 
-    <!-- Chart.js (data viz) -->
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 
     <style>
+        :root {
+            --primary: #34D399;
+            --primary-hover: #2BB584;
+            --primary-light: #0F2A1F;
+            --primary-ring: rgba(52, 211, 153, 0.25);
+        }
+
         /* Touch targets for mobile */
         .touch-target { min-width: 44px; min-height: 44px; }
 
-        /* Respect reduced motion preference */
+        /* Respect reduced motion */
         @media (prefers-reduced-motion: reduce) {
             *, *::before, *::after {
                 animation-duration: 0.01ms !important;
@@ -49,35 +99,53 @@
             }
         }
 
-        /* Focus ring for keyboard navigation */
+        /* Focus ring — bright green glow */
         :focus-visible {
-            outline: 2px solid #4F46E5;
+            outline: 2px solid #34D399;
             outline-offset: 2px;
             border-radius: 4px;
+            box-shadow: 0 0 12px rgba(52, 211, 153, 0.3);
         }
 
-        /* Smooth page transitions */
         [x-cloak] { display: none !important; }
+
+        /* Subtle scan-line texture for futuristic depth */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 0;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(52, 211, 153, 0.008) 2px,
+                rgba(52, 211, 153, 0.008) 4px
+            );
+        }
+
+        body > * { position: relative; z-index: 1; }
     </style>
     {% block head %}{% endblock %}
 </head>
-<body class="bg-slate-50 font-sans text-slate-900 antialiased">
+<body class="font-sans antialiased bg-surface-base text-txt-primary" style="min-height: 100vh;">
 
     {% if current_user.is_authenticated %}
-    <!-- Navigation -->
-    <nav class="bg-white border-b border-slate-200 sticky top-0 z-40" x-data="{ mobileOpen: false, profileOpen: false }">
+    <!-- Navigation — 4 destinations: Hub, Clients, Reports, Settings -->
+    <nav class="bg-surface-raised/90 backdrop-blur-xl border-b border-edge sticky top-0 z-40" x-data="{ mobileOpen: false, profileOpen: false }">
         <div class="w-full max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center justify-between h-16">
+            <div class="flex items-center justify-between h-14">
 
                 <!-- Left: Logo + Desktop Links -->
                 <div class="flex items-center gap-1 sm:gap-2">
                     <a href="{{ url_for('home') }}" class="flex items-center gap-2 mr-4 sm:mr-6">
-                        <div class="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center">
+                        <div class="w-8 h-8 bg-[var(--primary)] rounded-lg flex items-center justify-center">
                             <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
                             </svg>
                         </div>
-                        <span class="hidden sm:inline text-lg font-semibold text-slate-900">ADU Portal</span>
+                        <span class="hidden sm:inline text-lg font-semibold text-txt-primary font-display">ADU Portal</span>
                     </a>
 
                     <!-- Desktop nav links -->
@@ -85,51 +153,45 @@
                         {% set current_endpoint = request.endpoint %}
                         <a href="{{ url_for('home') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition
-                                  {{ 'bg-brand-50 text-brand-700' if current_endpoint == 'home' else 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' }}">
-                            Home
+                                  {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint == 'home' else 'text-txt-muted hover:text-txt-primary hover:bg-surface-hover' }}">
+                            Hub
                         </a>
                         <a href="{{ url_for('clients') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition
-                                  {{ 'bg-brand-50 text-brand-700' if current_endpoint in ['clients', 'create_client', 'edit_client'] else 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' }}">
+                                  {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['clients', 'create_client', 'edit_client'] else 'text-txt-muted hover:text-txt-primary hover:bg-surface-hover' }}">
                             Clients
                         </a>
                         <a href="{{ url_for('my_logs') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition
-                                  {{ 'bg-brand-50 text-brand-700' if current_endpoint == 'my_logs' else 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' }}">
-                            My Logs
+                                  {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['my_logs', 'admin_dashboard', 'rep_time_entries', 'channel_spend'] else 'text-txt-muted hover:text-txt-primary hover:bg-surface-hover' }}">
+                            Reports
                         </a>
-                        {% if current_user.is_supervisor %}
-                        <a href="{{ url_for('admin_dashboard') }}"
+                        <a href="{{ url_for('edit_profile') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition
-                                  {{ 'bg-brand-50 text-brand-700' if current_endpoint in ['admin_dashboard', 'rep_time_entries', 'manage_users', 'edit_user_profile'] else 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' }}">
-                            Admin
+                                  {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['edit_profile', 'manage_users', 'edit_user_profile', 'lead_sources_settings', 'lead_source_backfill'] else 'text-txt-muted hover:text-txt-primary hover:bg-surface-hover' }}">
+                            Settings
                         </a>
-                        {% endif %}
                     </div>
                 </div>
 
                 <!-- Right: Shift indicator + Profile -->
                 <div class="flex items-center gap-3">
-                    <!-- Active Shift Indicator -->
                     <div id="navShiftIndicator"></div>
 
                     <!-- Profile dropdown -->
                     <div class="relative">
                         <button @click="profileOpen = !profileOpen"
                                 @keydown.escape.window="profileOpen = false"
-                                class="flex items-center gap-2 rounded-full p-1 hover:bg-slate-100 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+                                class="flex items-center gap-2 rounded-full p-1 hover:bg-surface-hover transition focus:outline-none"
                                 aria-haspopup="true" :aria-expanded="profileOpen">
                             {% if current_user.profile_image_url %}
                             <img src="{{ current_user.profile_image_url }}" alt="{{ current_user.display_name }}" class="w-8 h-8 rounded-full object-cover">
                             {% else %}
-                            <div class="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center text-brand-700 font-semibold text-sm">
+                            <div class="w-8 h-8 rounded-full bg-[var(--primary-light)] flex items-center justify-center text-[var(--primary)] font-semibold text-sm">
                                 {{ current_user.first_name[0] if current_user.first_name else current_user.email[0] }}
                             </div>
                             {% endif %}
-                            <span class="hidden sm:inline text-sm font-medium text-slate-700">{{ current_user.display_name }}</span>
-                            {% if current_user.is_supervisor %}
-                            <span class="hidden sm:inline px-1.5 py-0.5 text-[10px] font-semibold rounded bg-brand-100 text-brand-700">Admin</span>
-                            {% endif %}
+                            <span class="hidden sm:inline text-sm font-medium text-txt-secondary">{{ current_user.display_name }}</span>
                         </button>
 
                         <!-- Profile dropdown panel -->
@@ -142,29 +204,35 @@
                              x-transition:leave="transition ease-in duration-100"
                              x-transition:leave-start="opacity-100 scale-100"
                              x-transition:leave-end="opacity-0 scale-95"
-                             class="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-lg ring-1 ring-slate-200 overflow-hidden z-50">
-                            <div class="p-4 bg-slate-50 border-b border-slate-200">
+                             class="absolute right-0 mt-2 w-64 bg-surface-overlay rounded-xl shadow-card ring-1 ring-edge overflow-hidden z-50">
+                            <div class="p-4 bg-surface-overlay border-b border-edge">
                                 <div class="flex items-center gap-3">
                                     {% if current_user.profile_image_url %}
-                                    <img src="{{ current_user.profile_image_url }}" alt="{{ current_user.display_name }}" class="w-12 h-12 rounded-full object-cover">
+                                    <img src="{{ current_user.profile_image_url }}" alt="{{ current_user.display_name }}" class="w-10 h-10 rounded-full object-cover">
                                     {% else %}
-                                    <div class="w-12 h-12 rounded-full bg-brand-100 flex items-center justify-center text-brand-700 font-semibold text-lg">
+                                    <div class="w-10 h-10 rounded-full bg-[var(--primary-light)] flex items-center justify-center text-[var(--primary)] font-semibold">
                                         {{ current_user.first_name[0] if current_user.first_name else current_user.email[0] }}
                                     </div>
                                     {% endif %}
                                     <div class="min-w-0">
-                                        <p class="font-semibold text-slate-900 truncate">{{ current_user.display_name }}</p>
-                                        <p class="text-xs text-slate-500 truncate">{{ current_user.email if current_user.email else current_user.id }}</p>
+                                        <p class="font-semibold text-txt-primary truncate text-sm">{{ current_user.display_name }}</p>
+                                        <p class="text-xs text-txt-muted truncate">{{ current_user.email }}</p>
                                     </div>
                                 </div>
                             </div>
                             <div class="py-1">
-                                <a href="{{ url_for('edit_profile') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition">
-                                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                                <a href="{{ url_for('edit_profile') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-txt-secondary hover:bg-surface-overlay transition">
+                                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
                                     Edit Profile
                                 </a>
+                                {% if current_user.is_supervisor %}
+                                <a href="{{ url_for('manage_users') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-txt-secondary hover:bg-surface-overlay transition">
+                                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                                    Manage Users
+                                </a>
+                                {% endif %}
                                 <a href="{{ url_for('google_auth.logout') }}"
-                                   class="flex items-center gap-2 px-4 py-2.5 text-sm text-rose-600 hover:bg-rose-50 transition"
+                                   class="flex items-center gap-2 px-4 py-2.5 text-sm text-danger hover:bg-danger-light transition"
                                    id="logoutLink">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
                                     Log Out
@@ -175,7 +243,7 @@
 
                     <!-- Mobile hamburger -->
                     <button @click="mobileOpen = !mobileOpen"
-                            class="md:hidden p-2 rounded-lg text-slate-600 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+                            class="md:hidden p-2 rounded-lg text-txt-muted hover:bg-surface-hover focus:outline-none"
                             aria-label="Toggle navigation menu">
                         <svg x-show="!mobileOpen" class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
                         <svg x-show="mobileOpen" x-cloak class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
@@ -193,30 +261,28 @@
              x-transition:leave="transition ease-in duration-150"
              x-transition:leave-start="opacity-100"
              x-transition:leave-end="opacity-0 -translate-y-2"
-             class="md:hidden border-t border-slate-200 bg-white">
+             class="md:hidden border-t border-edge bg-surface-raised">
             <div class="px-4 py-3 space-y-1">
                 <a href="{{ url_for('home') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition
-                          {{ 'bg-brand-50 text-brand-700' if current_endpoint == 'home' else 'text-slate-600 hover:bg-slate-100' }}">
-                    Home
+                          {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint == 'home' else 'text-txt-muted hover:bg-surface-hover' }}">
+                    Hub
                 </a>
                 <a href="{{ url_for('clients') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition
-                          {{ 'bg-brand-50 text-brand-700' if current_endpoint in ['clients', 'create_client', 'edit_client'] else 'text-slate-600 hover:bg-slate-100' }}">
+                          {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['clients', 'create_client', 'edit_client'] else 'text-txt-muted hover:bg-surface-hover' }}">
                     Clients
                 </a>
                 <a href="{{ url_for('my_logs') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition
-                          {{ 'bg-brand-50 text-brand-700' if current_endpoint == 'my_logs' else 'text-slate-600 hover:bg-slate-100' }}">
-                    My Logs
+                          {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['my_logs', 'admin_dashboard', 'rep_time_entries'] else 'text-txt-muted hover:bg-surface-hover' }}">
+                    Reports
                 </a>
-                {% if current_user.is_supervisor %}
-                <a href="{{ url_for('admin_dashboard') }}"
+                <a href="{{ url_for('edit_profile') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition
-                          {{ 'bg-brand-50 text-brand-700' if current_endpoint in ['admin_dashboard', 'rep_time_entries', 'manage_users', 'edit_user_profile'] else 'text-slate-600 hover:bg-slate-100' }}">
-                    Admin
+                          {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['edit_profile', 'manage_users', 'lead_sources_settings', 'lead_source_backfill'] else 'text-txt-muted hover:bg-surface-hover' }}">
+                    Settings
                 </a>
-                {% endif %}
             </div>
         </div>
     </nav>
@@ -234,10 +300,10 @@
                      x-transition:leave-start="opacity-100 translate-y-0"
                      x-transition:leave-end="opacity-0 -translate-y-2"
                      class="mt-4 flex items-center gap-3 p-4 rounded-xl border
-                            {% if category == 'error' %}bg-rose-50 border-rose-200 text-rose-800
-                            {% elif category == 'success' %}bg-emerald-50 border-emerald-200 text-emerald-800
-                            {% elif category == 'warning' %}bg-amber-50 border-amber-200 text-amber-800
-                            {% else %}bg-sky-50 border-sky-200 text-sky-800{% endif %}"
+                            {% if category == 'error' %}bg-danger-light border-danger/20 text-danger
+                            {% elif category == 'success' %}bg-success-light border-success/20 text-success
+                            {% elif category == 'warning' %}bg-warning-light border-warning/20 text-warning
+                            {% else %}bg-surface-overlay border-edge text-txt-secondary{% endif %}"
                      role="alert">
                     {% if category == 'error' %}
                     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -298,12 +364,12 @@
                     if (!el) return;
                     if (data.active) {
                         el.innerHTML = `
-                            <a href="{{ url_for('home') }}" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-100 transition">
+                            <a href="{{ url_for('home') }}" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-success-light text-success ring-1 ring-success/20 hover:ring-success/40 transition">
                                 <span class="relative flex h-2 w-2">
-                                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                                    <span class="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
                                 </span>
-                                Shift Active
+                                On Clock
                             </a>
                         `;
                     } else {
@@ -321,13 +387,12 @@
     if (typeof Chart !== 'undefined') {
         Chart.defaults.font.family = "'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'";
         Chart.defaults.font.size = 12;
-        Chart.defaults.color = '#64748b';
-        Chart.defaults.plugins.tooltip.backgroundColor = '#1e293b';
+        Chart.defaults.color = '#94A3B8';
+        Chart.defaults.plugins.tooltip.backgroundColor = '#1A2230';
         Chart.defaults.plugins.tooltip.cornerRadius = 8;
         Chart.defaults.plugins.tooltip.padding = 10;
         Chart.defaults.plugins.tooltip.titleFont = { weight: '600', size: 13 };
 
-        // Respect prefers-reduced-motion
         if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
             Chart.defaults.animation = false;
         }
@@ -349,7 +414,6 @@
         function tick(now) {
             const elapsed = now - startTime;
             const progress = Math.min(elapsed / ms, 1);
-            // ease-out cubic
             const eased = 1 - Math.pow(1 - progress, 3);
             const current = start + (end - start) * eased;
             element.textContent = isDecimal ? current.toFixed(2) : Math.round(current).toLocaleString();

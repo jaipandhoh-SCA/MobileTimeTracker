@@ -89,6 +89,30 @@ Rule: nothing goes to Claude Code until it's written under **Active** with enoug
 
 ## 4. Changelog
 
+### 2026-07-18 — Channel Spend + Revenue Capture
+
+**Feature A — Channel Spend (supervisors):** New `ChannelSpend` model (id, lead_source_id FK, amount, period_month, note, created_by). Page at `/reports/channel-spend` with month picker, add/edit/delete entries, per-source totals. Any lead source can have spend (ads, referral fees, etc.). Template uses Alpine.js for inline edit toggle.
+
+**Feature B — Revenue capture at close:** Added `Client.final_contract_value` (decimal, nullable). When status changes to "Completed", a modal prompts for the final contract value (can skip). Both values shown on client page: "Estimated Value" (opportunity_value, the pipeline estimate) and "Final Contract Value" (the actual closed amount). Final value is editable inline with auto-save.
+
+**Routes added:** `/reports/channel-spend` (list + add), `/reports/channel-spend/<id>/edit`, `/reports/channel-spend/<id>/delete`, `/clients/<id>/update_final_value`.
+
+**Templates:** New `channel_spend.html`. Updated `client_form.html` (completion modal, final value field, label change to "Estimated Value"). Updated `base.html` (Reports nav highlight includes channel_spend).
+
+### 2026-07-18 — Lead Source Tracking
+
+**New model:** `LeadSource` (id, name, channel_type enum, is_active). Seeded with 10 defaults: Google Ads, Meta Ads, Instagram Organic, Facebook Organic, Website / SEO, Phone Call, Referral — Client, Referral — Partner, Repeat Client, Other.
+
+**Client model:** Added `lead_source_id` (FK, nullable) and `source_detail` (optional free text).
+
+**Routes added:** `/settings/lead-sources` (manage sources — add, rename, deactivate), `/settings/lead-sources/seed`, `/settings/lead-sources/backfill` (supervisor page to assign sources to existing clients), `/api/missing-lead-source-count`.
+
+**Client create form:** Lead Source is now required (dropdown of active sources + optional detail field). Edit form: same fields, optional.
+
+**Templates:** `lead_sources_settings.html`, `lead_source_backfill.html`. Updated `client_form.html` (source badge in view mode, dropdown in edit mode and create form), `clients.html` (source badge on each row), `home.html` (dismissible banner for missing sources).
+
+**Auto-migration:** `app.py` adds `lead_source_id` and `source_detail` columns if missing.
+
 ### 2026-07-16 — Item C shipped: Google Drive → Cloudflare R2
 **Deleted `google_drive_helper.py`** (entire file — Replit connector + Drive API). Replaced with **`r2_storage_helper.py`** using `boto3` (S3-compatible): `upload_file`, `download_file`, `delete_file`, `generate_presigned_url`, `build_client_prefix`.
 

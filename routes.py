@@ -15,7 +15,7 @@ from sqlalchemy.orm import joinedload
 from collections import defaultdict
 
 from app import app, db
-from models import User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage
+from models import User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage, LeadSource, ChannelSpend
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
     utc_to_pacific, pacific_to_utc, calculate_duration, round_to_quarter_hour,
@@ -153,15 +153,164 @@ def home():
             Client.assigned_to_user_id == current_user.id
         ).order_by(ClientActivity.activity_date.desc()).limit(5).all()
     
-    # Build weekly hours for the last 7 days (for trend chart)
-    today = date.today()
-    week_start = today - timedelta(days=6)
+    # --- Compute Mon-Sun Pacific week boundaries ---
+    from utils import PACIFIC_TZ
+    import pytz
+    now_pacific = datetime.now(PACIFIC_TZ)
+    today = now_pacific.date()
+    # Monday of this week
+    this_week_start = today - timedelta(days=today.weekday())
+    this_week_end = this_week_start + timedelta(days=6)
+    # Last week for deltas
+    last_week_start = this_week_start - timedelta(days=7)
+    last_week_end = this_week_start - timedelta(days=1)
+
+    # Convert to UTC datetimes for queries
+    this_week_start_utc = PACIFIC_TZ.localize(datetime.combine(this_week_start, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
+    last_week_start_utc = PACIFIC_TZ.localize(datetime.combine(last_week_start, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
+    last_week_end_utc = PACIFIC_TZ.localize(datetime.combine(last_week_end + timedelta(days=1), datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
+
+    # Build weekly hours for chart (last 7 days)
+    chart_start = today - timedelta(days=6)
     week_entries = TimeEntry.query.filter(
         TimeEntry.user_id == current_user.id,
-        TimeEntry.date >= week_start,
+        TimeEntry.date >= chart_start,
         TimeEntry.date <= today
     ).all()
-    weekly_hours = build_daily_hours(week_entries, week_start, today)
+    weekly_hours = build_daily_hours(week_entries, chart_start, today)
+
+    # --- Helper: scope filter for queries ---
+    is_company_wide = current_user.is_supervisor and not selected_user
+    target_user_id = (selected_user.id if selected_user else current_user.id) if not is_company_wide else None
+
+    def _user_filter(query):
+        if not is_company_wide:
+            return query.filter(Client.assigned_to_user_id == target_user_id)
+        return query
+
+    # === NEW LEADS THIS WEEK (with lead source breakdown) ===
+    new_leads_q = _user_filter(Client.query.filter(
+        Client.is_active == True,
+        Client.created_at >= this_week_start_utc
+    ))
+    new_leads_this_week_list = new_leads_q.options(joinedload(Client.lead_source)).all()
+    new_leads_this_week = len(new_leads_this_week_list)
+
+    # Breakdown by source
+    lead_source_counts = defaultdict(int)
+    for c in new_leads_this_week_list:
+        source_name = c.lead_source.name if c.lead_source else 'Unknown'
+        lead_source_counts[source_name] += 1
+    # Sort descending by count
+    lead_source_breakdown = sorted(lead_source_counts.items(), key=lambda x: -x[1])
+
+    # Last week's leads for delta
+    last_week_leads_q = _user_filter(Client.query.filter(
+        Client.is_active == True,
+        Client.created_at >= last_week_start_utc,
+        Client.created_at < this_week_start_utc
+    ))
+    last_week_leads_count = last_week_leads_q.count()
+
+    # === PIPELINE MOVEMENT (status changes this week) ===
+    # We detect movement via ClientActivity entries of type "Status Change" this week
+    pipeline_moves_q = ClientActivity.query.join(Client).filter(
+        Client.is_active == True,
+        ClientActivity.activity_type == 'Status Change',
+        ClientActivity.activity_date >= this_week_start_utc
+    )
+    if not is_company_wide:
+        pipeline_moves_q = pipeline_moves_q.filter(Client.assigned_to_user_id == target_user_id)
+    pipeline_moves = pipeline_moves_q.options(joinedload(ClientActivity.client)).all()
+
+    # Group by transition description
+    pipeline_move_summary = defaultdict(list)
+    for pm in pipeline_moves:
+        pipeline_move_summary[pm.note_text].append(pm.client.name)
+
+    # === DEALS CLOSED THIS WEEK ===
+    completed_q = _user_filter(Client.query.filter(
+        Client.status == 'Completed',
+        Client.is_active == True,
+        Client.updated_at >= this_week_start_utc
+    ))
+    completed_this_week = completed_q.all()
+    completed_count = len(completed_this_week)
+    completed_revenue = sum(float(c.final_contract_value or c.opportunity_value or 0) for c in completed_this_week)
+
+    # Last week's closed for delta
+    last_completed_q = _user_filter(Client.query.filter(
+        Client.status == 'Completed',
+        Client.is_active == True,
+        Client.updated_at >= last_week_start_utc,
+        Client.updated_at < this_week_start_utc
+    ))
+    last_week_completed_count = last_completed_q.count()
+
+    # === FOLLOW-UP DEBT ===
+    now = datetime.utcnow()
+    # Overdue next steps
+    overdue_q = ClientActivity.query.join(Client).filter(
+        Client.is_active == True,
+        ClientActivity.next_step_date.isnot(None),
+        ClientActivity.next_step_date < now
+    )
+    if not is_company_wide:
+        overdue_q = overdue_q.filter(Client.assigned_to_user_id == target_user_id)
+    overdue_steps = overdue_q.order_by(ClientActivity.next_step_date.asc()).all()
+
+    # Clients with no next step scheduled (active pipeline only)
+    from sqlalchemy import func, and_, or_
+    # Subquery: clients that DO have a future next step
+    has_next_step_ids = db.session.query(ClientActivity.client_id).filter(
+        ClientActivity.next_step_date.isnot(None),
+        ClientActivity.next_step_date >= now
+    ).distinct().subquery()
+
+    no_next_step_q = Client.query.filter(
+        Client.is_active == True,
+        Client.status.in_(['Lead', 'Prospect', 'Active']),
+        ~Client.id.in_(db.session.query(has_next_step_ids))
+    )
+    if not is_company_wide:
+        no_next_step_q = no_next_step_q.filter(Client.assigned_to_user_id == target_user_id)
+    clients_no_next_step = no_next_step_q.all()
+
+    # Stale clients (no activity in 14+ days)
+    stale_threshold = now - timedelta(days=14)
+    stale_q = _user_filter(Client.query.filter(
+        Client.is_active == True,
+        Client.status.in_(['Lead', 'Prospect', 'Active']),
+        Client.updated_at < stale_threshold
+    ))
+    stale_clients = stale_q.order_by(Client.updated_at.asc()).all()
+
+    # === HOURS LOGGED (company-wide this week) ===
+    hours_q = TimeEntry.query.filter(
+        TimeEntry.date >= this_week_start,
+        TimeEntry.date <= today
+    )
+    if not is_company_wide:
+        hours_q = hours_q.filter(TimeEntry.user_id == (target_user_id or current_user.id))
+    week_hours_total = sum(float(e.duration_hours or 0) for e in hours_q.all())
+
+    # Last week hours for delta
+    last_hours_q = TimeEntry.query.filter(
+        TimeEntry.date >= last_week_start,
+        TimeEntry.date <= last_week_end
+    )
+    if not is_company_wide:
+        last_hours_q = last_hours_q.filter(TimeEntry.user_id == (target_user_id or current_user.id))
+    last_week_hours_total = sum(float(e.duration_hours or 0) for e in last_hours_q.all())
+
+    # === PAY PERIOD ===
+    pay_start, pay_end, _ = get_pay_period_dates()
+    pay_period_entries = TimeEntry.query.filter(
+        TimeEntry.user_id == current_user.id,
+        TimeEntry.date >= pay_start,
+        TimeEntry.date <= pay_end
+    ).all()
+    pay_period_hours = sum(float(e.duration_hours or 0) for e in pay_period_entries)
 
     return render_template('home.html',
                          active_clock=active_clock,
@@ -176,7 +325,23 @@ def home():
                          recent_activities=recent_activities,
                          all_users=all_users,
                          selected_user=selected_user,
-                         weekly_hours=weekly_hours)
+                         weekly_hours=weekly_hours,
+                         # This Week scoreboard
+                         new_leads_this_week=new_leads_this_week,
+                         lead_source_breakdown=lead_source_breakdown,
+                         last_week_leads_count=last_week_leads_count,
+                         pipeline_moves=pipeline_moves,
+                         pipeline_move_summary=pipeline_move_summary,
+                         completed_count=completed_count,
+                         completed_revenue=completed_revenue,
+                         last_week_completed_count=last_week_completed_count,
+                         overdue_steps=overdue_steps,
+                         clients_no_next_step=clients_no_next_step,
+                         stale_clients=stale_clients,
+                         week_hours_total=week_hours_total,
+                         last_week_hours_total=last_week_hours_total,
+                         pay_period_hours=pay_period_hours,
+                         missing_source_count=Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count() if current_user.is_supervisor else 0)
 
 
 @app.route('/clock/start', methods=['POST'])
@@ -475,9 +640,9 @@ def my_logs():
 def clients():
     search = request.args.get('search', '')
     show_all = request.args.get('show_all', 'false') == 'true'
-    
-    query = Client.query
-    
+
+    query = Client.query.options(joinedload(Client.lead_source))
+
     if not show_all:
         query = query.filter_by(is_active=True)
     
@@ -501,7 +666,8 @@ def clients():
 @require_login
 def create_client():
     if request.method == 'GET':
-        return render_template('client_form.html', client=None)
+        lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
+        return render_template('client_form.html', client=None, lead_sources=lead_sources)
     
     name = request.form.get('name', '').strip()
     address = request.form.get('address', '').strip()
@@ -530,16 +696,22 @@ def create_client():
     estimated_start_date = request.form.get('estimated_start_date', '').strip()
     estimated_end_date = request.form.get('estimated_end_date', '').strip()
     permitting_status = request.form.get('permitting_status', '').strip()
-    
+    lead_source_id = request.form.get('lead_source_id', '').strip()
+    source_detail = request.form.get('source_detail', '').strip()
+
     if not name or not address:
         flash('Name and address are required.', 'error')
         return redirect(url_for('create_client'))
-    
+
+    if not lead_source_id:
+        flash('Lead source is required.', 'error')
+        return redirect(url_for('create_client'))
+
     from datetime import datetime
-    
+
     client = Client(
-        name=name, 
-        address=address, 
+        name=name,
+        address=address,
         contact_name=contact_name if contact_name else None,
         phone=phone if phone else None,
         email=email if email else None,
@@ -564,6 +736,8 @@ def create_client():
         estimated_start_date=datetime.strptime(estimated_start_date, '%Y-%m-%d').date() if estimated_start_date else None,
         estimated_end_date=datetime.strptime(estimated_end_date, '%Y-%m-%d').date() if estimated_end_date else None,
         permitting_status=permitting_status if permitting_status else None,
+        lead_source_id=int(lead_source_id),
+        source_detail=source_detail if source_detail else None,
         created_by_user_id=current_user.id,
         assigned_to_user_id=current_user.id
     )
@@ -587,7 +761,8 @@ def edit_client(client_id):
         activities = ClientActivity.query.filter_by(client_id=client_id).order_by(ClientActivity.activity_date.desc()).all()
         all_users = User.query.filter_by(role='rep').all()
         all_users = sorted(all_users, key=lambda u: u.display_name.lower())
-        return render_template('client_form.html', client=client, activities=activities, all_users=all_users)
+        lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
+        return render_template('client_form.html', client=client, activities=activities, all_users=all_users, lead_sources=lead_sources)
     
     name = request.form.get('name', '').strip()
     address = request.form.get('address', '').strip()
@@ -652,12 +827,17 @@ def edit_client(client_id):
     client.estimated_end_date = datetime.strptime(estimated_end_date, '%Y-%m-%d').date() if estimated_end_date else None
     
     client.permitting_status = permitting_status if permitting_status else None
-    
+
+    lead_source_id = request.form.get('lead_source_id', '').strip()
+    source_detail = request.form.get('source_detail', '').strip()
+    client.lead_source_id = int(lead_source_id) if lead_source_id else None
+    client.source_detail = source_detail if source_detail else None
+
     if current_user.is_supervisor:
         assigned_to = request.form.get('assigned_to_user_id', '').strip()
         if assigned_to:
             client.assigned_to_user_id = assigned_to
-    
+
     db.session.commit()
     
     flash(f'Client "{name}" updated successfully.', 'success')
@@ -683,15 +863,51 @@ def update_client_status(client_id):
     
     client = Client.query.get_or_404(client_id)
     new_status = request.form.get('status', '').strip()
-    
+
     valid_statuses = ['Lead', 'Prospect', 'Active', 'Completed', 'On Hold', 'Lost']
     if new_status not in valid_statuses:
         return jsonify({'success': False, 'error': 'Invalid status'}), 400
-    
+
+    old_status = client.status
     client.status = new_status
+    # Also save final_contract_value if provided (when completing)
+    final_val = request.form.get('final_contract_value', '').strip().replace(',', '').replace('$', '')
+    if final_val:
+        try:
+            client.final_contract_value = Decimal(final_val)
+        except (InvalidOperation, ValueError):
+            pass
+
+    # Log status change as activity for pipeline tracking
+    if old_status != new_status:
+        activity = ClientActivity(
+            client_id=client.id,
+            user_id=current_user.id,
+            activity_type='Status Change',
+            note_text=f'{old_status} → {new_status}',
+            activity_date=datetime.utcnow()
+        )
+        db.session.add(activity)
+
     db.session.commit()
-    
-    return jsonify({'success': True, 'status': new_status})
+
+    needs_final_value = (new_status == 'Completed' and client.final_contract_value is None)
+    return jsonify({'success': True, 'status': new_status, 'needs_final_value': needs_final_value})
+
+
+@app.route('/clients/<int:client_id>/update_final_value', methods=['POST'])
+@require_login
+def update_client_final_value(client_id):
+    client = Client.query.get_or_404(client_id)
+    val_str = request.form.get('final_contract_value', '').strip().replace(',', '').replace('$', '')
+    if not val_str:
+        return jsonify({'success': False, 'error': 'Value is required'}), 400
+    try:
+        client.final_contract_value = Decimal(val_str)
+    except (InvalidOperation, ValueError):
+        return jsonify({'success': False, 'error': 'Invalid number'}), 400
+    db.session.commit()
+    return jsonify({'success': True, 'final_contract_value': float(client.final_contract_value)})
 
 
 @app.route('/clients/<int:client_id>/update_opportunity', methods=['POST'])
@@ -2109,3 +2325,212 @@ def format_datetime_input_filter(value):
 
 
 from utils import PACIFIC_TZ
+
+
+# --- Lead Source Management (Supervisors Only) ---
+
+@app.route('/settings/lead-sources')
+@require_supervisor
+def lead_sources_settings():
+    sources = LeadSource.query.order_by(LeadSource.is_active.desc(), LeadSource.name).all()
+    return render_template('lead_sources_settings.html', sources=sources, channel_types=LeadSource.CHANNEL_TYPES)
+
+
+@app.route('/settings/lead-sources/add', methods=['POST'])
+@require_supervisor
+def add_lead_source():
+    name = request.form.get('name', '').strip()
+    channel_type = request.form.get('channel_type', '').strip()
+    if not name or channel_type not in LeadSource.CHANNEL_TYPES:
+        flash('Name and valid channel type are required.', 'error')
+        return redirect(url_for('lead_sources_settings'))
+    source = LeadSource(name=name, channel_type=channel_type)
+    db.session.add(source)
+    db.session.commit()
+    flash(f'Lead source "{name}" added.', 'success')
+    return redirect(url_for('lead_sources_settings'))
+
+
+@app.route('/settings/lead-sources/<int:source_id>/update', methods=['POST'])
+@require_supervisor
+def update_lead_source(source_id):
+    source = LeadSource.query.get_or_404(source_id)
+    name = request.form.get('name', '').strip()
+    channel_type = request.form.get('channel_type', '').strip()
+    is_active = request.form.get('is_active') == '1'
+    if name:
+        source.name = name
+    if channel_type in LeadSource.CHANNEL_TYPES:
+        source.channel_type = channel_type
+    source.is_active = is_active
+    db.session.commit()
+    flash(f'Lead source "{source.name}" updated.', 'success')
+    return redirect(url_for('lead_sources_settings'))
+
+
+@app.route('/settings/lead-sources/seed', methods=['POST'])
+@require_supervisor
+def seed_lead_sources():
+    """Seed the default lead sources if none exist."""
+    if LeadSource.query.count() > 0:
+        flash('Lead sources already exist.', 'error')
+        return redirect(url_for('lead_sources_settings'))
+    defaults = [
+        ('Google Ads', 'paid_ads'),
+        ('Meta Ads', 'paid_ads'),
+        ('Instagram Organic', 'organic_social'),
+        ('Facebook Organic', 'organic_social'),
+        ('Website / SEO', 'website'),
+        ('Phone Call', 'phone'),
+        ('Referral — Client', 'referral'),
+        ('Referral — Partner', 'referral'),
+        ('Repeat Client', 'other'),
+        ('Other', 'other'),
+    ]
+    for name, channel in defaults:
+        db.session.add(LeadSource(name=name, channel_type=channel))
+    db.session.commit()
+    flash('Default lead sources seeded.', 'success')
+    return redirect(url_for('lead_sources_settings'))
+
+
+# --- Lead Source Backfill (Supervisors Only) ---
+
+@app.route('/settings/lead-sources/backfill')
+@require_supervisor
+def lead_source_backfill():
+    clients_missing = Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).order_by(Client.name).all()
+    lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
+    return render_template('lead_source_backfill.html', clients=clients_missing, lead_sources=lead_sources)
+
+
+@app.route('/settings/lead-sources/backfill/save', methods=['POST'])
+@require_supervisor
+def lead_source_backfill_save():
+    data = request.form
+    updated = 0
+    for key, value in data.items():
+        if key.startswith('source_') and value:
+            client_id = int(key.replace('source_', ''))
+            client = Client.query.get(client_id)
+            if client:
+                client.lead_source_id = int(value)
+                detail = data.get(f'detail_{client_id}', '').strip()
+                client.source_detail = detail if detail else None
+                updated += 1
+    db.session.commit()
+    flash(f'{updated} client(s) updated with lead source.', 'success')
+    return redirect(url_for('lead_source_backfill'))
+
+
+@app.route('/api/missing-lead-source-count')
+@require_login
+def missing_lead_source_count():
+    count = Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count()
+    return jsonify({'count': count})
+
+
+# --- Channel Spend (Supervisors Only) ---
+
+@app.route('/reports/channel-spend')
+@require_supervisor
+def channel_spend():
+    month_str = request.args.get('month')
+    if month_str:
+        try:
+            selected_month = datetime.strptime(month_str, '%Y-%m').date().replace(day=1)
+        except ValueError:
+            selected_month = date.today().replace(day=1)
+    else:
+        selected_month = date.today().replace(day=1)
+
+    entries = ChannelSpend.query.filter_by(period_month=selected_month)\
+        .options(joinedload(ChannelSpend.lead_source))\
+        .order_by(ChannelSpend.created_at.desc()).all()
+
+    source_totals = defaultdict(Decimal)
+    for e in entries:
+        source_totals[e.lead_source.name] += e.amount
+    grand_total = sum(source_totals.values())
+
+    lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
+
+    return render_template('channel_spend.html',
+                           entries=entries,
+                           source_totals=dict(sorted(source_totals.items())),
+                           grand_total=grand_total,
+                           lead_sources=lead_sources,
+                           selected_month=selected_month)
+
+
+@app.route('/reports/channel-spend/add', methods=['POST'])
+@require_supervisor
+def add_channel_spend():
+    lead_source_id = request.form.get('lead_source_id', '').strip()
+    amount_str = request.form.get('amount', '').strip().replace(',', '').replace('$', '')
+    month_str = request.form.get('period_month', '').strip()
+    note = request.form.get('note', '').strip()
+
+    if not lead_source_id or not amount_str or not month_str:
+        flash('Source and amount are required.', 'error')
+        return redirect(url_for('channel_spend', month=month_str))
+
+    try:
+        amount = Decimal(amount_str)
+        if amount <= 0:
+            raise ValueError
+    except (InvalidOperation, ValueError):
+        flash('Enter a valid positive amount.', 'error')
+        return redirect(url_for('channel_spend', month=month_str))
+
+    try:
+        period_month = datetime.strptime(month_str, '%Y-%m').date().replace(day=1)
+    except ValueError:
+        flash('Invalid month.', 'error')
+        return redirect(url_for('channel_spend'))
+
+    entry = ChannelSpend(
+        lead_source_id=int(lead_source_id),
+        amount=amount,
+        period_month=period_month,
+        note=note if note else None,
+        created_by=current_user.id
+    )
+    db.session.add(entry)
+    db.session.commit()
+    flash('Spend entry added.', 'success')
+    return redirect(url_for('channel_spend', month=month_str))
+
+
+@app.route('/reports/channel-spend/<int:spend_id>/edit', methods=['POST'])
+@require_supervisor
+def edit_channel_spend(spend_id):
+    entry = ChannelSpend.query.get_or_404(spend_id)
+    lead_source_id = request.form.get('lead_source_id', '').strip()
+    amount_str = request.form.get('amount', '').strip().replace(',', '').replace('$', '')
+    note = request.form.get('note', '').strip()
+    month_str = request.form.get('period_month', '').strip()
+
+    if lead_source_id:
+        entry.lead_source_id = int(lead_source_id)
+    if amount_str:
+        try:
+            entry.amount = Decimal(amount_str)
+        except (InvalidOperation, ValueError):
+            flash('Invalid amount.', 'error')
+            return redirect(url_for('channel_spend', month=month_str))
+    entry.note = note if note else None
+    db.session.commit()
+    flash('Spend entry updated.', 'success')
+    return redirect(url_for('channel_spend', month=month_str))
+
+
+@app.route('/reports/channel-spend/<int:spend_id>/delete', methods=['POST'])
+@require_supervisor
+def delete_channel_spend(spend_id):
+    entry = ChannelSpend.query.get_or_404(spend_id)
+    month_str = entry.period_month.strftime('%Y-%m')
+    db.session.delete(entry)
+    db.session.commit()
+    flash('Spend entry deleted.', 'success')
+    return redirect(url_for('channel_spend', month=month_str))

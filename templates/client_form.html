@@ -1,0 +1,1421 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="w-full mx-auto">
+    {% if client %}
+    <div class="mb-6 flex justify-between items-center">
+        <h1 class="text-3xl font-bold text-gray-900">Client Details</h1>
+        <a href="{{ url_for('clients') }}" class="text-blue-600 hover:text-blue-800 font-medium">
+            ← Back to Clients
+        </a>
+    </div>
+    
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div class="lg:col-span-3 space-y-6">
+            <div id="viewMode" class="bg-white rounded-lg shadow">
+                <div class="px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+                    <h2 class="text-lg font-semibold text-gray-900">Client Information</h2>
+                    <button onclick="toggleEditMode(true)" class="text-blue-600 hover:text-blue-800 font-medium text-sm">
+                        Edit
+                    </button>
+                </div>
+                <div class="p-6 space-y-4">
+                    <div>
+                        <p class="text-xs font-medium text-gray-500 uppercase">Client/Property Name</p>
+                        <p class="mt-1 text-base font-semibold text-gray-900">{{ client.name }}</p>
+                    </div>
+                    
+                    <div>
+                        <p class="text-xs font-medium text-gray-500 uppercase">Property Address</p>
+                        <p class="mt-1 text-base text-gray-900">{{ client.address }}</p>
+                        <a href="https://www.google.com/maps/search/?api=1&query={{ client.address|urlencode }}" target="_blank" rel="noopener noreferrer" class="mt-2 inline-flex items-center text-sm text-blue-600 hover:text-blue-800">
+                            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                            View on Google Maps
+                        </a>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Contact Person</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.contact_name or 'Not set' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Phone</p>
+                            {% if client.phone %}
+                            <a href="tel:{{ client.phone }}" onclick="return confirmCall(event, '{{ client.phone }}')" class="mt-1 text-sm text-blue-600 hover:text-blue-800 block">{{ client.phone }}</a>
+                            {% else %}
+                            <p class="mt-1 text-sm text-gray-900">Not set</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <p class="text-xs font-medium text-gray-500 uppercase">Email</p>
+                        {% if client.email %}
+                        <a href="mailto:{{ client.email }}" class="mt-1 text-sm text-blue-600 hover:text-blue-800 block">{{ client.email }}</a>
+                        {% else %}
+                        <p class="mt-1 text-sm text-gray-900">Not set</p>
+                        {% endif %}
+                    </div>
+                    
+                    {% if client.notes %}
+                    <div class="pt-4 border-t border-gray-200">
+                        <p class="text-xs font-medium text-gray-500 uppercase">Notes</p>
+                        <p class="mt-1 text-sm text-gray-700">{{ client.notes }}</p>
+                    </div>
+                    {% endif %}
+                    
+                    <div class="pt-4 border-t border-gray-200">
+                        <p class="text-xs font-medium text-gray-500 uppercase">Lead Source</p>
+                        {% if client.lead_source %}
+                        <span class="mt-1 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            {{ client.lead_source.name }}
+                        </span>
+                        {% if client.source_detail %}
+                        <p class="mt-1 text-xs text-gray-600">{{ client.source_detail }}</p>
+                        {% endif %}
+                        {% else %}
+                        <p class="mt-1 text-sm text-gray-400 italic">Not set</p>
+                        {% endif %}
+                    </div>
+
+                    <div class="pt-4 border-t border-gray-200 text-xs text-gray-500">
+                        <p><span class="font-medium">Assigned to:</span> {{ client.assigned_to.display_name if client.assigned_to else 'Unassigned' }}</p>
+                        <p class="mt-1"><span class="font-medium">Created by:</span> {{ client.created_by.display_name if client.created_by else 'Unknown' }}</p>
+                        {% if client.created_at %}
+                        <p class="mt-1"><span class="font-medium">Created on:</span> {{ client.created_at|format_datetime }}</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-lg shadow">
+                <button type="button" onclick="togglePropertyDetails()" class="w-full px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center hover:bg-gray-100 transition-colors">
+                    <h2 class="text-lg font-semibold text-gray-900">Property Details</h2>
+                    <svg id="propertyDetailsChevron" class="w-5 h-5 text-gray-600 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                    </svg>
+                </button>
+                <div id="propertyDetailsContent" class="p-6 space-y-4">
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Lot Sqft</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.lot_sqft or 'Not set' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Sqft</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.sqft or 'Not set' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Existing Sqft</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.existing_sqft or 'Not set' }}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Residential Zoning</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.residential_zoning or 'Not set' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Type Of ADU</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.type_of_adu or 'Not set' }}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-3 gap-4 pt-4 border-t border-gray-200">
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Desired ADU Sqft</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.desired_adu_sqft or 'Not set' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Number Of Bed</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.number_of_bed or 'Not set' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Number Of Bath</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.number_of_bath or 'Not set' }}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="pt-4 border-t border-gray-200">
+                        <p class="text-xs font-medium text-gray-500 uppercase">Style</p>
+                        <p class="mt-1 text-sm text-gray-900">{{ client.style or 'Not set' }}</p>
+                    </div>
+                    
+                    {% if client.key_features %}
+                    <div class="pt-4 border-t border-gray-200">
+                        <p class="text-xs font-medium text-gray-500 uppercase">Key Features</p>
+                        <p class="mt-1 text-sm text-gray-700">{{ client.key_features }}</p>
+                    </div>
+                    {% endif %}
+                    
+                    <div class="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Max Budget</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ '$' + '{:,.2f}'.format(client.max_budget) if client.max_budget else 'Not set' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Financing Option</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.financing_option or 'Not set' }}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Original Property Value</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ '$' + '{:,.2f}'.format(client.original_property_value) if client.original_property_value else 'Not set' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Expected ROI</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ '$' + '{:,.2f}'.format(client.expected_roi) if client.expected_roi else 'Not set' }}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Value Increase</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ '$' + '{:,.2f}'.format(client.value_increase) if client.value_increase else 'Not set' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">New Property Value</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ '$' + '{:,.2f}'.format(client.new_property_value) if client.new_property_value else 'Not set' }}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Estimated Project Start Date</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.estimated_start_date|format_date if client.estimated_start_date else 'Not set' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">Estimated Project End Date</p>
+                            <p class="mt-1 text-sm text-gray-900">{{ client.estimated_end_date|format_date if client.estimated_end_date else 'Not set' }}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="pt-4 border-t border-gray-200">
+                        <p class="text-xs font-medium text-gray-500 uppercase">Permitting/Approval Status</p>
+                        <p class="mt-1 text-sm text-gray-900">
+                            {% if client.permitting_status == 'Pending' %}
+                            <span class="inline-block px-3 py-1 text-sm font-semibold rounded-full bg-stone-100 text-stone-700">Pending</span>
+                            {% elif client.permitting_status == 'Approved' %}
+                            <span class="inline-block px-3 py-1 text-sm font-semibold rounded-full bg-teal-100 text-teal-800">Approved</span>
+                            {% elif client.permitting_status == 'Denied' %}
+                            <span class="inline-block px-3 py-1 text-sm font-semibold rounded-full bg-red-100 text-red-800">Denied</span>
+                            {% else %}
+                            Not set
+                            {% endif %}
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            
+            <div id="editMode" class="bg-white rounded-lg shadow hidden">
+                <div class="px-6 py-4 bg-gray-50 border-b border-gray-200">
+                    <h2 class="text-lg font-semibold text-gray-900">Edit Client Information</h2>
+                </div>
+                <div class="p-6">
+                    <form method="POST" id="editClientForm">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Client/Property Name *</label>
+                            <input type="text" name="name" value="{{ client.name }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" required>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Property Address *</label>
+                            <input type="text" name="address" value="{{ client.address }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" required>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Contact Person</label>
+                            <input type="text" name="contact_name" value="{{ client.contact_name or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target">
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Phone Number</label>
+                            <input type="tel" name="phone" value="{{ client.phone or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" pattern="^[\d\s\-\(\)]+$" placeholder="(555) 123-4567" title="Please enter a valid phone number">
+                            <p class="text-xs text-gray-500 mt-1">Format: (555) 123-4567 or 555-123-4567</p>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Email Address</label>
+                            <input type="email" name="email" value="{{ client.email or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="john@example.com" title="Please enter a valid email address">
+                            <p class="text-xs text-gray-500 mt-1">Format: yourname@example.com</p>
+                        </div>
+                        
+                        {% if current_user.is_supervisor %}
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Assigned Rep *</label>
+                            <select name="assigned_to_user_id" class="w-full p-3 border border-gray-300 rounded-lg touch-target" required>
+                                {% for user in all_users %}
+                                <option value="{{ user.id }}" {% if client.assigned_to_user_id == user.id %}selected{% endif %}>
+                                    {{ user.display_name }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">Change who this client is assigned to</p>
+                        </div>
+                        {% endif %}
+                        
+                        <input type="hidden" id="editFormStatus" name="status" value="{{ client.status }}">
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Lead Source</label>
+                                <select name="lead_source_id" class="w-full p-3 border border-gray-300 rounded-lg touch-target">
+                                    <option value="">-- Select source --</option>
+                                    {% for source in lead_sources %}
+                                    <option value="{{ source.id }}" {% if client.lead_source_id == source.id %}selected{% endif %}>{{ source.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Source Detail</label>
+                                <input type="text" name="source_detail" value="{{ client.source_detail or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="e.g., referred by the Hendersons">
+                            </div>
+                        </div>
+
+                        <div class="mb-6 pt-6 border-t-2 border-gray-300">
+                            <h3 class="text-base font-semibold text-gray-900 mb-4">Property Details</h3>
+                            
+                            <div class="grid grid-cols-3 gap-4 mb-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Lot_Sqft</label>
+                                    <input type="text" name="lot_sqft" value="{{ client.lot_sqft or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="Lot_Sqft">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Sqft</label>
+                                    <input type="text" name="sqft" value="{{ client.sqft or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="Sqft">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Existing Sqft</label>
+                                    <input type="text" name="existing_sqft" value="{{ client.existing_sqft or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="Existing Sqft">
+                                </div>
+                            </div>
+                            
+                            <div class="grid grid-cols-2 gap-4 mb-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Residential Zoning</label>
+                                    <select name="residential_zoning" class="w-full p-3 border border-gray-300 rounded-lg touch-target">
+                                        <option value="">Residential Zoning</option>
+                                        <option value="Single-Family R-1" {% if client.residential_zoning == 'Single-Family R-1' %}selected{% endif %}>Single-Family R-1</option>
+                                        <option value="Single-Family R-1A" {% if client.residential_zoning == 'Single-Family R-1A' %}selected{% endif %}>Single-Family R-1A</option>
+                                        <option value="Single-Family R-1B" {% if client.residential_zoning == 'Single-Family R-1B' %}selected{% endif %}>Single-Family R-1B</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Type Of ADU</label>
+                                    <select name="type_of_adu" class="w-full p-3 border border-gray-300 rounded-lg touch-target">
+                                        <option value=""></option>
+                                        <option value="Detached" {% if client.type_of_adu == 'Detached' %}selected{% endif %}>Detached</option>
+                                        <option value="Garage Conversion" {% if client.type_of_adu == 'Garage Conversion' %}selected{% endif %}>Garage Conversion</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div class="grid grid-cols-3 gap-4 mb-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Desired ADU Sqft</label>
+                                    <input type="text" name="desired_adu_sqft" value="{{ client.desired_adu_sqft or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="Desired ADU Sqft">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Number Of Bed</label>
+                                    <input type="text" name="number_of_bed" value="{{ client.number_of_bed or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="Number of Bed">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Number Of Bath</label>
+                                    <input type="text" name="number_of_bath" value="{{ client.number_of_bath or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="Number of Bath">
+                                </div>
+                            </div>
+                            
+                            <div class="mb-4">
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Style</label>
+                                <input type="text" name="style" value="{{ client.style or '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="Style">
+                            </div>
+                            
+                            <div class="mb-4">
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Key Features</label>
+                                <textarea name="key_features" rows="3" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="Key Features">{{ client.key_features or '' }}</textarea>
+                            </div>
+                            
+                            <div class="grid grid-cols-2 gap-4 mb-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Max Budget</label>
+                                    <div class="relative">
+                                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                            <span class="text-gray-500">$</span>
+                                        </div>
+                                        <input type="text" name="max_budget" value="{{ '{:,.2f}'.format(client.max_budget) if client.max_budget else '' }}" class="w-full pl-7 p-3 border border-gray-300 rounded-lg touch-target" placeholder="Max Budget">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Financing Option</label>
+                                    <select name="financing_option" class="w-full p-3 border border-gray-300 rounded-lg touch-target">
+                                        <option value=""></option>
+                                        <option value="Cash" {% if client.financing_option == 'Cash' %}selected{% endif %}>Cash</option>
+                                        <option value="Loan" {% if client.financing_option == 'Loan' %}selected{% endif %}>Loan</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div class="grid grid-cols-2 gap-4 mb-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Original Property Value</label>
+                                    <div class="relative">
+                                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                            <span class="text-gray-500">$</span>
+                                        </div>
+                                        <input type="text" name="original_property_value" value="{{ '{:,.2f}'.format(client.original_property_value) if client.original_property_value else '' }}" class="w-full pl-7 p-3 border border-gray-300 rounded-lg touch-target" placeholder="Original Property Value">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Expected ROI</label>
+                                    <div class="relative">
+                                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                            <span class="text-gray-500">$</span>
+                                        </div>
+                                        <input type="text" name="expected_roi" value="{{ '{:,.2f}'.format(client.expected_roi) if client.expected_roi else '' }}" class="w-full pl-7 p-3 border border-gray-300 rounded-lg touch-target" placeholder="Expected ROI">
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="grid grid-cols-2 gap-4 mb-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Value Increase</label>
+                                    <div class="relative">
+                                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                            <span class="text-gray-500">$</span>
+                                        </div>
+                                        <input type="text" name="value_increase" value="{{ '{:,.2f}'.format(client.value_increase) if client.value_increase else '' }}" class="w-full pl-7 p-3 border border-gray-300 rounded-lg touch-target" placeholder="Value Increase">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">New Property Value</label>
+                                    <div class="relative">
+                                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                            <span class="text-gray-500">$</span>
+                                        </div>
+                                        <input type="text" name="new_property_value" value="{{ '{:,.2f}'.format(client.new_property_value) if client.new_property_value else '' }}" class="w-full pl-7 p-3 border border-gray-300 rounded-lg touch-target" placeholder="New Property Value">
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="grid grid-cols-2 gap-4 mb-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Estimated Project Start Date</label>
+                                    <input type="date" name="estimated_start_date" value="{{ client.estimated_start_date if client.estimated_start_date else '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Estimated Project End Date</label>
+                                    <input type="date" name="estimated_end_date" value="{{ client.estimated_end_date if client.estimated_end_date else '' }}" class="w-full p-3 border border-gray-300 rounded-lg touch-target">
+                                </div>
+                            </div>
+                            
+                            <div class="mb-4">
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Permitting/Approval Status</label>
+                                <div class="space-y-2">
+                                    <label class="flex items-center">
+                                        <input type="radio" name="permitting_status" value="Pending" {% if client.permitting_status == 'Pending' %}checked{% endif %} class="mr-2">
+                                        <span class="text-sm text-gray-700">Pending</span>
+                                    </label>
+                                    <label class="flex items-center">
+                                        <input type="radio" name="permitting_status" value="Approved" {% if client.permitting_status == 'Approved' %}checked{% endif %} class="mr-2">
+                                        <span class="text-sm text-gray-700">Approved</span>
+                                    </label>
+                                    <label class="flex items-center">
+                                        <input type="radio" name="permitting_status" value="Denied" {% if client.permitting_status == 'Denied' %}checked{% endif %} class="mr-2">
+                                        <span class="text-sm text-gray-700">Denied</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Notes</label>
+                            <textarea name="notes" rows="4" class="w-full p-3 border border-gray-300 rounded-lg touch-target">{{ client.notes or '' }}</textarea>
+                            <p class="text-xs text-gray-500 mt-1">Notes are visible to all team members</p>
+                        </div>
+                        
+                        <div class="flex gap-3">
+                            <button type="submit" class="flex-1 bg-slate-700 hover:bg-slate-800 text-white font-semibold py-3 px-4 rounded-lg">
+                                Save Changes
+                            </button>
+                            <button type="button" onclick="toggleEditMode(false)" class="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold py-3 px-4 rounded-lg">
+                                Cancel
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <div class="lg:col-span-6 space-y-6">
+            <div class="bg-white rounded-lg shadow">
+                <div class="px-4 py-3 bg-gray-50 border-b border-gray-200">
+                    <h2 class="text-base font-semibold text-gray-900">Client Status</h2>
+                </div>
+                <div class="p-4">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Status</label>
+                            <form id="statusForm" class="relative">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                                <select id="clientStatus" name="status" class="w-full p-2.5 text-sm border-2 rounded-lg touch-target font-medium
+                                    {% if client.status == 'Lead' %}text-teal-800 border-teal-400
+                                    {% elif client.status == 'Prospect' %}text-slate-800 border-slate-400
+                                    {% elif client.status == 'Active' %}text-red-900 border-red-700
+                                    {% elif client.status == 'Completed' %}text-gray-700 border-gray-400
+                                    {% elif client.status == 'On Hold' %}text-stone-700 border-stone-400
+                                    {% elif client.status == 'Lost' %}text-gray-800 border-gray-300
+                                    {% endif %}">
+                                    <option value="Lead" {% if client.status == 'Lead' %}selected{% endif %}>🟡 Lead</option>
+                                    <option value="Prospect" {% if client.status == 'Prospect' %}selected{% endif %}>🔵 Prospect</option>
+                                    <option value="Active" {% if client.status == 'Active' %}selected{% endif %}>🟢 Active</option>
+                                    <option value="Completed" {% if client.status == 'Completed' %}selected{% endif %}>🟣 Completed</option>
+                                    <option value="On Hold" {% if client.status == 'On Hold' %}selected{% endif %}>🟠 On Hold</option>
+                                    <option value="Lost" {% if client.status == 'Lost' %}selected{% endif %}>⚫ Lost</option>
+                                </select>
+                                <div id="statusSaveIndicator" class="hidden absolute top-1/2 right-3 transform -translate-y-1/2">
+                                    <svg class="animate-spin h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                </div>
+                            </form>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Estimated Value</label>
+                            <div class="relative">
+                                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <span class="text-gray-500 text-sm">$</span>
+                                </div>
+                                <input
+                                    type="text"
+                                    id="opportunityValue"
+                                    name="opportunity_value"
+                                    value="{{ '{:,.2f}'.format(client.opportunity_value or 0) }}"
+                                    placeholder="0.00"
+                                    class="w-full pl-7 pr-12 p-2.5 text-sm border border-gray-300 rounded-lg touch-target focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
+                                    {% if client.status != 'Active' %}disabled{% endif %}
+                                    onblur="saveOpportunityValue()"
+                                    onkeypress="if(event.key === 'Enter') { event.preventDefault(); this.blur(); }">
+                                <div id="opportunitySaveIndicator" class="hidden absolute top-1/2 right-3 transform -translate-y-1/2">
+                                    <svg class="animate-spin h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                </div>
+                            </div>
+                            {% if client.status != 'Active' %}
+                            <p class="text-xs text-gray-500 mt-1">Set status to "Active" to enter value</p>
+                            {% else %}
+                            <p class="text-xs text-gray-500 mt-1">Pipeline estimate — saves automatically</p>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {% if client.final_contract_value is not none or client.status == 'Completed' %}
+                    <div class="mt-4 pt-4 border-t border-gray-200">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Final Contract Value</label>
+                        <div class="relative">
+                            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                <span class="text-gray-500 text-sm">$</span>
+                            </div>
+                            <input
+                                type="text"
+                                id="finalContractValue"
+                                value="{{ '{:,.2f}'.format(client.final_contract_value) if client.final_contract_value is not none else '' }}"
+                                placeholder="0.00"
+                                class="w-full pl-7 pr-12 p-2.5 text-sm border border-gray-300 rounded-lg touch-target focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                onblur="saveFinalContractValue()"
+                                onkeypress="if(event.key === 'Enter') { event.preventDefault(); this.blur(); }">
+                            <div id="finalValueSaveIndicator" class="hidden absolute top-1/2 right-3 transform -translate-y-1/2">
+                                <svg class="animate-spin h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                            </div>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1">Actual closed amount — saves automatically</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-lg shadow">
+                <div class="px-6 py-4 bg-gray-50 border-b border-gray-200">
+                    <h2 class="text-lg font-semibold text-gray-900">Activity Log</h2>
+                    <p class="text-sm text-gray-600 mt-1">Track all interactions, meetings, and next steps</p>
+                </div>
+                <div class="p-6">
+                    <form method="POST" action="{{ url_for('add_activity', client_id=client.id) }}" enctype="multipart/form-data">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                        
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Activity Type *</label>
+                                <select name="activity_type" class="w-full p-3 border border-gray-300 rounded-lg touch-target" required>
+                                    <option value="">Select activity type...</option>
+                                    <option value="Spoke to">Spoke to</option>
+                                    <option value="Email sent">Email sent</option>
+                                    <option value="Meeting">Meeting</option>
+                                    <option value="Site visit">Site visit</option>
+                                    <option value="Next step">Next step</option>
+                                    <option value="Task completed">Task completed</option>
+                                    <option value="Follow-up">Follow-up</option>
+                                    <option value="Proposal sent">Proposal sent</option>
+                                    <option value="Contract signed">Contract signed</option>
+                                    <option value="Other">Other</option>
+                                </select>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Date & Time *</label>
+                                <input type="datetime-local" name="activity_date" class="w-full p-3 border border-gray-300 rounded-lg touch-target" required value="{{ 'now'|format_datetime_input }}">
+                            </div>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Note *</label>
+                            <textarea name="note_text" rows="3" class="w-full p-3 border border-gray-300 rounded-lg touch-target" required placeholder="Describe the activity, outcome, or next steps..."></textarea>
+                        </div>
+                        
+                        <div class="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <h4 class="text-sm font-semibold text-gray-700 mb-3">Next Steps (optional)</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">What needs to be done?</label>
+                                    <input type="text" name="next_step_description" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="e.g., Submit proposal, Schedule site visit">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">When?</label>
+                                    <input type="datetime-local" name="next_step_date" class="w-full p-3 border border-gray-300 rounded-lg touch-target">
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-2">Add a reminder for follow-up tasks or scheduled next steps</p>
+                        </div>
+                        
+                        <button type="submit" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-semibold py-3 px-6 rounded-lg">
+                            Add Activity
+                        </button>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-lg shadow p-6">
+                <h2 class="text-lg font-semibold text-gray-900 mb-4">Recent Activities</h2>
+                {% if activities %}
+                    <div class="space-y-3">
+                        {% for activity in activities[:3] %}
+                        <div class="p-3 border-b border-gray-200 last:border-0">
+                            <div class="flex justify-between items-start mb-1">
+                                <p class="text-sm font-semibold text-gray-900">{{ activity.activity_type }}</p>
+                                <p class="text-xs text-gray-500">{{ activity.activity_date|format_datetime }}</p>
+                            </div>
+                            <p class="text-sm text-gray-700">{{ activity.note_text }}</p>
+                            {% if activity.file_name %}
+                            <div class="mt-2">
+                                <a href="{{ url_for('download_activity_file', client_id=client.id, activity_id=activity.id) }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center text-sm text-blue-600 hover:text-blue-800">
+                                    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                    </svg>
+                                    {{ activity.file_name }}
+                                </a>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% if activities|length > 3 %}
+                    <div id="moreRecentActivitiesMain" class="hidden space-y-3 mt-3">
+                        {% for activity in activities[3:] %}
+                        <div class="p-3 border-b border-gray-200 last:border-0">
+                            <div class="flex justify-between items-start mb-1">
+                                <p class="text-sm font-semibold text-gray-900">{{ activity.activity_type }}</p>
+                                <p class="text-xs text-gray-500">{{ activity.activity_date|format_datetime }}</p>
+                            </div>
+                            <p class="text-sm text-gray-700">{{ activity.note_text }}</p>
+                            {% if activity.file_name %}
+                            <div class="mt-2">
+                                <a href="{{ url_for('download_activity_file', client_id=client.id, activity_id=activity.id) }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center text-sm text-blue-600 hover:text-blue-800">
+                                    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                    </svg>
+                                    {{ activity.file_name }}
+                                </a>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <button onclick="toggleMoreRecentActivitiesMain()" id="seeMoreRecentMainBtn" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-2 px-4 rounded-lg text-sm flex items-center justify-center gap-2 mt-3">
+                        <span id="seeMoreRecentMainText">Load More ({{ activities|length - 3 }})</span>
+                        <svg id="seeMoreRecentMainIcon" class="w-4 h-4 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </button>
+                    {% endif %}
+                {% else %}
+                    <p class="text-sm text-gray-500 text-center py-6">No activities yet</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="lg:col-span-3 space-y-6">
+            <div class="bg-white rounded-lg shadow p-4">
+                <h3 class="text-base font-semibold text-gray-900 mb-2">Property Files</h3>
+                <p class="text-xs text-gray-600 mb-3">Upload and manage all client files</p>
+                
+                <div class="space-y-2">
+                    <div class="border-2 border-slate-400 rounded-lg p-3 bg-white">
+                        <div class="flex items-center gap-2 mb-2">
+                            <svg class="w-5 h-5 text-slate-700 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                            </svg>
+                            <div class="flex-1">
+                                <h4 class="text-sm font-semibold text-gray-900">Property Images</h4>
+                                <p class="text-xs text-gray-500">Photos & site visits</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="openUploadModal('property_images')" class="flex-1 bg-slate-700 hover:bg-slate-800 text-white text-xs font-medium py-1.5 px-3 rounded-md transition-colors flex items-center justify-center gap-1.5">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                </svg>
+                                Upload
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="border-2 border-teal-400 rounded-lg p-3 bg-white">
+                        <div class="flex items-center gap-2 mb-2">
+                            <svg class="w-5 h-5 text-teal-700 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                            <div class="flex-1">
+                                <h4 class="text-sm font-semibold text-gray-900">Documents</h4>
+                                <p class="text-xs text-gray-500">Reports & files</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="openUploadModal('documents')" class="flex-1 bg-teal-600 hover:bg-teal-700 text-white text-xs font-medium py-1.5 px-3 rounded-md transition-colors flex items-center justify-center gap-1.5">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                </svg>
+                                Upload
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="border-2 border-red-700 rounded-lg p-3 bg-white">
+                        <div class="flex items-center gap-2 mb-2">
+                            <svg class="w-5 h-5 text-red-800 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
+                            </svg>
+                            <div class="flex-1">
+                                <h4 class="text-sm font-semibold text-gray-900">Contracts</h4>
+                                <p class="text-xs text-gray-500">Agreements & terms</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="openUploadModal('contracts')" class="flex-1 bg-red-700 hover:bg-red-800 text-white text-xs font-medium py-1.5 px-3 rounded-md transition-colors flex items-center justify-center gap-1.5">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                </svg>
+                                Upload
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="uploadModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+                    <div class="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 id="modalTitle" class="text-lg font-semibold text-gray-900">Upload Files</h3>
+                            <button onclick="closeUploadModal()" class="text-gray-400 hover:text-gray-600">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                </svg>
+                            </button>
+                        </div>
+                        <form id="modalUploadForm" class="accordion-upload-form">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                            <div id="modalDropzone" class="border-2 border-dashed rounded-lg p-6 text-center hover:border-gray-400 transition-colors accordion-dropzone">
+                                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                </svg>
+                                <label class="cursor-pointer">
+                                    <span id="modalDropText" class="mt-2 block text-sm font-medium text-gray-600 hover:text-gray-700">
+                                        Click or drag files here
+                                    </span>
+                                    <input type="file" class="hidden accordion-file-input" multiple>
+                                </label>
+                                <p id="modalFileTypes" class="mt-1 text-xs text-gray-500">Allowed file types</p>
+                                <div class="accordion-selected-files mt-3 hidden">
+                                    <p class="text-sm font-medium text-gray-700 mb-2">Selected files:</p>
+                                    <ul class="accordion-file-list text-sm text-gray-600 space-y-1"></ul>
+                                </div>
+                            </div>
+                            <div class="accordion-upload-status hidden mt-3 p-2 rounded-lg text-sm"></div>
+                            <div class="flex gap-2 mt-4">
+                                <button type="button" onclick="closeUploadModal()" class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-lg transition-colors">
+                                    Cancel
+                                </button>
+                                <button type="submit" class="accordion-upload-button flex-1 bg-slate-700 text-white py-2 px-4 rounded-lg hover:bg-slate-800 transition-colors font-medium disabled:bg-gray-400 disabled:cursor-not-allowed">
+                                    Upload Files
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            {% set next_steps = [] %}
+            {% for activity in activities %}
+                {% if activity.next_step_description or activity.next_step_date %}
+                    {% set _ = next_steps.append(activity) %}
+                {% endif %}
+            {% endfor %}
+            <div class="bg-white rounded-lg shadow p-4">
+                <h3 class="text-base font-semibold text-gray-900 mb-2">Next Steps</h3>
+                {% if next_steps|length > 0 %}
+                    <div class="space-y-2">
+                        {% for activity in next_steps[:3] %}
+                        <div class="p-2 border-b border-gray-100 last:border-0">
+                            {% if activity.next_step_description %}
+                            <p class="text-xs font-semibold text-gray-900 mb-0.5">{{ activity.next_step_description }}</p>
+                            {% endif %}
+                            {% if activity.next_step_date %}
+                            <p class="text-xs text-gray-500">📅 {{ activity.next_step_date|format_datetime }}</p>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% if next_steps|length > 3 %}
+                    <div id="moreNextSteps" class="hidden space-y-2">
+                        {% for activity in next_steps[3:] %}
+                        <div class="p-2 border-b border-gray-100 last:border-0">
+                            {% if activity.next_step_description %}
+                            <p class="text-xs font-semibold text-gray-900 mb-0.5">{{ activity.next_step_description }}</p>
+                            {% endif %}
+                            {% if activity.next_step_date %}
+                            <p class="text-xs text-gray-500">📅 {{ activity.next_step_date|format_datetime }}</p>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <button onclick="toggleMoreNextSteps()" id="seeMoreNextStepsBtn" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 px-3 rounded-lg text-xs flex items-center justify-center gap-2 mt-2">
+                        <span id="seeMoreNextStepsText">See More ({{ next_steps|length - 3 }})</span>
+                        <svg id="seeMoreNextStepsIcon" class="w-4 h-4 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </button>
+                    {% endif %}
+                {% else %}
+                    <p class="text-sm text-gray-500 text-center py-4">No upcoming next steps</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    {% else %}
+    <h1 class="text-3xl font-bold text-gray-900 mb-6">Add Client</h1>
+    
+    <div class="max-w-2xl bg-white rounded-lg shadow p-6">
+        <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Client/Property Name *</label>
+                <input type="text" name="name" class="w-full p-3 border border-gray-300 rounded-lg touch-target" required placeholder="e.g., Smith Residence ADU">
+            </div>
+            
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Property Address *</label>
+                <input type="text" name="address" class="w-full p-3 border border-gray-300 rounded-lg touch-target" required placeholder="123 Main St, City, CA 12345">
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Contact Person</label>
+                    <input type="text" name="contact_name" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="John Smith">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Phone Number</label>
+                    <input type="tel" name="phone" class="w-full p-3 border border-gray-300 rounded-lg touch-target" pattern="^[\d\s\-\(\)]+$" placeholder="(555) 123-4567" title="Please enter a valid phone number">
+                    <p class="text-xs text-gray-500 mt-1">Format: (555) 123-4567 or 555-123-4567</p>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Email Address</label>
+                    <input type="email" name="email" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="john@example.com" title="Please enter a valid email address">
+                    <p class="text-xs text-gray-500 mt-1">Format: yourname@example.com</p>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Status *</label>
+                    <select name="status" class="w-full p-3 border border-gray-300 rounded-lg touch-target" required>
+                        <option value="Lead">Lead</option>
+                        <option value="Prospect">Prospect</option>
+                        <option value="Active">Active</option>
+                        <option value="Completed">Completed</option>
+                        <option value="On Hold">On Hold</option>
+                        <option value="Lost">Lost</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Lead Source *</label>
+                    <select name="lead_source_id" class="w-full p-3 border border-gray-300 rounded-lg touch-target" required>
+                        <option value="">-- Select source --</option>
+                        {% for source in lead_sources %}
+                        <option value="{{ source.id }}">{{ source.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Source Detail</label>
+                    <input type="text" name="source_detail" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="e.g., referred by the Hendersons">
+                </div>
+            </div>
+            
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Notes</label>
+                <textarea name="notes" rows="4" class="w-full p-3 border border-gray-300 rounded-lg touch-target" placeholder="Add any relevant notes about this client or project..."></textarea>
+                <p class="text-xs text-gray-500 mt-1">Notes are visible to all team members</p>
+            </div>
+            
+            <div class="flex gap-4">
+                <button type="submit" class="flex-1 bg-slate-700 hover:bg-slate-800 text-white font-semibold py-3 px-6 rounded-lg">
+                    Create Client
+                </button>
+                <a href="{{ url_for('clients') }}" class="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold py-3 px-6 rounded-lg text-center">
+                    Cancel
+                </a>
+            </div>
+        </form>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Final Contract Value Modal (shown when status changes to Completed) -->
+{% if client %}
+<div id="finalValueModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div class="bg-white rounded-xl shadow-xl max-w-sm w-full p-6">
+        <h3 class="text-lg font-bold text-gray-900 mb-1">Project Completed</h3>
+        <p class="text-sm text-gray-600 mb-4">Enter the final contract value (you can update this later).</p>
+        <div class="relative mb-4">
+            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <span class="text-gray-500 text-sm">$</span>
+            </div>
+            <input type="text" id="modalFinalValue" inputmode="decimal" placeholder="0.00"
+                   class="w-full pl-7 pr-3 py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                   onkeypress="if(event.key === 'Enter') { event.preventDefault(); submitFinalValueModal(); }">
+        </div>
+        <div class="flex gap-3">
+            <button onclick="submitFinalValueModal()" class="flex-1 bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2.5 px-4 rounded-lg text-sm">
+                Save & Complete
+            </button>
+            <button onclick="skipFinalValueModal()" class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2.5 px-4 rounded-lg text-sm">
+                Skip
+            </button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>
+function confirmCall(event, phoneNumber) {
+    event.preventDefault();
+    if (confirm('Are you sure you want to call ' + phoneNumber + ' now?')) {
+        window.location.href = event.target.href;
+    }
+    return false;
+}
+
+function toggleEditMode(showEdit) {
+    const viewMode = document.getElementById('viewMode');
+    const editMode = document.getElementById('editMode');
+    
+    if (showEdit) {
+        viewMode.classList.add('hidden');
+        editMode.classList.remove('hidden');
+    } else {
+        viewMode.classList.remove('hidden');
+        editMode.classList.add('hidden');
+    }
+}
+
+{% if client %}
+const statusSelect = document.getElementById('clientStatus');
+const statusIndicator = document.getElementById('statusSaveIndicator');
+const opportunityValueInput = document.getElementById('opportunityValue');
+const statusColors = {
+    'Lead': 'text-teal-800 border-teal-400',
+    'Prospect': 'text-slate-800 border-slate-400',
+    'Active': 'text-red-900 border-red-700',
+    'Completed': 'text-gray-700 border-gray-400',
+    'On Hold': 'text-stone-700 border-stone-400',
+    'Lost': 'text-gray-800 border-gray-300'
+};
+
+function updateOpportunityValueState(status) {
+    const opportunityValue = document.getElementById('opportunityValue');
+    const helpText = opportunityValue.parentElement.nextElementSibling;
+
+    if (status === 'Active') {
+        opportunityValue.disabled = false;
+        helpText.textContent = 'Pipeline estimate — saves automatically';
+    } else {
+        opportunityValue.disabled = true;
+        helpText.textContent = 'Set status to "Active" to enter value';
+    }
+}
+
+statusSelect.addEventListener('change', async function() {
+    const newStatus = this.value;
+    const csrfToken = document.querySelector('#statusForm input[name="csrf_token"]').value;
+
+    // If changing to Completed, prompt for final contract value first
+    if (newStatus === 'Completed') {
+        const modal = document.getElementById('finalValueModal');
+        if (modal) {
+            modal.classList.remove('hidden');
+            document.getElementById('modalFinalValue').focus();
+            return; // Don't save status yet — modal submit handles it
+        }
+    }
+
+    await saveStatus(newStatus, csrfToken);
+});
+
+async function saveStatus(newStatus, csrfToken, finalValue) {
+    statusIndicator.classList.remove('hidden');
+    let body = `status=${encodeURIComponent(newStatus)}&csrf_token=${encodeURIComponent(csrfToken)}`;
+    if (finalValue) {
+        body += `&final_contract_value=${encodeURIComponent(finalValue)}`;
+    }
+
+    try {
+        const response = await fetch('{{ url_for("update_client_status", client_id=client.id) }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            Object.values(statusColors).forEach(classes => {
+                classes.split(' ').forEach(cls => statusSelect.classList.remove(cls));
+            });
+            statusColors[newStatus].split(' ').forEach(cls => statusSelect.classList.add(cls));
+
+            const editFormStatus = document.getElementById('editFormStatus');
+            if (editFormStatus) editFormStatus.value = newStatus;
+
+            updateOpportunityValueState(newStatus);
+
+            // If we just completed, reload to show the final value field
+            if (newStatus === 'Completed') {
+                window.location.reload();
+                return;
+            }
+
+            setTimeout(() => { statusIndicator.classList.add('hidden'); }, 1000);
+        } else {
+            alert('Failed to update status: ' + (data.error || 'Unknown error'));
+            statusIndicator.classList.add('hidden');
+        }
+    } catch (error) {
+        alert('Failed to update status. Please try again.');
+        statusIndicator.classList.add('hidden');
+    }
+}
+
+function submitFinalValueModal() {
+    const val = document.getElementById('modalFinalValue').value.trim().replace(/,/g, '').replace('$', '');
+    const csrfToken = document.querySelector('#statusForm input[name="csrf_token"]').value;
+    document.getElementById('finalValueModal').classList.add('hidden');
+    saveStatus('Completed', csrfToken, val || null);
+}
+
+function skipFinalValueModal() {
+    document.getElementById('finalValueModal').classList.add('hidden');
+    const csrfToken = document.querySelector('#statusForm input[name="csrf_token"]').value;
+    saveStatus('Completed', csrfToken);
+}
+
+async function saveFinalContractValue() {
+    const input = document.getElementById('finalContractValue');
+    const indicator = document.getElementById('finalValueSaveIndicator');
+    const csrfToken = document.querySelector('#statusForm input[name="csrf_token"]').value;
+    let value = input.value.trim().replace(/,/g, '').replace('$', '');
+    if (!value) return;
+
+    indicator.classList.remove('hidden');
+    try {
+        const response = await fetch('{{ url_for("update_client_final_value", client_id=client.id) }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `final_contract_value=${encodeURIComponent(value)}&csrf_token=${encodeURIComponent(csrfToken)}`
+        });
+        const data = await response.json();
+        if (data.success) {
+            input.value = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(data.final_contract_value);
+            setTimeout(() => { indicator.classList.add('hidden'); }, 1000);
+        } else {
+            alert('Failed to save: ' + (data.error || 'Unknown error'));
+            indicator.classList.add('hidden');
+        }
+    } catch (error) {
+        alert('Failed to save final contract value.');
+        indicator.classList.add('hidden');
+    }
+}
+
+async function saveOpportunityValue() {
+    const opportunityInput = document.getElementById('opportunityValue');
+    const indicator = document.getElementById('opportunitySaveIndicator');
+    const csrfToken = document.querySelector('#statusForm input[name="csrf_token"]').value;
+    
+    let value = opportunityInput.value.trim().replace(/,/g, '').replace('$', '');
+    
+    if (value === '') {
+        value = '0';
+    }
+    
+    indicator.classList.remove('hidden');
+    
+    try {
+        const response = await fetch('{{ url_for("update_client_opportunity", client_id=client.id) }}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `opportunity_value=${encodeURIComponent(value)}&csrf_token=${encodeURIComponent(csrfToken)}`
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            const formatted = new Intl.NumberFormat('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            }).format(data.opportunity_value);
+            
+            opportunityInput.value = formatted;
+            
+            setTimeout(() => {
+                indicator.classList.add('hidden');
+            }, 1000);
+        } else {
+            alert('Failed to update opportunity value: ' + (data.error || 'Unknown error'));
+            indicator.classList.add('hidden');
+        }
+    } catch (error) {
+        alert('Failed to update opportunity value. Please try again.');
+        indicator.classList.add('hidden');
+    }
+}
+
+function toggleMoreNextSteps() {
+    const moreNextSteps = document.getElementById('moreNextSteps');
+    const seeMoreText = document.getElementById('seeMoreNextStepsText');
+    const seeMoreIcon = document.getElementById('seeMoreNextStepsIcon');
+    
+    if (moreNextSteps && moreNextSteps.classList.contains('hidden')) {
+        moreNextSteps.classList.remove('hidden');
+        seeMoreText.textContent = 'See Less';
+        seeMoreIcon.classList.add('rotate-180');
+    } else if (moreNextSteps) {
+        moreNextSteps.classList.add('hidden');
+        {% set temp_next_steps = [] %}
+        {% for act in activities %}
+            {% if act.next_step_description or act.next_step_date %}
+                {% set _ = temp_next_steps.append(act) %}
+            {% endif %}
+        {% endfor %}
+        const count = {{ temp_next_steps|length - 3 }};
+        seeMoreText.textContent = `See More (${count})`;
+        seeMoreIcon.classList.remove('rotate-180');
+    }
+}
+
+function toggleMoreRecentActivities() {
+    const moreActivities = document.getElementById('moreRecentActivities');
+    const seeMoreText = document.getElementById('seeMoreRecentText');
+    const seeMoreIcon = document.getElementById('seeMoreRecentIcon');
+    
+    if (moreActivities && moreActivities.classList.contains('hidden')) {
+        moreActivities.classList.remove('hidden');
+        seeMoreText.textContent = 'See Less';
+        seeMoreIcon.classList.add('rotate-180');
+    } else if (moreActivities) {
+        moreActivities.classList.add('hidden');
+        const count = {{ activities|length - 3 }};
+        seeMoreText.textContent = `See More (${count})`;
+        seeMoreIcon.classList.remove('rotate-180');
+    }
+}
+
+function toggleMoreRecentActivitiesMain() {
+    const moreActivities = document.getElementById('moreRecentActivitiesMain');
+    const seeMoreText = document.getElementById('seeMoreRecentMainText');
+    const seeMoreIcon = document.getElementById('seeMoreRecentMainIcon');
+    
+    if (moreActivities && moreActivities.classList.contains('hidden')) {
+        moreActivities.classList.remove('hidden');
+        seeMoreText.textContent = 'Show Less';
+        seeMoreIcon.classList.add('rotate-180');
+    } else if (moreActivities) {
+        moreActivities.classList.add('hidden');
+        const count = {{ activities|length - 3 }};
+        seeMoreText.textContent = `Load More (${count})`;
+        seeMoreIcon.classList.remove('rotate-180');
+    }
+}
+
+function togglePropertyDetails() {
+    const content = document.getElementById('propertyDetailsContent');
+    const chevron = document.getElementById('propertyDetailsChevron');
+    
+    if (content.classList.contains('hidden')) {
+        content.classList.remove('hidden');
+        chevron.classList.remove('rotate-180');
+    } else {
+        content.classList.add('hidden');
+        chevron.classList.add('rotate-180');
+    }
+}
+
+function openUploadModal(folderType) {
+    const modal = document.getElementById('uploadModal');
+    const form = document.getElementById('modalUploadForm');
+    const title = document.getElementById('modalTitle');
+    const dropText = document.getElementById('modalDropText');
+    const fileTypes = document.getElementById('modalFileTypes');
+    const fileInput = form.querySelector('.accordion-file-input');
+    const uploadButton = form.querySelector('.accordion-upload-button');
+    
+    form.dataset.folderType = folderType;
+    
+    const config = {
+        property_images: {
+            title: 'Upload Property Images',
+            dropText: 'Click or drag images here',
+            fileTypes: 'JPG, PNG, GIF, WebP (Max 16MB each)',
+            accept: '.jpg,.jpeg,.png,.gif,.webp',
+            buttonText: 'Upload Images',
+            buttonColor: 'bg-slate-700 hover:bg-slate-800'
+        },
+        documents: {
+            title: 'Upload Documents',
+            dropText: 'Click or drag documents here',
+            fileTypes: 'PDF, DOC, TXT, XLS, CSV (Max 16MB each)',
+            accept: '.pdf,.doc,.docx,.txt,.xls,.xlsx,.csv',
+            buttonText: 'Upload Documents',
+            buttonColor: 'bg-teal-600 hover:bg-teal-700'
+        },
+        contracts: {
+            title: 'Upload Contracts',
+            dropText: 'Click or drag contracts here',
+            fileTypes: 'PDF, DOC (Max 16MB each)',
+            accept: '.pdf,.doc,.docx',
+            buttonText: 'Upload Contracts',
+            buttonColor: 'bg-red-700 hover:bg-red-800'
+        }
+    };
+    
+    const settings = config[folderType];
+    title.textContent = settings.title;
+    dropText.textContent = settings.dropText;
+    fileTypes.textContent = settings.fileTypes;
+    fileInput.setAttribute('accept', settings.accept);
+    uploadButton.textContent = settings.buttonText;
+    uploadButton.className = `accordion-upload-button flex-1 ${settings.buttonColor} text-white py-2 px-4 rounded-lg transition-colors font-medium disabled:bg-gray-400 disabled:cursor-not-allowed`;
+    
+    modal.classList.remove('hidden');
+}
+
+function closeUploadModal() {
+    const modal = document.getElementById('uploadModal');
+    const form = document.getElementById('modalUploadForm');
+    const fileInput = form.querySelector('.accordion-file-input');
+    const selectedFilesDiv = form.querySelector('.accordion-selected-files');
+    const statusDiv = form.querySelector('.accordion-upload-status');
+    
+    modal.classList.add('hidden');
+    fileInput.value = '';
+    selectedFilesDiv.classList.add('hidden');
+    statusDiv.classList.add('hidden');
+}
+
+const MAX_FILE_SIZE = 16 * 1024 * 1024;
+
+document.querySelectorAll('.accordion-upload-form').forEach(form => {
+    let folderType = form.dataset.folderType;
+    const dropzone = form.querySelector('.accordion-dropzone');
+    const fileInput = form.querySelector('.accordion-file-input');
+    const selectedFilesDiv = form.querySelector('.accordion-selected-files');
+    const fileList = form.querySelector('.accordion-file-list');
+    const uploadButton = form.querySelector('.accordion-upload-button');
+    const statusDiv = form.querySelector('.accordion-upload-status');
+    
+    let selectedFiles = [];
+    
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropzone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        }, false);
+    });
+    
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropzone.addEventListener(eventName, () => {
+            dropzone.classList.add('border-blue-500');
+        });
+    });
+    
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropzone.addEventListener(eventName, () => {
+            dropzone.classList.remove('border-blue-500');
+        });
+    });
+    
+    dropzone.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        handleFileSelection(files);
+    });
+    
+    dropzone.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return;
+        fileInput.click();
+    });
+    
+    fileInput.addEventListener('change', (e) => {
+        handleFileSelection(e.target.files);
+    });
+    
+    function handleFileSelection(files) {
+        if (files.length === 0) return;
+        
+        selectedFiles = Array.from(files);
+        fileList.innerHTML = '';
+        let hasLargeFiles = false;
+        
+        selectedFiles.forEach(file => {
+            const li = document.createElement('li');
+            const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+            
+            if (file.size > MAX_FILE_SIZE) {
+                li.className = 'text-red-600';
+                li.textContent = `${file.name} (${sizeMB}MB - Too large!)`;
+                hasLargeFiles = true;
+            } else {
+                li.textContent = `${file.name} (${sizeMB}MB)`;
+            }
+            
+            fileList.appendChild(li);
+        });
+        
+        selectedFilesDiv.classList.remove('hidden');
+        uploadButton.disabled = hasLargeFiles;
+        
+        if (hasLargeFiles) {
+            showStatus('Some files exceed 16MB limit.', 'error');
+        } else {
+            statusDiv.classList.add('hidden');
+        }
+    }
+    
+    function showStatus(message, type) {
+        statusDiv.textContent = message;
+        let colorClass = 'bg-green-50 text-green-700';
+        if (type === 'error') colorClass = 'bg-red-50 text-red-700';
+        else if (type === 'info') colorClass = 'bg-blue-50 text-blue-700';
+        statusDiv.className = `accordion-upload-status mt-3 p-2 rounded-lg text-sm ${colorClass}`;
+        statusDiv.classList.remove('hidden');
+    }
+    
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        folderType = form.dataset.folderType;
+        
+        if (selectedFiles.length === 0) {
+            showStatus('Please select at least one file', 'error');
+            return;
+        }
+        
+        uploadButton.disabled = true;
+        uploadButton.textContent = 'Uploading...';
+        
+        let successCount = 0;
+        let failCount = 0;
+        const totalFiles = selectedFiles.length;
+        
+        for (let i = 0; i < totalFiles; i++) {
+            const file = selectedFiles[i];
+            showStatus(`Uploading ${i + 1} of ${totalFiles}: ${file.name}...`, 'info');
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('folder_type', folderType);
+            formData.append('csrf_token', form.querySelector('input[name="csrf_token"]').value);
+            
+            try {
+                const response = await fetch('{{ url_for("upload_to_folder", client_id=client.id) }}', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    successCount++;
+                } else {
+                    failCount++;
+                    console.error(`Failed to upload ${file.name}`);
+                }
+            } catch (error) {
+                failCount++;
+                console.error(`Error uploading ${file.name}:`, error);
+            }
+        }
+        
+        uploadButton.disabled = false;
+        const buttonText = folderType === 'property_images' ? 'Upload Images' : 
+                          folderType === 'documents' ? 'Upload Documents' : 'Upload Contracts';
+        uploadButton.textContent = buttonText;
+        
+        if (failCount === 0) {
+            showStatus(`Successfully uploaded ${successCount} file${successCount !== 1 ? 's' : ''}!`, 'success');
+            setTimeout(() => {
+                closeUploadModal();
+                window.location.reload();
+            }, 1500);
+        } else {
+            showStatus(`Uploaded ${successCount}, ${failCount} failed.`, 'error');
+        }
+        
+        fileInput.value = '';
+        selectedFiles = [];
+        selectedFilesDiv.classList.add('hidden');
+    });
+});
+
+{% endif %}
+</script>
+{% endblock %}

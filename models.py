@@ -1,9 +1,8 @@
 from datetime import datetime
 from decimal import Decimal
 from app import db
-from flask_dance.consumer.storage.sqla import OAuthConsumerMixin
 from flask_login import UserMixin
-from sqlalchemy import UniqueConstraint, Index
+from sqlalchemy import Index
 
 
 class User(UserMixin, db.Model):
@@ -39,17 +38,18 @@ class User(UserMixin, db.Model):
         return "User"
 
 
-class OAuth(OAuthConsumerMixin, db.Model):
-    user_id = db.Column(db.String, db.ForeignKey(User.id))
-    browser_session_key = db.Column(db.String, nullable=False)
-    user = db.relationship(User)
+class LeadSource(db.Model):
+    __tablename__ = 'lead_sources'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    channel_type = db.Column(db.String(50), nullable=False)  # paid_ads, organic_social, website, phone, referral, other
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    __table_args__ = (UniqueConstraint(
-        'user_id',
-        'browser_session_key',
-        'provider',
-        name='uq_user_browser_session_key_provider',
-    ),)
+    CHANNEL_TYPES = ['paid_ads', 'organic_social', 'website', 'phone', 'referral', 'other']
+
+    def __repr__(self):
+        return f'<LeadSource {self.name}>'
 
 
 class Client(db.Model):
@@ -62,6 +62,7 @@ class Client(db.Model):
     email = db.Column(db.String(200), nullable=True)
     status = db.Column(db.String(20), nullable=False, default='Lead')
     opportunity_value = db.Column(db.Numeric(12, 2), nullable=True, default=0)
+    final_contract_value = db.Column(db.Numeric(12, 2), nullable=True)
     notes = db.Column(db.Text, nullable=True)
     is_active = db.Column(db.Boolean, default=True)
     created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=True)
@@ -89,13 +90,14 @@ class Client(db.Model):
     estimated_end_date = db.Column(db.Date, nullable=True)
     permitting_status = db.Column(db.String(50), nullable=True)
     
-    gdrive_client_folder_id = db.Column(db.String(255), nullable=True)
-    gdrive_property_images_id = db.Column(db.String(255), nullable=True)
-    gdrive_documents_id = db.Column(db.String(255), nullable=True)
-    gdrive_contracts_id = db.Column(db.String(255), nullable=True)
+    storage_prefix = db.Column(db.String(500), nullable=True)
+
+    lead_source_id = db.Column(db.Integer, db.ForeignKey('lead_sources.id'), nullable=True)
+    source_detail = db.Column(db.String(500), nullable=True)
 
     created_by = db.relationship('User', foreign_keys=[created_by_user_id])
     assigned_to = db.relationship('User', foreign_keys=[assigned_to_user_id])
+    lead_source = db.relationship('LeadSource', backref='clients')
     time_entries = db.relationship('TimeEntry', backref='client', lazy='dynamic')
     activities = db.relationship('ClientActivity', backref='client', lazy='dynamic', order_by='ClientActivity.activity_date.desc()')
     property_images = db.relationship('PropertyImage', backref='client', lazy='dynamic', order_by='PropertyImage.created_at.desc()', cascade='all, delete-orphan')
@@ -171,8 +173,7 @@ class PropertyImage(db.Model):
     client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
     file_path = db.Column(db.String(500), nullable=True)
     file_name = db.Column(db.String(255), nullable=False)
-    gdrive_file_id = db.Column(db.String(255), nullable=True)
-    gdrive_web_view_link = db.Column(db.String(500), nullable=True)
+    storage_key = db.Column(db.String(500), nullable=True)
     uploaded_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
@@ -184,6 +185,27 @@ class PropertyImage(db.Model):
     
     def __repr__(self):
         return f'<PropertyImage {self.id} - {self.file_name}>'
+
+
+class ChannelSpend(db.Model):
+    __tablename__ = 'channel_spend'
+    id = db.Column(db.Integer, primary_key=True)
+    lead_source_id = db.Column(db.Integer, db.ForeignKey('lead_sources.id'), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    period_month = db.Column(db.Date, nullable=False)  # always first of month
+    note = db.Column(db.String(500), nullable=True)
+    created_by = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    lead_source = db.relationship('LeadSource', backref='spend_entries')
+    creator = db.relationship('User', foreign_keys=[created_by])
+
+    __table_args__ = (
+        Index('idx_spend_month_source', 'period_month', 'lead_source_id'),
+    )
+
+    def __repr__(self):
+        return f'<ChannelSpend {self.id} - {self.lead_source_id} - ${self.amount}>'
 
 
 class AuthorizedUser(db.Model):

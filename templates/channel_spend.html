@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block title %}Channel Spend — {{ selected_month.strftime('%B %Y') }}{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-6">
+
+    <!-- Header + Month Picker -->
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <h1 class="text-2xl font-bold text-txt-primary font-display">Channel Spend</h1>
+        <form method="GET" class="flex items-center gap-2">
+            <input type="month" name="month" value="{{ selected_month.strftime('%Y-%m') }}"
+                   class="bg-surface-raised border border-edge text-txt-primary rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:border-primary"
+                   onchange="this.form.submit()">
+        </form>
+    </div>
+
+    <!-- Quick Add -->
+    <div class="bg-surface-raised border border-edge rounded-xl p-4">
+        <h2 class="text-sm font-semibold text-txt-secondary uppercase tracking-wide mb-3">Add Spend Entry</h2>
+        <form method="POST" action="{{ url_for('add_channel_spend') }}" class="flex flex-col sm:flex-row gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="period_month" value="{{ selected_month.strftime('%Y-%m') }}">
+            <select name="lead_source_id" required
+                    class="bg-surface-overlay border border-edge text-txt-primary rounded-lg px-3 py-2.5 text-sm flex-1 min-w-0">
+                <option value="">Source...</option>
+                {% for src in lead_sources %}
+                <option value="{{ src.id }}">{{ src.name }}</option>
+                {% endfor %}
+            </select>
+            <div class="relative flex-1 min-w-0">
+                <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-txt-muted text-sm">$</span>
+                <input type="text" name="amount" required placeholder="0.00" inputmode="decimal"
+                       class="w-full bg-surface-overlay border border-edge text-txt-primary rounded-lg pl-7 pr-3 py-2.5 text-sm">
+            </div>
+            <input type="text" name="note" placeholder="Note (optional)"
+                   class="bg-surface-overlay border border-edge text-txt-primary rounded-lg px-3 py-2.5 text-sm flex-1 min-w-0">
+            <button type="submit"
+                    class="bg-primary hover:bg-primary-hover text-surface-base font-semibold rounded-lg px-5 py-2.5 text-sm whitespace-nowrap transition-colors">
+                Add
+            </button>
+        </form>
+    </div>
+
+    <!-- Source Totals -->
+    {% if source_totals %}
+    <div class="bg-surface-raised border border-edge rounded-xl p-4">
+        <h2 class="text-sm font-semibold text-txt-secondary uppercase tracking-wide mb-3">
+            {{ selected_month.strftime('%B %Y') }} Summary
+        </h2>
+        <div class="space-y-2">
+            {% for name, total in source_totals.items() %}
+            <div class="flex justify-between items-center py-1.5 border-b border-edge last:border-0">
+                <span class="text-sm text-txt-primary">{{ name }}</span>
+                <span class="text-sm font-semibold text-txt-primary">${{ '{:,.2f}'.format(total) }}</span>
+            </div>
+            {% endfor %}
+            <div class="flex justify-between items-center pt-2 mt-2 border-t border-edge-strong">
+                <span class="text-sm font-bold text-txt-primary">Total</span>
+                <span class="text-base font-bold text-primary">${{ '{:,.2f}'.format(grand_total) }}</span>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Entries List -->
+    <div class="bg-surface-raised border border-edge rounded-xl overflow-hidden">
+        <div class="px-4 py-3 border-b border-edge">
+            <h2 class="text-sm font-semibold text-txt-secondary uppercase tracking-wide">
+                Entries ({{ entries|length }})
+            </h2>
+        </div>
+
+        {% if entries %}
+        <div class="divide-y divide-edge">
+            {% for entry in entries %}
+            <div class="p-4 hover:bg-surface-hover transition-colors" x-data="{ editing: false }">
+                <!-- View -->
+                <div x-show="!editing" class="flex items-center justify-between gap-3">
+                    <div class="min-w-0 flex-1">
+                        <div class="flex items-baseline gap-2">
+                            <span class="text-sm font-semibold text-txt-primary">${{ '{:,.2f}'.format(entry.amount) }}</span>
+                            <span class="text-xs text-txt-muted">{{ entry.lead_source.name }}</span>
+                        </div>
+                        {% if entry.note %}
+                        <p class="text-xs text-txt-muted mt-0.5 truncate">{{ entry.note }}</p>
+                        {% endif %}
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <button @click="editing = true" class="text-xs text-txt-muted hover:text-txt-primary transition-colors">Edit</button>
+                        <form method="POST" action="{{ url_for('delete_channel_spend', spend_id=entry.id) }}"
+                              onsubmit="return confirm('Delete this entry?')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="text-xs text-red-400 hover:text-red-300 transition-colors">Delete</button>
+                        </form>
+                    </div>
+                </div>
+                <!-- Edit -->
+                <form x-show="editing" x-cloak method="POST" action="{{ url_for('edit_channel_spend', spend_id=entry.id) }}"
+                      class="flex flex-col sm:flex-row gap-2">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="period_month" value="{{ selected_month.strftime('%Y-%m') }}">
+                    <select name="lead_source_id"
+                            class="bg-surface-overlay border border-edge text-txt-primary rounded-lg px-2 py-1.5 text-sm flex-1">
+                        {% for src in lead_sources %}
+                        <option value="{{ src.id }}" {% if src.id == entry.lead_source_id %}selected{% endif %}>{{ src.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <input type="text" name="amount" value="{{ '{:,.2f}'.format(entry.amount) }}" inputmode="decimal"
+                           class="bg-surface-overlay border border-edge text-txt-primary rounded-lg px-2 py-1.5 text-sm w-28">
+                    <input type="text" name="note" value="{{ entry.note or '' }}" placeholder="Note"
+                           class="bg-surface-overlay border border-edge text-txt-primary rounded-lg px-2 py-1.5 text-sm flex-1">
+                    <div class="flex gap-2">
+                        <button type="submit"
+                                class="bg-primary hover:bg-primary-hover text-surface-base font-semibold rounded-lg px-3 py-1.5 text-sm transition-colors">Save</button>
+                        <button type="button" @click="editing = false"
+                                class="text-txt-muted hover:text-txt-primary text-sm transition-colors">Cancel</button>
+                    </div>
+                </form>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="p-8 text-center text-txt-muted text-sm">
+            No spend entries for {{ selected_month.strftime('%B %Y') }}.
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Alpine.js for inline editing -->
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+{% endblock %}
