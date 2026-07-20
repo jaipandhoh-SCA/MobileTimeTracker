@@ -167,6 +167,108 @@ def fresh_login():
     return redirect(url_for('google_auth.login'))
 
 
+def _build_channel_cards():
+    """Build per-channel performance cards for the current month."""
+    import pytz
+    from utils import PACIFIC_TZ
+
+    now_pacific = datetime.now(PACIFIC_TZ)
+    # Current month boundaries
+    month_start = now_pacific.replace(day=1).date()
+    if now_pacific.month == 12:
+        month_end = month_start.replace(year=month_start.year + 1, month=1)
+    else:
+        month_end = month_start.replace(month=month_start.month + 1)
+    month_start_utc = PACIFIC_TZ.localize(datetime.combine(month_start, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
+    month_end_utc = PACIFIC_TZ.localize(datetime.combine(month_end, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
+
+    # Previous month boundaries (for deltas)
+    if month_start.month == 1:
+        prev_month_start = month_start.replace(year=month_start.year - 1, month=12)
+    else:
+        prev_month_start = month_start.replace(month=month_start.month - 1)
+    prev_month_start_utc = PACIFIC_TZ.localize(datetime.combine(prev_month_start, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
+    prev_month_end_utc = month_start_utc
+
+    # Get all active lead sources
+    sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
+    if not sources:
+        return []
+
+    source_ids = [s.id for s in sources]
+    source_map = {s.id: s for s in sources}
+
+    # Spend for current month (period_month = first of month)
+    spend_entries = ChannelSpend.query.filter(
+        ChannelSpend.lead_source_id.in_(source_ids),
+        ChannelSpend.period_month == month_start
+    ).all()
+    spend_by_source = {e.lead_source_id: float(e.amount) for e in spend_entries}
+
+    # Leads created this month per source
+    clients_this_month = Client.query.filter(
+        Client.is_active == True,
+        Client.created_at >= month_start_utc,
+        Client.created_at < month_end_utc,
+        Client.lead_source_id.in_(source_ids)
+    ).all()
+
+    # Leads last month per source (for delta)
+    clients_last_month = Client.query.filter(
+        Client.is_active == True,
+        Client.created_at >= prev_month_start_utc,
+        Client.created_at < prev_month_end_utc,
+        Client.lead_source_id.in_(source_ids)
+    ).all()
+
+    leads_this = defaultdict(int)
+    revenue_this = defaultdict(float)
+    won_this = defaultdict(int)
+    for c in clients_this_month:
+        leads_this[c.lead_source_id] += 1
+        if c.status in ('Active', 'Completed'):
+            won_this[c.lead_source_id] += 1
+            revenue_this[c.lead_source_id] += float(c.final_contract_value or c.opportunity_value or 0)
+
+    leads_last = defaultdict(int)
+    for c in clients_last_month:
+        leads_last[c.lead_source_id] += 1
+
+    # Build cards — only include sources that have spend OR leads this month
+    cards = []
+    for sid in source_ids:
+        spend = spend_by_source.get(sid, 0)
+        leads = leads_this.get(sid, 0)
+        if spend == 0 and leads == 0:
+            continue
+
+        cpl = spend / leads if leads and spend else None
+        rev = revenue_this.get(sid, 0)
+        roi = rev / spend if spend else None
+        won = won_this.get(sid, 0)
+        close_rate = (won / leads * 100) if leads else None
+        leads_prev = leads_last.get(sid, 0)
+        lead_delta = leads - leads_prev if leads_prev > 0 else None
+
+        source = source_map[sid]
+        cards.append({
+            'source_name': source.name,
+            'channel_type': source.channel_type,
+            'spend': spend,
+            'leads': leads,
+            'cpl': cpl,
+            'revenue': rev,
+            'roi': roi,
+            'won': won,
+            'close_rate': close_rate,
+            'lead_delta': lead_delta,
+        })
+
+    # Sort: highest spend first, then by leads
+    cards.sort(key=lambda x: (-x['spend'], -x['leads']))
+    return cards
+
+
 @app.route('/home')
 @require_login
 def home():
@@ -499,7 +601,8 @@ def home():
                          attention_rep_summary=attention_rep_summary,
                          stale_amber_days=stale_amber_days,
                          stale_red_days=stale_red_days,
-                         missing_source_count=Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count() if current_user.is_supervisor else 0)
+                         missing_source_count=Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count() if current_user.is_supervisor else 0,
+                         channel_cards=_build_channel_cards() if current_user.is_supervisor else [])
 
 
 @app.route('/clients/<int:client_id>/quick_next_step', methods=['POST'])
