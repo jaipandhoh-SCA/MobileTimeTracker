@@ -3,7 +3,7 @@
 
 > My living plan + changelog. Planning happens here; approved items get handed to Claude Code to build. Updated every time a change ships.
 
-**Last updated:** 2026-07-16 (Neon DB + own Google login + R2 object storage; keep all .md files)
+**Last updated:** 2026-07-20 (Phase A/B/C shipped — time tracking removed, channel cards on hub, GHL + Meta Ads integrations)
 
 ---
 
@@ -20,53 +20,11 @@ Rule: nothing goes to Claude Code until it's written under **Active** with enoug
 
 ## 2. Active (planning / in progress)
 
-> **Direction:** Self-owned, off Replit. Neon (database) + **Google login with our own OAuth credentials** + S3-style object storage (Cloudflare R2) for files. Google is used **only for login**, not storage. Three items below, in build order.
+> **Direction:** Channel performance dashboard for ADU sales. Time tracking removed. GoHighLevel + Meta Ads integrated. Neon (database) + Google OAuth (own credentials) + Cloudflare R2 (files).
 >
-> **⚠️ Critical path:** The app currently **crashes on startup** — `google_auth.py` (line 20) references `REPLIT_DEV_DOMAIN`, which no longer exists. It won't run until item B fixes that line. So do **A + B together** to get it booting on Neon, then **C** for files.
->
-> **Known codebase (from Claude Code audit, 2026-07-16):** `main.py` (entry), `app.py` (factory: SQLAlchemy/CSRF/Flask-Login), `models.py` (7 models: User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage, AuthorizedUser), `routes.py` (~2170 lines, all live), `google_auth.py` (Google login — keep, remove Replit lines), `google_drive_helper.py` (Drive — to be replaced with R2), `utils.py` (TZ/pay-period helpers). 16 templates, all in use.
+> **Current codebase:** `main.py` (entry), `app.py` (factory), `models.py` (8 models: User, LeadSource, Client, ClientActivity, PropertyImage, ClientStatusChange, ChannelSpend, AuthorizedUser), `routes.py` (~2100 lines), `google_auth.py` (Google login), `r2_storage_helper.py` (Cloudflare R2), `ghl_helper.py` (GoHighLevel API), `meta_ads_helper.py` (Meta Ads API), `utils.py` (TZ/date helpers).
 
-### A. New Postgres database on Neon
-- **Goal:** Own the database directly; drop Replit's provisioned DB.
-- **Decision:** No data migration needed (Replit DB had no significant data). Start fresh.
-- **Scope:**
-  - Create a new **Neon** project at neon.com (region: US West for a Pacific-time team).
-  - Copy the connection string; set `DATABASE_URL` in the app's environment.
-  - Let SQLAlchemy create the schema from the models (empty tables), or run migrations if set up.
-- **Acceptance:** App boots against Neon, tables exist, first account becomes Supervisor (see item B for how that account is created now).
-- **Status:** ready for Claude Code
-
-### B. Google login on our own OAuth credentials (off Replit)
-- **Goal:** Keep Google sign-in, but authenticate with **our own** Google Cloud OAuth client instead of Replit's — and fix the `REPLIT_DEV_DOMAIN` line that crashes startup.
-- **Keep as-is:** `google_auth.py` stays. The allowlist (`AuthorizedUser`) still gates access, and "first user to sign in becomes Supervisor" is unchanged. No email/password, no registration route, no password reset to build.
-- **Google Cloud setup:**
-  1. Google Cloud Console → create a project (login only; no Drive API needed).
-  2. Configure the **OAuth consent screen** (External; add users/test users as needed).
-  3. Create an **OAuth Client ID** (Web application). Add authorized redirect URIs for both local dev (`http://localhost:5000/google_login/callback`) and production (`https://<your-domain>/google_login/callback`).
-  4. Store `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` as env vars.
-- **Code changes in `google_auth.py`:**
-  - Replace the `DEV_REDIRECT_URL` line (20) that uses `REPLIT_DEV_DOMAIN` with a redirect URL from config/env (or derived from the request), so it no longer crashes.
-  - Remove the Replit-docs print block (lines 23–36).
-  - Confirm it reads client creds from `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`.
-- **Acceptance:** App boots on Neon with no Replit env vars, Google sign-in works end-to-end via our own OAuth client, allowlist still gates access, first sign-in creates the Supervisor.
-- **Status:** ready for Claude Code
-
-### C. Replace Google Drive with S3-style object storage (Cloudflare R2)
-- **Goal:** Store property images, documents, and contracts in an S3-compatible bucket instead of Google Drive.
-- **Why R2:** S3-compatible (use `boto3`), generous free tier, no egress fees. AWS S3 or Backblaze B2 also work — same code, just a different endpoint.
-- **Scope:**
-  - **Replace `google_drive_helper.py`** with an R2/`boto3` helper (same function surface: create-prefix, upload, download, delete). Everything in the file except the Replit `get_drive_credentials()` was generic, but we're swapping the whole backend from Drive to S3, so rewrite it.
-  - Update `routes.py` Drive upload calls and the `PropertyImage` model + `ClientActivity` attachment handling to use the new helper.
-  - Create a Cloudflare R2 bucket; get account ID, access key, secret, bucket name, endpoint.
-  - Store `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT` as env vars.
-  - **Folders → key prefixes:** object storage is flat. Recreate the structure as key prefixes, e.g. `property-files/{client-name-address}/property-images/{filename}`, `.../documents/...`, `.../contracts/...`.
-  - **Serving/sharing files:** generate **presigned URLs** (time-limited) so files stay private but display in the app. Use a public bucket + custom domain only if permanent public links are actually needed.
-  - Keep existing file-type and size validation (images ≤16MB, etc.).
-- **Acceptance:** Uploading an image/document/contract puts the object in R2 under the right prefix, it displays/downloads in the app via presigned URL, delete works, and `google_drive_helper.py`'s Drive/Replit code is gone.
-- **Status:** shipped (2026-07-16)
-
-### Also: Google Maps
-- Minor. Property addresses currently use Google Maps. Simplest de-Google option: link out to `https://www.google.com/maps?q={address}` (no API key, no dependency) or switch the embed to OpenStreetMap. Low priority — decide during item C or leave as-is.
+_No items currently active. See Backlog for next candidates._
 
 <!-- Template for each item:
 ### [Short title]
@@ -81,13 +39,54 @@ Rule: nothing goes to Claude Code until it's written under **Active** with enoug
 
 ## 3. Backlog
 
+- **Run `migration_phase_a.sql` against Neon** — drops `time_entries`, `active_clocks` tables and `hourly_rate` columns. Back up DB first.
 - **Hosting** — decide where the app runs off Replit (Render, Railway, Fly.io, or self-hosted). Set env vars/secrets there; configure the OAuth redirect URI to match the new domain.
-- **Replit cleanup** — remove `.replit`, `replit.nix`, and any Replit-specific config once the app is confirmed running elsewhere. Migrate any secrets that lived in Replit's vault into the new host's env.
+- **Replit cleanup** — remove `.replit`, `replit.nix`, and any Replit-specific config once the app is confirmed running elsewhere.
 - **Google Maps** — decide whether to keep the Maps embed (needs an API key) or switch address links to a plain `maps.google.com?q=` URL (no key). Minor.
+- **Google Ads API** — auto-import Google Ads spend (same pattern as Meta Ads). Deferred from Phase C.
+- **Scheduled syncs** — auto-run GHL contact sync and Meta spend sync on a cron/schedule instead of manual button press.
 
 ---
 
 ## 4. Changelog
+
+### 2026-07-20 — Phase C: GoHighLevel + Meta Ads Integrations
+
+**GoHighLevel contact sync:** New `ghl_helper.py` — API v2 client that fetches contacts, paginates, and maps GHL fields to `Client` model. Sync imports all GHL contacts as CRM leads, skipping duplicates via new `Client.ghl_contact_id` column (unique, indexed). Tags mapped to status (e.g. "prospect" → Prospect). `ClientStatusChange` logged for each import.
+
+**Meta Ads spend sync:** New `meta_ads_helper.py` — Meta Marketing API v21.0 client. `fetch_monthly_spend()` pulls total spend, leads, impressions, clicks for a month. `fetch_campaign_breakdown()` returns per-campaign detail. Sync upserts a `ChannelSpend` entry for the current month against the mapped lead source.
+
+**Integrations settings page:** `/settings/integrations` (supervisors). For each service: connection status badge, env var checklist (set/missing), test connection button, sync button, lead source mapping dropdown. Meta section shows campaign breakdown table when connected. Help section explains the workflow.
+
+**Routes added (7):** `integrations_settings`, `ghl_test_connection`, `save_ghl_lead_source`, `ghl_sync_contacts`, `meta_test_connection`, `save_meta_lead_source`, `meta_sync_spend`.
+
+**Model change:** `Client.ghl_contact_id` (VARCHAR(100), unique). Auto-migration in `app.py`.
+
+**Nav:** "Integrations" link added to profile dropdown (supervisors). Settings highlight updated.
+
+**New env vars:** `GHL_API_KEY`, `GHL_LOCATION_ID`, `META_ADS_ACCESS_TOKEN`, `META_ADS_ACCOUNT_ID`.
+
+### 2026-07-20 — Phase B: Channel Performance Cards on Hub
+
+**New dashboard section:** "Channel Performance" (Section 2, between This Week and Needs Attention). Collapsible, supervisors only, shows per-channel cards for the current month. Each card: source name, channel type badge (color-coded — amber for paid ads, green for organic, blue for referral), 3-column metric grid (spend, leads with MoM delta, CPL), revenue/ROI/won footer. Links to full ROI report. Only sources with spend or leads this month appear.
+
+**Route change:** `home()` now calls `_build_channel_cards()` helper for supervisors. Queries `ChannelSpend` for current month spend, `Client` for leads/revenue created this month and last month per source. Cards sorted by highest spend.
+
+**Template:** `home.html` Section 2 added. Alpine.js `channels` toggle added to `hubSections()` with localStorage persistence. Section numbering updated (Needs Attention → 3, Pipeline → 4, Activity → 5).
+
+### 2026-07-20 — Phase A: Remove All Time-Tracking Code
+
+**Stripped time tracking** from the entire codebase. The app is now a channel performance dashboard, not a time tracker.
+
+**Models deleted:** `TimeEntry`, `ActiveClock`. **Columns removed:** `User.hourly_rate`, `AuthorizedUser.hourly_rate`, `User.time_entries` relationship, `User.active_clock` relationship, `Client.time_entries` relationship.
+
+**Routes deleted (~1000+ lines):** `start_clock`, `clock_status`, `take_break_15`, `take_lunch`, `stop_clock`, `quick_log`, `my_logs`, `admin_dashboard`, `edit_entry`, `rep_time_entries`, `export_csv`, `generate_time_entries_pdf`, `export_rep_time_entries_pdf`, `export_my_logs_pdf`, `update_user_rate`, `format_hours_filter`. Clock/pay-period logic removed from `home()`, `edit_profile()`, `edit_user_profile()`, `add_authorized_user()`, `remove_user()`.
+
+**Templates deleted (6):** `stop_clock.html`, `quick_log.html`, `my_logs.html`, `admin_dashboard.html`, `edit_entry.html`, `rep_time_entries.html`. Remaining templates cleaned: `home.html` (clock section, hours stats, weekly chart removed), `base.html` (shift indicator, clock_status fetch, time-tracking nav links removed), `edit_profile.html` (hourly_rate fields removed), `edit_user_profile.html` (hourly_rate field removed), `manage_users.html` (hourly_rate column/form removed), `landing.html` ("Time Tracking" → "Channel ROI" feature card).
+
+**Utils stripped:** Removed `calculate_duration`, `round_to_quarter_hour`, `format_hours`, all `get_*_period_dates` helpers. Kept timezone and date formatting only.
+
+**Migration script:** `migration_phase_a.sql` — `DROP TABLE time_entries, active_clocks; ALTER TABLE users/authorized_users DROP COLUMN hourly_rate`. Must be run against Neon manually (no Alembic).
 
 ### 2026-07-19 — Full Channel ROI Report
 
