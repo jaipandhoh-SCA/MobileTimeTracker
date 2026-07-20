@@ -1869,6 +1869,245 @@ def delete_channel_spend(spend_id):
     return redirect(url_for('channel_spend', month=month_str))
 
 
+# --- Integrations Settings (Supervisors Only) ---
+
+import ghl_helper
+import meta_ads_helper
+
+# Session keys for storing sync results and lead source mappings
+_GHL_LEAD_SOURCE_KEY = 'ghl_lead_source_id'
+_META_LEAD_SOURCE_KEY = 'meta_lead_source_id'
+
+
+@app.route('/settings/integrations')
+@require_supervisor
+def integrations_settings():
+    import os
+
+    # GHL status
+    ghl_connected = ghl_helper.is_configured()
+    ghl_location_name = ''
+    if ghl_connected:
+        ok, msg = ghl_helper.test_connection()
+        ghl_connected = ok
+        ghl_location_name = msg if ok else ''
+
+    ghl_status = {
+        'connected': ghl_connected,
+        'location_name': ghl_location_name,
+        'has_key': bool(os.environ.get('GHL_API_KEY')),
+        'has_location': bool(os.environ.get('GHL_LOCATION_ID')),
+        'last_sync': session.get('ghl_last_sync'),
+        'last_sync_result': session.get('ghl_sync_result'),
+        'last_sync_success': session.get('ghl_sync_success', False),
+    }
+
+    # Meta status
+    meta_connected = meta_ads_helper.is_configured()
+    meta_account_name = ''
+    if meta_connected:
+        ok, msg = meta_ads_helper.test_connection()
+        meta_connected = ok
+        meta_account_name = msg if ok else ''
+
+    meta_status = {
+        'connected': meta_connected,
+        'account_name': meta_account_name,
+        'has_token': bool(os.environ.get('META_ADS_ACCESS_TOKEN')),
+        'has_account': bool(os.environ.get('META_ADS_ACCOUNT_ID')),
+        'last_sync': session.get('meta_last_sync'),
+        'last_sync_result': session.get('meta_sync_result'),
+        'last_sync_success': session.get('meta_sync_success', False),
+    }
+
+    # Campaign breakdown for current month
+    meta_campaigns = []
+    if meta_connected:
+        from utils import PACIFIC_TZ
+        now_pacific = datetime.now(PACIFIC_TZ)
+        meta_campaigns = meta_ads_helper.fetch_campaign_breakdown(now_pacific.year, now_pacific.month)
+
+    lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
+
+    return render_template('integrations_settings.html',
+                         ghl_status=ghl_status,
+                         meta_status=meta_status,
+                         meta_campaigns=meta_campaigns,
+                         lead_sources=lead_sources,
+                         ghl_lead_source_id=session.get(_GHL_LEAD_SOURCE_KEY),
+                         meta_lead_source_id=session.get(_META_LEAD_SOURCE_KEY))
+
+
+@app.route('/settings/integrations/ghl/test', methods=['POST'])
+@require_supervisor
+def ghl_test_connection():
+    ok, msg = ghl_helper.test_connection()
+    if ok:
+        flash(f'GoHighLevel connected: {msg}', 'success')
+    else:
+        flash(f'GoHighLevel connection failed: {msg}', 'error')
+    return redirect(url_for('integrations_settings'))
+
+
+@app.route('/settings/integrations/ghl/lead-source', methods=['POST'])
+@require_supervisor
+def save_ghl_lead_source():
+    source_id = request.form.get('lead_source_id', '').strip()
+    if source_id:
+        session[_GHL_LEAD_SOURCE_KEY] = int(source_id)
+        flash('GHL lead source mapping saved.', 'success')
+    else:
+        session.pop(_GHL_LEAD_SOURCE_KEY, None)
+        flash('GHL lead source mapping cleared.', 'success')
+    return redirect(url_for('integrations_settings'))
+
+
+@app.route('/settings/integrations/ghl/sync', methods=['POST'])
+@require_supervisor
+def ghl_sync_contacts():
+    """Import GHL contacts as CRM leads."""
+    lead_source_id = session.get(_GHL_LEAD_SOURCE_KEY)
+    if not lead_source_id:
+        flash('Please set a lead source mapping for GHL first.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    if not ghl_helper.is_configured():
+        flash('GoHighLevel is not configured.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    contacts = ghl_helper.fetch_all_contacts()
+    created = 0
+    skipped = 0
+
+    for contact in contacts:
+        ghl_id = contact.get('id')
+        if not ghl_id:
+            continue
+
+        # Skip if already imported
+        existing = Client.query.filter_by(ghl_contact_id=ghl_id).first()
+        if existing:
+            skipped += 1
+            continue
+
+        data = ghl_helper.map_contact_to_client_data(contact)
+        client = Client(
+            name=data['name'],
+            address=data['address'],
+            contact_name=data['contact_name'],
+            phone=data['phone'],
+            email=data['email'],
+            status=data['status'],
+            notes=data['notes'],
+            ghl_contact_id=data['ghl_contact_id'],
+            lead_source_id=lead_source_id,
+            source_detail=data['source_detail'],
+            created_by_user_id=current_user.id,
+            assigned_to_user_id=current_user.id,
+        )
+        db.session.add(client)
+
+        # Log initial status change
+        status_change = ClientStatusChange(
+            client_id=0,  # placeholder, set after flush
+            from_status=None,
+            to_status=data['status'],
+            changed_by_user_id=current_user.id,
+        )
+        db.session.flush()  # get client.id
+        status_change.client_id = client.id
+        db.session.add(status_change)
+
+        created += 1
+
+    db.session.commit()
+
+    result = f'Imported {created} new contact{"s" if created != 1 else ""}'
+    if skipped:
+        result += f', skipped {skipped} existing'
+
+    session['ghl_last_sync'] = format_datetime_for_display(datetime.utcnow())
+    session['ghl_sync_result'] = result
+    session['ghl_sync_success'] = True
+    flash(result, 'success')
+    return redirect(url_for('integrations_settings'))
+
+
+@app.route('/settings/integrations/meta/test', methods=['POST'])
+@require_supervisor
+def meta_test_connection():
+    ok, msg = meta_ads_helper.test_connection()
+    if ok:
+        flash(f'Meta Ads connected: {msg}', 'success')
+    else:
+        flash(f'Meta Ads connection failed: {msg}', 'error')
+    return redirect(url_for('integrations_settings'))
+
+
+@app.route('/settings/integrations/meta/lead-source', methods=['POST'])
+@require_supervisor
+def save_meta_lead_source():
+    source_id = request.form.get('lead_source_id', '').strip()
+    if source_id:
+        session[_META_LEAD_SOURCE_KEY] = int(source_id)
+        flash('Meta Ads lead source mapping saved.', 'success')
+    else:
+        session.pop(_META_LEAD_SOURCE_KEY, None)
+        flash('Meta Ads lead source mapping cleared.', 'success')
+    return redirect(url_for('integrations_settings'))
+
+
+@app.route('/settings/integrations/meta/sync', methods=['POST'])
+@require_supervisor
+def meta_sync_spend():
+    """Pull Meta Ads spend for current month into ChannelSpend."""
+    lead_source_id = session.get(_META_LEAD_SOURCE_KEY)
+    if not lead_source_id:
+        flash('Please set a lead source mapping for Meta Ads first.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    if not meta_ads_helper.is_configured():
+        flash('Meta Ads is not configured.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    from utils import PACIFIC_TZ
+    now_pacific = datetime.now(PACIFIC_TZ)
+    year, month = now_pacific.year, now_pacific.month
+    period_month = date(year, month, 1)
+
+    spend, leads, impressions, clicks = meta_ads_helper.fetch_monthly_spend(year, month)
+
+    # Upsert: find existing entry or create
+    existing = ChannelSpend.query.filter_by(
+        lead_source_id=lead_source_id,
+        period_month=period_month,
+    ).first()
+
+    if existing:
+        existing.amount = spend
+        existing.note = f'Meta Ads auto-sync: {leads} leads, {impressions:,} impressions, {clicks:,} clicks'
+        action = 'Updated'
+    else:
+        entry = ChannelSpend(
+            lead_source_id=lead_source_id,
+            amount=spend,
+            period_month=period_month,
+            note=f'Meta Ads auto-sync: {leads} leads, {impressions:,} impressions, {clicks:,} clicks',
+            created_by=current_user.id,
+        )
+        db.session.add(entry)
+        action = 'Created'
+
+    db.session.commit()
+
+    result = f'{action} spend entry: ${spend:,.2f} for {now_pacific.strftime("%B %Y")} ({leads} leads, {clicks:,} clicks)'
+    session['meta_last_sync'] = format_datetime_for_display(datetime.utcnow())
+    session['meta_sync_result'] = result
+    session['meta_sync_success'] = True
+    flash(result, 'success')
+    return redirect(url_for('integrations_settings'))
+
+
 # --- ROI Report (Supervisors Only) ---
 
 def _parse_roi_dates(req):

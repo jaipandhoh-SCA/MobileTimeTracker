@@ -63,4 +63,7 @@ with app.app_context():
     if 'source_detail' not in client_cols:
         db.session.execute(text('ALTER TABLE clients ADD COLUMN source_detail VARCHAR(500)'))
         logging.info("Added source_detail column to clients")
+    if 'ghl_contact_id' not in client_cols:
+        db.session.execute(text('ALTER TABLE clients ADD COLUMN ghl_contact_id VARCHAR(100) UNIQUE'))
+        logging.info("Added ghl_contact_id column to clients")
     db.session.commit()

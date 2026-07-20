@@ -168,7 +168,7 @@
                         </a>
                         <a href="{{ url_for('edit_profile') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition
-                                  {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['edit_profile', 'manage_users', 'edit_user_profile', 'lead_sources_settings', 'lead_source_backfill'] else 'text-txt-muted hover:text-txt-primary hover:bg-surface-hover' }}">
+                                  {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['edit_profile', 'manage_users', 'edit_user_profile', 'lead_sources_settings', 'lead_source_backfill', 'integrations_settings'] else 'text-txt-muted hover:text-txt-primary hover:bg-surface-hover' }}">
                             Settings
                         </a>
                     </div>
@@ -311,6 +311,10 @@
                                     <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
                                     Manage Users
                                 </a>
+                                <a href="{{ url_for('integrations_settings') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-txt-secondary hover:bg-surface-overlay transition">
+                                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                                    Integrations
+                                </a>
                                 {% endif %}
                                 <a href="{{ url_for('google_auth.logout') }}"
                                    class="flex items-center gap-2 px-4 py-2.5 text-sm text-danger hover:bg-danger-light transition"
@@ -376,7 +380,7 @@
                 </a>
                 <a href="{{ url_for('edit_profile') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition
-                          {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['edit_profile', 'manage_users', 'lead_sources_settings', 'lead_source_backfill'] else 'text-txt-muted hover:bg-surface-hover' }}">
+                          {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['edit_profile', 'manage_users', 'lead_sources_settings', 'lead_source_backfill', 'integrations_settings'] else 'text-txt-muted hover:bg-surface-hover' }}">
                     Settings
                 </a>
             </div>

@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+
+{% block title %}Integrations - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="w-full max-w-4xl mx-auto space-y-6">
+
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-display font-bold text-txt-primary">Integrations</h1>
+        <a href="{{ url_for('edit_profile') }}" class="text-sm text-primary hover:text-primary-hover font-medium transition">
+            &larr; Settings
+        </a>
+    </div>
+
+    <!-- ========== GoHighLevel ========== -->
+    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge p-6 space-y-5">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-[#0F2A1F] flex items-center justify-center">
+                    <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                </div>
+                <div>
+                    <h2 class="text-lg font-display font-bold text-txt-primary">GoHighLevel</h2>
+                    <p class="text-xs text-txt-muted">Sync contacts as CRM leads</p>
+                </div>
+            </div>
+            {% if ghl_status.connected %}
+            <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-success-light text-success border border-success/20">Connected</span>
+            {% else %}
+            <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-surface-overlay text-txt-muted border border-edge">Not configured</span>
+            {% endif %}
+        </div>
+
+        {% if ghl_status.connected %}
+        <div class="bg-surface-overlay rounded-xl border border-edge p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm text-txt-secondary">Location: <span class="font-semibold text-txt-primary">{{ ghl_status.location_name }}</span></p>
+                    {% if ghl_status.last_sync %}
+                    <p class="text-xs text-txt-muted mt-0.5">Last sync: {{ ghl_status.last_sync }}</p>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="flex flex-wrap gap-3">
+                <form method="POST" action="{{ url_for('ghl_sync_contacts') }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <button type="submit" class="px-4 py-2 text-sm font-medium bg-primary text-surface-base rounded-lg hover:bg-primary-hover transition">
+                        Sync Contacts Now
+                    </button>
+                </form>
+                <form method="POST" action="{{ url_for('ghl_test_connection') }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <button type="submit" class="px-4 py-2 text-sm font-medium bg-surface-base text-txt-secondary border border-edge-strong rounded-lg hover:bg-surface-hover transition">
+                        Test Connection
+                    </button>
+                </form>
+            </div>
+
+            {% if ghl_status.last_sync_result %}
+            <div class="text-sm p-3 rounded-lg {{ 'bg-success-light text-success border border-success/20' if ghl_status.last_sync_success else 'bg-danger-light text-danger border border-danger/20' }}">
+                {{ ghl_status.last_sync_result }}
+            </div>
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="bg-surface-overlay rounded-xl border border-edge p-4">
+            <p class="text-sm text-txt-secondary mb-3">Set these environment variables to connect:</p>
+            <div class="space-y-2 text-xs font-mono">
+                <div class="flex items-center gap-2">
+                    <span class="px-2 py-1 rounded bg-surface-active text-txt-muted border border-edge">GHL_API_KEY</span>
+                    <span class="text-txt-muted">{{ 'Set' if ghl_status.has_key else 'Missing' }}</span>
+                    {% if ghl_status.has_key %}
+                    <svg class="w-4 h-4 text-success" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                    {% else %}
+                    <svg class="w-4 h-4 text-danger" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    {% endif %}
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="px-2 py-1 rounded bg-surface-active text-txt-muted border border-edge">GHL_LOCATION_ID</span>
+                    <span class="text-txt-muted">{{ 'Set' if ghl_status.has_location else 'Missing' }}</span>
+                    {% if ghl_status.has_location %}
+                    <svg class="w-4 h-4 text-success" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                    {% else %}
+                    <svg class="w-4 h-4 text-danger" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- GHL Lead Source mapping -->
+        <div class="bg-surface-overlay rounded-xl border border-edge p-4">
+            <h3 class="text-sm font-semibold text-txt-primary mb-2">Lead Source Mapping</h3>
+            <form method="POST" action="{{ url_for('save_ghl_lead_source') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <div class="flex items-center gap-3">
+                    <label class="text-xs text-txt-muted whitespace-nowrap">GHL contacts &rarr;</label>
+                    <select name="lead_source_id" class="flex-1 text-sm border border-edge-strong rounded-lg px-3 py-1.5 bg-surface-base text-txt-primary focus:outline-none focus:ring-2 focus:ring-primary/50">
+                        <option value="">-- Select lead source --</option>
+                        {% for source in lead_sources %}
+                        <option value="{{ source.id }}" {{ 'selected' if ghl_lead_source_id == source.id }}>{{ source.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="px-3 py-1.5 text-xs font-medium bg-primary text-surface-base rounded-lg hover:bg-primary-hover transition">Save</button>
+                </div>
+                <p class="text-[11px] text-txt-muted mt-2">Imported GHL contacts will be assigned this lead source</p>
+            </form>
+        </div>
+    </section>
+
+
+    <!-- ========== Meta Ads ========== -->
+    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge p-6 space-y-5">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-[#1a1040] flex items-center justify-center">
+                    <svg class="w-5 h-5 text-blue-400" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2.04C6.5 2.04 2 6.53 2 12.06C2 17.06 5.66 21.21 10.44 21.96V14.96H7.9V12.06H10.44V9.85C10.44 7.34 11.93 5.96 14.22 5.96C15.31 5.96 16.45 6.15 16.45 6.15V8.62H15.19C13.95 8.62 13.56 9.39 13.56 10.18V12.06H16.34L15.89 14.96H13.56V21.96A10 10 0 0022 12.06C22 6.53 17.5 2.04 12 2.04Z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h2 class="text-lg font-display font-bold text-txt-primary">Meta Ads</h2>
+                    <p class="text-xs text-txt-muted">Auto-import Facebook & Instagram ad spend</p>
+                </div>
+            </div>
+            {% if meta_status.connected %}
+            <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-success-light text-success border border-success/20">Connected</span>
+            {% else %}
+            <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-surface-overlay text-txt-muted border border-edge">Not configured</span>
+            {% endif %}
+        </div>
+
+        {% if meta_status.connected %}
+        <div class="bg-surface-overlay rounded-xl border border-edge p-4 space-y-3">
+            <div>
+                <p class="text-sm text-txt-secondary">Account: <span class="font-semibold text-txt-primary">{{ meta_status.account_name }}</span></p>
+                {% if meta_status.last_sync %}
+                <p class="text-xs text-txt-muted mt-0.5">Last sync: {{ meta_status.last_sync }}</p>
+                {% endif %}
+            </div>
+
+            <div class="flex flex-wrap gap-3">
+                <form method="POST" action="{{ url_for('meta_sync_spend') }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <button type="submit" class="px-4 py-2 text-sm font-medium bg-primary text-surface-base rounded-lg hover:bg-primary-hover transition">
+                        Sync This Month's Spend
+                    </button>
+                </form>
+                <form method="POST" action="{{ url_for('meta_test_connection') }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <button type="submit" class="px-4 py-2 text-sm font-medium bg-surface-base text-txt-secondary border border-edge-strong rounded-lg hover:bg-surface-hover transition">
+                        Test Connection
+                    </button>
+                </form>
+            </div>
+
+            {% if meta_status.last_sync_result %}
+            <div class="text-sm p-3 rounded-lg {{ 'bg-success-light text-success border border-success/20' if meta_status.last_sync_success else 'bg-danger-light text-danger border border-danger/20' }}">
+                {{ meta_status.last_sync_result }}
+            </div>
+            {% endif %}
+
+            <!-- Campaign breakdown -->
+            {% if meta_campaigns %}
+            <div class="mt-3">
+                <h3 class="text-sm font-semibold text-txt-primary mb-2">This Month's Campaigns</h3>
+                <div class="space-y-1.5">
+                    {% for c in meta_campaigns %}
+                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-surface-base border border-edge text-sm">
+                        <span class="text-txt-secondary truncate flex-1 mr-3">{{ c.campaign_name }}</span>
+                        <div class="flex items-center gap-4 flex-shrink-0">
+                            <span class="text-txt-primary font-semibold">${{ '{:,.2f}'.format(c.spend) }}</span>
+                            <span class="text-xs text-txt-muted">{{ c.leads }} lead{{ 's' if c.leads != 1 }}</span>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="bg-surface-overlay rounded-xl border border-edge p-4">
+            <p class="text-sm text-txt-secondary mb-3">Set these environment variables to connect:</p>
+            <div class="space-y-2 text-xs font-mono">
+                <div class="flex items-center gap-2">
+                    <span class="px-2 py-1 rounded bg-surface-active text-txt-muted border border-edge">META_ADS_ACCESS_TOKEN</span>
+                    <span class="text-txt-muted">{{ 'Set' if meta_status.has_token else 'Missing' }}</span>
+                    {% if meta_status.has_token %}
+                    <svg class="w-4 h-4 text-success" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                    {% else %}
+                    <svg class="w-4 h-4 text-danger" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    {% endif %}
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="px-2 py-1 rounded bg-surface-active text-txt-muted border border-edge">META_ADS_ACCOUNT_ID</span>
+                    <span class="text-txt-muted">{{ 'Set' if meta_status.has_account else 'Missing' }}</span>
+                    {% if meta_status.has_account %}
+                    <svg class="w-4 h-4 text-success" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                    {% else %}
+                    <svg class="w-4 h-4 text-danger" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Meta Ads lead source mapping -->
+        <div class="bg-surface-overlay rounded-xl border border-edge p-4">
+            <h3 class="text-sm font-semibold text-txt-primary mb-2">Lead Source Mapping</h3>
+            <form method="POST" action="{{ url_for('save_meta_lead_source') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <div class="flex items-center gap-3">
+                    <label class="text-xs text-txt-muted whitespace-nowrap">Meta spend &rarr;</label>
+                    <select name="lead_source_id" class="flex-1 text-sm border border-edge-strong rounded-lg px-3 py-1.5 bg-surface-base text-txt-primary focus:outline-none focus:ring-2 focus:ring-primary/50">
+                        <option value="">-- Select lead source --</option>
+                        {% for source in lead_sources %}
+                        <option value="{{ source.id }}" {{ 'selected' if meta_lead_source_id == source.id }}>{{ source.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="px-3 py-1.5 text-xs font-medium bg-primary text-surface-base rounded-lg hover:bg-primary-hover transition">Save</button>
+                </div>
+                <p class="text-[11px] text-txt-muted mt-2">Meta Ads spend will be recorded against this lead source in Channel Spend</p>
+            </form>
+        </div>
+    </section>
+
+
+    <!-- Help -->
+    <div class="bg-surface-overlay rounded-xl border border-edge p-4">
+        <h3 class="text-sm font-semibold text-txt-primary mb-2">How integrations work</h3>
+        <ul class="text-xs text-txt-muted space-y-1.5">
+            <li class="flex items-start gap-2">
+                <span class="text-primary mt-0.5">1.</span>
+                <span>Set API credentials as environment variables (in <code class="text-txt-secondary">.env.local</code> or your hosting platform)</span>
+            </li>
+            <li class="flex items-start gap-2">
+                <span class="text-primary mt-0.5">2.</span>
+                <span>Map each integration to a lead source so imported data lands in the right channel</span>
+            </li>
+            <li class="flex items-start gap-2">
+                <span class="text-primary mt-0.5">3.</span>
+                <span><strong>GHL:</strong> "Sync Contacts" imports new contacts as CRM leads (skips duplicates via GHL ID)</span>
+            </li>
+            <li class="flex items-start gap-2">
+                <span class="text-primary mt-0.5">4.</span>
+                <span><strong>Meta Ads:</strong> "Sync Spend" pulls total ad spend for the current month into Channel Spend (creates or updates the entry)</span>
+            </li>
+        </ul>
+    </div>
+</div>
+{% endblock %}

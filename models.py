@@ -88,6 +88,8 @@ class Client(db.Model):
     
     storage_prefix = db.Column(db.String(500), nullable=True)
 
+    ghl_contact_id = db.Column(db.String(100), nullable=True, unique=True, index=True)
+
     lead_source_id = db.Column(db.Integer, db.ForeignKey('lead_sources.id'), nullable=True)
     source_detail = db.Column(db.String(500), nullable=True)
 
