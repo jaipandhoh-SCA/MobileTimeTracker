@@ -187,6 +187,26 @@ class PropertyImage(db.Model):
         return f'<PropertyImage {self.id} - {self.file_name}>'
 
 
+class ClientStatusChange(db.Model):
+    __tablename__ = 'client_status_changes'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    from_status = db.Column(db.String(20), nullable=True)  # null for initial creation
+    to_status = db.Column(db.String(20), nullable=False)
+    changed_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    changed_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    client = db.relationship('Client', backref=db.backref('status_changes', lazy='dynamic', order_by='ClientStatusChange.changed_at'))
+    changed_by = db.relationship('User', foreign_keys=[changed_by_user_id])
+
+    __table_args__ = (
+        Index('idx_status_change_client', 'client_id', 'changed_at'),
+    )
+
+    def __repr__(self):
+        return f'<ClientStatusChange {self.from_status} -> {self.to_status}>'
+
+
 class ChannelSpend(db.Model):
     __tablename__ = 'channel_spend'
     id = db.Column(db.Integer, primary_key=True)

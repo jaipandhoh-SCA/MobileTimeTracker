@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto">
+    <h1 class="text-3xl font-bold text-gray-900 mb-6">Stop Shift</h1>
+    
+    <div class="bg-white rounded-lg shadow p-6">
+        <p class="text-gray-700 mb-2">Duration: <span class="font-bold text-green-600">{{ duration|format_hours }} hours</span></p>
+        <p class="text-sm text-gray-600 mb-6">Started: {{ active_clock.start_time|format_datetime }}</p>
+        
+        <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Client *</label>
+                <select name="client_id" id="client-select" class="w-full p-3 border border-gray-300 rounded-lg touch-target">
+                    <option value="">Select a client...</option>
+                    <option value="daily_activities">Daily Activities</option>
+                    {% for client in clients %}
+                    <option value="{{ client.id }}">{{ client.name }} - {{ client.address }}</option>
+                    {% endfor %}
+                    <option value="new">➕ Add New Client</option>
+                </select>
+            </div>
+            
+            <div id="new-client-fields" class="hidden mb-6 p-4 bg-gray-50 rounded-lg">
+                <h3 class="font-semibold text-gray-900 mb-3">New Client</h3>
+                <div class="mb-3">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Client Name *</label>
+                    <input type="text" name="new_client_name" class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+                <div class="mb-3">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Client Address *</label>
+                    <input type="text" name="new_client_address" class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Work Description *</label>
+                <textarea name="work_description" rows="4" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="e.g., Site walk, proposal discussion, permit consultation..." required></textarea>
+                <p class="text-sm text-gray-500 mt-1">Minimum 10 characters</p>
+            </div>
+            
+            <div class="flex gap-4">
+                <button type="submit" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg touch-target">
+                    Save Entry
+                </button>
+                <a href="{{ url_for('home') }}" class="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold py-3 px-6 rounded-lg text-center touch-target">
+                    Cancel
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    document.getElementById('client-select').addEventListener('change', function() {
+        const newClientFields = document.getElementById('new-client-fields');
+        if (this.value === 'new') {
+            newClientFields.classList.remove('hidden');
+        } else {
+            newClientFields.classList.add('hidden');
+        }
+    });
+</script>
+{% endblock %}

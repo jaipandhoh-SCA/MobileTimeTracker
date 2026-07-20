@@ -1,410 +1,398 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="w-full">
+<div class="w-full max-w-4xl mx-auto space-y-6" x-data="hubSections()">
+
     {% if long_running %}
-    <div class="mb-6 flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800" role="alert">
+    <div class="flex items-center gap-3 p-4 bg-warning-light border border-warning/30 rounded-xl text-warning" role="alert">
         <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
         <div>
             <p class="font-semibold text-sm">Your clock has been running for more than 24 hours.</p>
-            <p class="text-xs mt-0.5">Please review and stop your shift below.</p>
+            <p class="text-xs mt-0.5 text-warning/80">Please review and stop your shift below.</p>
         </div>
     </div>
     {% endif %}
 
-    <!-- ===== Top Row: Clock + Weekly Chart + Quick Stats ===== -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-6">
+    <!-- Lead source backfill banner -->
+    {% if current_user.is_supervisor and missing_source_count %}
+    <div x-data="{ dismissed: false }" x-show="!dismissed" x-transition
+         class="flex items-center justify-between gap-3 p-4 bg-accent-light border border-accent/30 rounded-xl">
+        <div class="flex items-center gap-3">
+            <svg class="w-5 h-5 flex-shrink-0 text-accent" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
+            <p class="text-sm text-txt-secondary">
+                <span class="font-semibold text-txt-primary">{{ missing_source_count }} client{{ 's' if missing_source_count != 1 }}</span> missing a lead source.
+                <a href="{{ url_for('lead_source_backfill') }}" class="text-primary hover:text-primary-hover font-medium ml-1">Backfill now &rarr;</a>
+            </p>
+        </div>
+        <button @click="dismissed = true" class="text-txt-muted hover:text-txt-secondary p-1">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+    {% endif %}
 
-        <!-- Clock Card -->
-        <div class="lg:col-span-3">
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-6 h-full flex flex-col">
-                <h1 class="text-lg font-semibold text-slate-900 mb-1">Welcome back,</h1>
-                <p class="text-2xl font-bold text-slate-900 mb-5 truncate">{{ current_user.display_name }}</p>
+    <!-- Supervisor filter -->
+    {% if current_user.is_supervisor %}
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-display font-bold text-txt-primary">
+            {% if selected_user %}{{ selected_user.display_name }}'s Hub{% else %}Company Hub{% endif %}
+        </h1>
+        <select onchange="window.location.href='{{ url_for('home') }}?filter_user=' + this.value"
+                class="text-sm border border-edge-strong rounded-lg px-3 py-1.5 bg-surface-raised text-txt-secondary focus:outline-none focus:ring-2 focus:ring-primary/50">
+            <option value="">All Company</option>
+            {% for user in all_users %}
+            <option value="{{ user.id }}" {% if selected_user and selected_user.id == user.id %}selected{% endif %}>{{ user.display_name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    {% else %}
+    <h1 class="text-2xl font-display font-bold text-txt-primary">Your Weekly Hub</h1>
+    {% endif %}
 
-                {% if active_clock %}
-                <div class="flex-1 flex flex-col bg-emerald-50 ring-1 ring-emerald-200 rounded-xl p-4">
-                    <p class="text-xs font-medium text-emerald-700 uppercase tracking-wide mb-1">Active Shift</p>
-                    <p class="text-xs text-emerald-600 mb-1">Started: <span id="start-time" class="font-medium"></span></p>
-                    <p class="text-3xl font-bold text-emerald-700 tabular-nums mb-4" id="elapsed-time">00:00:00</p>
 
-                    <div class="grid grid-cols-2 gap-2 mb-3">
-                        <button id="break-15-btn" disabled
-                                class="bg-slate-200 text-slate-400 font-medium py-2 px-3 rounded-lg text-xs cursor-not-allowed transition">
-                            15-min Break
-                        </button>
-                        <button id="lunch-btn" disabled
-                                class="bg-slate-200 text-slate-400 font-medium py-2 px-3 rounded-lg text-xs cursor-not-allowed transition">
-                            1-hr Lunch
-                        </button>
+    <!-- ============================================================
+         SECTION 1: THIS WEEK — Weekly Brief (Hero)
+         ============================================================ -->
+    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge p-6 space-y-5">
+        <h2 class="text-lg font-display font-bold text-txt-primary">This Week</h2>
+
+        <!-- NEW LEADS -->
+        <div class="space-y-1">
+            <div class="flex items-baseline gap-2 flex-wrap">
+                <span class="text-3xl font-display font-bold text-primary">{{ new_leads_this_week }}</span>
+                <span class="text-sm text-txt-secondary">new lead{{ 's' if new_leads_this_week != 1 else '' }}</span>
+                {% if last_week_leads_count > 0 %}
+                    {% set lead_delta = new_leads_this_week - last_week_leads_count %}
+                    {% if lead_delta > 0 %}
+                    <span class="text-xs font-medium text-success">&#9650; {{ lead_delta }} vs last week</span>
+                    {% elif lead_delta < 0 %}
+                    <span class="text-xs font-medium text-danger">&#9660; {{ lead_delta|abs }} vs last week</span>
+                    {% else %}
+                    <span class="text-xs text-txt-muted">same as last week</span>
+                    {% endif %}
+                {% endif %}
+            </div>
+            {% if lead_source_breakdown %}
+            <p class="text-sm text-txt-muted">
+                {% for source, count in lead_source_breakdown %}{{ count }} {{ source }}{% if not loop.last %}, {% endif %}{% endfor %}
+            </p>
+            {% endif %}
+        </div>
+
+        <!-- PIPELINE MOVEMENT -->
+        {% if pipeline_moves %}
+        <div class="space-y-1.5">
+            <div class="flex items-baseline gap-2">
+                <span class="text-2xl font-display font-bold text-txt-primary">{{ pipeline_moves|length }}</span>
+                <span class="text-sm text-txt-secondary">pipeline move{{ 's' if pipeline_moves|length != 1 else '' }}</span>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                {% for desc, names in pipeline_move_summary.items() %}
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-surface-overlay border border-edge text-xs text-txt-secondary cursor-default"
+                      title="{{ names|join(', ') }}">
+                    {{ names|length }}x {{ desc|truncate(35) }}
+                </span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- DEALS CLOSED -->
+        <div class="flex items-baseline gap-2 flex-wrap">
+            <span class="text-3xl font-display font-bold text-success">{{ completed_count }}</span>
+            <span class="text-sm text-txt-secondary">deal{{ 's' if completed_count != 1 else '' }} closed</span>
+            {% if completed_revenue > 0 %}
+            <span class="text-sm font-semibold text-accent">${{ '{:,.0f}'.format(completed_revenue) }}</span>
+            {% endif %}
+            {% if last_week_completed_count > 0 %}
+                {% set deal_delta = completed_count - last_week_completed_count %}
+                {% if deal_delta > 0 %}
+                <span class="text-xs font-medium text-success">&#9650; {{ deal_delta }} vs last week</span>
+                {% elif deal_delta < 0 %}
+                <span class="text-xs font-medium text-danger">&#9660; {{ deal_delta|abs }} vs last week</span>
+                {% endif %}
+            {% endif %}
+        </div>
+
+        <!-- FOLLOW-UP DEBT -->
+        {% set total_debt = (overdue_steps|length) + (clients_no_next_step|length) %}
+        {% if total_debt > 0 %}
+        <div class="space-y-1">
+            <div class="flex items-baseline gap-2">
+                <span class="text-2xl font-display font-bold text-warning">{{ total_debt }}</span>
+                <span class="text-sm text-txt-secondary">follow-up debt</span>
+            </div>
+            <p class="text-sm text-txt-muted">
+                {% if overdue_steps %}{{ overdue_steps|length }} overdue next step{{ 's' if overdue_steps|length != 1 else '' }}{% endif %}{% if overdue_steps and clients_no_next_step %}, {% endif %}{% if clients_no_next_step %}{{ clients_no_next_step|length }} client{{ 's' if clients_no_next_step|length != 1 else '' }} with no next step{% endif %}
+            </p>
+        </div>
+        {% endif %}
+
+        <!-- HOURS LOGGED (compact, at the end) -->
+        <div class="flex items-baseline gap-2 pt-3 border-t border-edge">
+            <span class="text-lg font-display font-bold text-txt-secondary">{{ '%.1f'|format(week_hours_total) }}h</span>
+            <span class="text-xs text-txt-muted">logged{% if current_user.is_supervisor and not selected_user %} company-wide{% endif %} this week</span>
+            {% if last_week_hours_total > 0 %}
+                {% set hrs_delta = week_hours_total - last_week_hours_total %}
+                {% if hrs_delta > 0 %}
+                <span class="text-xs font-medium text-success">&#9650; {{ '%.1f'|format(hrs_delta) }}h</span>
+                {% elif hrs_delta < 0 %}
+                <span class="text-xs font-medium text-danger">&#9660; {{ '%.1f'|format(hrs_delta|abs) }}h</span>
+                {% endif %}
+            {% endif %}
+        </div>
+
+        <!-- Weekly bar chart -->
+        {% set total_week = weekly_hours | sum(attribute='hours') %}
+        {% if total_week > 0 %}
+        <div style="height: 150px;">
+            <canvas id="weeklyChart"></canvas>
+        </div>
+        {% endif %}
+    </section>
+
+
+    <!-- ============================================================
+         SECTION 2: NEEDS ATTENTION
+         ============================================================ -->
+    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge p-6">
+        <h2 class="text-lg font-display font-bold text-txt-primary mb-4">Needs Attention</h2>
+
+        {% if not attention_items %}
+        <div class="flex items-center gap-3 py-6 justify-center">
+            <svg class="w-5 h-5 text-success" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <p class="text-sm text-txt-secondary">All caught up — every active client has a next step.</p>
+        </div>
+        {% else %}
+
+        {# Supervisor per-rep summary #}
+        {% if attention_rep_summary %}
+        <p class="text-xs text-txt-muted mb-4">
+            {% for name, count in attention_rep_summary %}{{ name }}: {{ count }}{% if not loop.last %} &middot; {% endif %}{% endfor %}
+        </p>
+        {% endif %}
+
+        <div class="space-y-2">
+            {% for item in attention_items %}
+            {% set client = item.client %}
+            {% set is_red = item.severity == 'red' %}
+            <div x-data="{ showForm: false }"
+                 class="p-3 rounded-xl border {{ 'border-danger/30 bg-danger/5' if is_red else 'border-warning/20 bg-warning-light' }}">
+                <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0 flex-1">
+                        <a href="{{ url_for('edit_client', client_id=client.id) }}" class="text-sm font-semibold text-txt-primary hover:text-primary transition truncate block">
+                            {{ client.name }}
+                            {% if current_user.is_supervisor and client.assigned_to %}
+                            <span class="text-xs font-normal text-txt-muted ml-1">{{ client.assigned_to.first_name }}</span>
+                            {% endif %}
+                        </a>
+                        <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
+                            {# Primary issue #}
+                            <span class="text-xs {{ 'text-danger' if is_red else 'text-warning' }}">
+                                {{ item.label }}{% if item.days %} &middot; {{ item.days }}d{% endif %}
+                            </span>
+                            {% if item.detail %}
+                            <span class="text-xs text-txt-muted truncate max-w-[180px]">{{ item.detail }}</span>
+                            {% endif %}
+                            {# Extra issues #}
+                            {% for extra in item.extra_issues %}
+                            <span class="text-xs {{ 'text-danger' if extra.severity == 'red' else 'text-txt-muted' }}">
+                                {{ extra.label }}
+                            </span>
+                            {% endfor %}
+                        </div>
                     </div>
-
-                    <a href="{{ url_for('stop_clock') }}"
-                       class="mt-auto block text-center bg-rose-600 hover:bg-rose-700 text-white font-semibold py-3 px-4 rounded-xl touch-target transition shadow-sm">
-                        Stop Shift
-                    </a>
+                    <div class="flex items-center gap-1.5 flex-shrink-0">
+                        <button @click="showForm = !showForm"
+                                class="px-2.5 py-1.5 text-xs font-medium bg-primary text-surface-base rounded-lg hover:bg-primary-hover transition whitespace-nowrap">
+                            Add next step
+                        </button>
+                        <a href="{{ url_for('edit_client', client_id=client.id) }}#activity-form"
+                           class="px-2.5 py-1.5 text-xs font-medium bg-surface-overlay text-txt-secondary border border-edge-strong rounded-lg hover:bg-surface-hover hover:text-txt-primary transition whitespace-nowrap">
+                            Log activity
+                        </a>
+                    </div>
                 </div>
-                {% else %}
-                <div class="flex-1 flex flex-col bg-brand-50 ring-1 ring-brand-200 rounded-xl p-4">
-                    <p class="text-xs font-medium text-brand-700 uppercase tracking-wide mb-1">Ready to work?</p>
-                    <p class="text-sm text-brand-600 mb-4">Start tracking your time with one tap.</p>
-                    <form method="POST" action="{{ url_for('start_clock') }}" class="mt-auto">
+
+                {# Inline "Add next step" form #}
+                <div x-show="showForm" x-collapse x-cloak class="mt-3 pt-3 border-t border-edge">
+                    <form method="POST" action="{{ url_for('quick_add_next_step', client_id=client.id) }}" class="flex flex-wrap items-end gap-2">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                        <div class="flex-1 min-w-[140px]">
+                            <label class="text-[11px] text-txt-muted block mb-1">Type</label>
+                            <select name="step_type" required
+                                    class="w-full text-xs border border-edge-strong rounded-lg px-2.5 py-1.5 bg-surface-base text-txt-primary focus:outline-none focus:ring-2 focus:ring-primary/50">
+                                <option value="">Select...</option>
+                                <option value="Phone call">Phone call</option>
+                                <option value="Email follow-up">Email follow-up</option>
+                                <option value="Site visit">Site visit</option>
+                                <option value="Meeting">Meeting</option>
+                                <option value="Send proposal">Send proposal</option>
+                                <option value="Send contract">Send contract</option>
+                                <option value="Check-in">Check-in</option>
+                            </select>
+                        </div>
+                        <div class="min-w-[130px]">
+                            <label class="text-[11px] text-txt-muted block mb-1">Date</label>
+                            <input type="date" name="step_date" required
+                                   class="w-full text-xs border border-edge-strong rounded-lg px-2.5 py-1.5 bg-surface-base text-txt-primary focus:outline-none focus:ring-2 focus:ring-primary/50"/>
+                        </div>
                         <button type="submit"
-                                class="w-full bg-brand-600 hover:bg-brand-700 text-white font-semibold py-3 px-4 rounded-xl touch-target transition shadow-sm">
-                            Start Shift
+                                class="px-3 py-1.5 text-xs font-medium bg-success text-white rounded-lg hover:bg-success/80 transition">
+                            Save
+                        </button>
+                        <button type="button" @click="showForm = false"
+                                class="px-3 py-1.5 text-xs font-medium text-txt-muted hover:text-txt-primary transition">
+                            Cancel
                         </button>
                     </form>
                 </div>
-                {% endif %}
             </div>
+            {% endfor %}
         </div>
+        {% endif %}
+    </section>
 
-        <!-- Weekly Hours Chart (visual centerpiece) -->
-        <div class="lg:col-span-6">
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-6 h-full flex flex-col">
-                <div class="mb-4">
-                    <h2 class="text-lg font-semibold text-slate-900">Your Week at a Glance</h2>
-                    <p class="text-sm text-slate-500 mt-0.5">Hours you logged each day over the last 7 days.</p>
-                </div>
 
-                {% set total_week = weekly_hours | sum(attribute='hours') %}
-
-                {% if total_week > 0 %}
-                <div class="flex-1 min-h-0" style="min-height: 220px;">
-                    <canvas id="weeklyChart"></canvas>
-                </div>
-                {% else %}
-                <!-- Zero state -->
-                <div class="flex-1 flex flex-col items-center justify-center text-center py-8">
-                    <div class="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mb-4">
-                        <svg class="w-8 h-8 text-slate-300" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/>
-                        </svg>
-                    </div>
-                    <p class="text-base font-medium text-slate-500">No hours logged this week</p>
-                    <p class="text-sm text-slate-400 mt-1">Start a shift or add a manual entry to see your chart here.</p>
-                    <div class="flex gap-3 mt-5">
-                        <a href="{{ url_for('quick_log') }}" class="text-sm font-medium text-brand-600 hover:text-brand-700 transition">Add Entry</a>
-                    </div>
-                </div>
-                {% endif %}
-            </div>
-        </div>
-
-        <!-- Quick Stats Cards -->
-        <div class="lg:col-span-3 grid grid-cols-2 lg:grid-cols-1 gap-4">
-            {% set week_total = weekly_hours | sum(attribute='hours') %}
-            {% set days_with_hours = weekly_hours | selectattr('hours', 'gt', 0) | list | length %}
-            {% set daily_avg = (week_total / days_with_hours) | round(2) if days_with_hours > 0 else 0 %}
-            {% set best_day_val = weekly_hours | map(attribute='hours') | max %}
-
-            <!-- Total This Week -->
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5 flex flex-col">
-                <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">This Week</p>
-                {% if week_total > 0 %}
-                <p class="text-3xl font-bold text-slate-900 mt-1" data-countup="{{ '%.2f' | format(week_total) }}">0</p>
-                <p class="text-xs text-slate-400 mt-auto">hours total</p>
-                {% else %}
-                <p class="text-3xl font-bold text-slate-300 mt-1">&mdash;</p>
-                <p class="text-xs text-slate-400 mt-auto">No hours yet</p>
-                {% endif %}
-            </div>
-
-            <!-- Daily Average -->
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5 flex flex-col">
-                <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">Daily Average</p>
-                {% if daily_avg > 0 %}
-                <p class="text-3xl font-bold text-brand-600 mt-1" data-countup="{{ '%.2f' | format(daily_avg) }}">0</p>
-                <p class="text-xs text-slate-400 mt-auto">hours per day</p>
-                {% else %}
-                <p class="text-3xl font-bold text-slate-300 mt-1">&mdash;</p>
-                <p class="text-xs text-slate-400 mt-auto">No data yet</p>
-                {% endif %}
-            </div>
-
-            <!-- Days Worked -->
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5 flex flex-col">
-                <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">Days Worked</p>
-                {% if days_with_hours > 0 %}
-                <p class="text-3xl font-bold text-emerald-600 mt-1" data-countup="{{ days_with_hours }}">0</p>
-                <p class="text-xs text-slate-400 mt-auto">of 7 days</p>
-                {% else %}
-                <p class="text-3xl font-bold text-slate-300 mt-1">&mdash;</p>
-                <p class="text-xs text-slate-400 mt-auto">of 7 days</p>
-                {% endif %}
-            </div>
-
-            <!-- Best Day -->
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5 flex flex-col">
-                <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">Best Day</p>
-                {% if best_day_val > 0 %}
-                <p class="text-3xl font-bold text-amber-600 mt-1" data-countup="{{ '%.2f' | format(best_day_val) }}">0</p>
-                <p class="text-xs text-slate-400 mt-auto">hours in one day</p>
-                {% else %}
-                <p class="text-3xl font-bold text-slate-300 mt-1">&mdash;</p>
-                <p class="text-xs text-slate-400 mt-auto">No data yet</p>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-
-    <!-- ===== Quick Actions (mobile row, hidden on desktop where sidebar covers it) ===== -->
-    <div class="grid grid-cols-3 gap-3 mb-6 lg:hidden">
-        <a href="{{ url_for('quick_log') }}" class="bg-white rounded-xl ring-1 ring-slate-200 shadow-sm p-4 text-center hover:bg-brand-50 transition touch-target">
-            <svg class="w-6 h-6 text-brand-600 mx-auto mb-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-            <p class="text-xs font-medium text-slate-700">Manual Entry</p>
-        </a>
-        <a href="{{ url_for('my_logs') }}" class="bg-white rounded-xl ring-1 ring-slate-200 shadow-sm p-4 text-center hover:bg-brand-50 transition touch-target">
-            <svg class="w-6 h-6 text-brand-600 mx-auto mb-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
-            <p class="text-xs font-medium text-slate-700">My Logs</p>
-        </a>
-        <a href="{{ url_for('clients') }}" class="bg-white rounded-xl ring-1 ring-slate-200 shadow-sm p-4 text-center hover:bg-brand-50 transition touch-target">
-            <svg class="w-6 h-6 text-brand-600 mx-auto mb-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-            <p class="text-xs font-medium text-slate-700">Clients</p>
-        </a>
-    </div>
-
-    <!-- ===== Bottom Row: Opportunities + Activity + Next Steps ===== -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
-        <!-- Left: Quick Actions (desktop only) -->
-        <div class="hidden lg:block lg:col-span-3 space-y-6">
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-6">
-                <h2 class="text-sm font-semibold text-slate-900 uppercase tracking-wide mb-4">Quick Actions</h2>
-                <div class="space-y-2">
-                    <a href="{{ url_for('quick_log') }}" class="flex items-center gap-3 p-3 rounded-xl hover:bg-brand-50 ring-1 ring-slate-200 hover:ring-brand-200 transition">
-                        <div class="w-9 h-9 bg-brand-50 rounded-lg flex items-center justify-center flex-shrink-0">
-                            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-                        </div>
-                        <div>
-                            <p class="text-sm font-medium text-slate-900">Manual Entry</p>
-                            <p class="text-xs text-slate-500">Log time by hand</p>
-                        </div>
-                    </a>
-                    <a href="{{ url_for('my_logs') }}" class="flex items-center gap-3 p-3 rounded-xl hover:bg-brand-50 ring-1 ring-slate-200 hover:ring-brand-200 transition">
-                        <div class="w-9 h-9 bg-brand-50 rounded-lg flex items-center justify-center flex-shrink-0">
-                            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
-                        </div>
-                        <div>
-                            <p class="text-sm font-medium text-slate-900">My Logs</p>
-                            <p class="text-xs text-slate-500">View your time entries</p>
-                        </div>
-                    </a>
-                    <a href="{{ url_for('clients') }}" class="flex items-center gap-3 p-3 rounded-xl hover:bg-brand-50 ring-1 ring-slate-200 hover:ring-brand-200 transition">
-                        <div class="w-9 h-9 bg-brand-50 rounded-lg flex items-center justify-center flex-shrink-0">
-                            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                        </div>
-                        <div>
-                            <p class="text-sm font-medium text-slate-900">Clients</p>
-                            <p class="text-xs text-slate-500">Browse client list</p>
-                        </div>
-                    </a>
-                    {% if current_user.is_supervisor %}
-                    <a href="{{ url_for('admin_dashboard') }}" class="flex items-center gap-3 p-3 rounded-xl hover:bg-brand-50 ring-1 ring-slate-200 hover:ring-brand-200 transition">
-                        <div class="w-9 h-9 bg-brand-50 rounded-lg flex items-center justify-center flex-shrink-0">
-                            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-                        </div>
-                        <div>
-                            <p class="text-sm font-medium text-slate-900">Admin Dashboard</p>
-                            <p class="text-xs text-slate-500">View all entries and stats</p>
-                        </div>
-                    </a>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
-
-        <!-- Middle: Opportunities + Recent -->
-        <div class="lg:col-span-6 space-y-6">
-
-            <!-- Opportunities Dashboard -->
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm overflow-hidden">
-                <div class="px-6 py-4 border-b border-slate-100 flex flex-wrap justify-between items-center gap-3">
-                    <h2 class="text-base font-semibold text-slate-900">
-                        {% if current_user.is_supervisor %}
-                            {% if selected_user %}{{ selected_user.display_name }}'s Opportunities
-                            {% else %}Company Opportunities{% endif %}
-                        {% else %}My Opportunities{% endif %}
-                    </h2>
-                    {% if current_user.is_supervisor %}
-                    <select id="user-filter"
-                            onchange="window.location.href='{{ url_for('home') }}?filter_user=' + this.value"
-                            class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-500 bg-white">
-                        <option value="">All Company Data</option>
-                        {% for user in all_users %}
-                        <option value="{{ user.id }}" {% if selected_user and selected_user.id == user.id %}selected{% endif %}>{{ user.display_name }}</option>
-                        {% endfor %}
-                    </select>
-                    {% endif %}
-                </div>
-                <div class="p-6">
-                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                        {% set opp_cards = [
-                            ('Lead', status_counts['Lead'], status_values['Lead'], 'bg-emerald-50 ring-emerald-200 text-emerald-700'),
-                            ('Prospect', status_counts['Prospect'], status_values['Prospect'], 'bg-sky-50 ring-sky-200 text-sky-700'),
-                            ('Active', status_counts['Active'], status_values['Active'], 'bg-brand-50 ring-brand-200 text-brand-700'),
-                            ('On Hold', status_counts['On Hold'], status_values['On Hold'], 'bg-amber-50 ring-amber-200 text-amber-700'),
-                            ('Completed', status_counts['Completed'], status_values['Completed'], 'bg-slate-100 ring-slate-200 text-slate-600'),
-                            ('All', my_clients|length, total_value, 'bg-white ring-slate-200 text-slate-700')
-                        ] %}
-                        {% for label, count, value, classes in opp_cards %}
-                        <button onclick="showFilteredClients('{{ label }}')"
-                                class="text-left rounded-xl p-4 ring-1 hover:shadow-md transition cursor-pointer {{ classes }}">
-                            <p class="text-2xl font-bold">{{ count }}</p>
-                            <p class="text-xs font-medium mt-0.5">{{ 'Total' if label == 'All' else label }}{{ 's' if label != 'All' and label != 'On Hold' else '' }}</p>
-                            <p class="text-sm font-semibold mt-1">${{ '{:,.0f}'.format(value) }}</p>
-                        </button>
-                        {% endfor %}
-                    </div>
-                </div>
-            </div>
-
-            <!-- Filtered Clients (hidden by default) -->
-            <div id="filtered-clients-section" class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm hidden">
-                <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
-                    <h2 id="filtered-clients-title" class="text-base font-semibold text-slate-900">All Clients</h2>
-                    <button onclick="hideFilteredClients()" class="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition" aria-label="Close">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+    <!-- ============================================================
+         SECTION 3: PIPELINE (collapsible)
+         ============================================================ -->
+    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge overflow-hidden">
+        <button @click="toggle('pipeline')"
+                class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-surface-hover transition">
+            <h2 class="text-lg font-display font-bold text-txt-primary">Pipeline</h2>
+            <svg :class="{ 'rotate-180': sections.pipeline }" class="w-5 h-5 text-txt-muted transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <div x-show="sections.pipeline" x-collapse x-cloak>
+            <div class="px-6 pb-6">
+                <!-- Opportunity status grid -->
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+                    {% set opp_cards = [
+                        ('Lead', status_counts['Lead'], status_values['Lead'], 'bg-success-light border-success/20 text-success'),
+                        ('Prospect', status_counts['Prospect'], status_values['Prospect'], 'bg-[#0C1B2E] border-blue-500/20 text-blue-400'),
+                        ('Active', status_counts['Active'], status_values['Active'], 'bg-primary-light border-primary/20 text-primary'),
+                        ('On Hold', status_counts['On Hold'], status_values['On Hold'], 'bg-warning-light border-warning/20 text-warning'),
+                        ('Completed', status_counts['Completed'], status_values['Completed'], 'bg-surface-overlay border-edge-strong text-txt-secondary'),
+                        ('All', my_clients|length, total_value, 'bg-surface-overlay border-edge-strong text-txt-primary')
+                    ] %}
+                    {% for label, count, value, classes in opp_cards %}
+                    <button onclick="showFilteredClients('{{ label }}')"
+                            class="text-left rounded-xl p-4 border hover:shadow-glow-sm hover:border-primary/30 transition cursor-pointer {{ classes }}">
+                        <p class="text-2xl font-display font-bold">{{ count }}</p>
+                        <p class="text-xs font-medium mt-0.5 text-txt-muted">{{ 'Total' if label == 'All' else label }}{{ 's' if label != 'All' and label != 'On Hold' else '' }}</p>
+                        <p class="text-sm font-semibold mt-1">${{ '{:,.0f}'.format(value) }}</p>
                     </button>
+                    {% endfor %}
                 </div>
-                <div id="filtered-clients-content" class="p-6"></div>
-            </div>
 
-            <!-- Recent Clients -->
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm overflow-hidden">
-                <div class="px-6 py-4 border-b border-slate-100">
-                    <h2 class="text-base font-semibold text-slate-900">Recent Clients</h2>
+                <!-- Filtered clients (hidden by default) -->
+                <div id="filtered-clients-section" class="bg-surface-overlay rounded-xl border border-edge hidden">
+                    <div class="px-4 py-3 flex justify-between items-center border-b border-edge">
+                        <h3 id="filtered-clients-title" class="text-sm font-semibold text-txt-primary">All Clients</h3>
+                        <button onclick="hideFilteredClients()" class="p-1 rounded text-txt-muted hover:text-txt-primary transition" aria-label="Close">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                    </div>
+                    <div id="filtered-clients-content" class="p-4"></div>
                 </div>
-                <div class="p-6">
-                    {% if recent_clients %}
-                    <div class="space-y-2">
-                        {% for client in recent_clients[:5] %}
-                        <a href="{{ url_for('edit_client', client_id=client.id) }}"
-                           class="block p-3 rounded-xl ring-1 ring-slate-200 hover:ring-brand-300 hover:bg-brand-50/50 transition">
-                            <div class="flex justify-between items-start">
-                                <div class="flex-1 min-w-0">
-                                    <h4 class="font-semibold text-slate-900 text-sm truncate">{{ client.name }}</h4>
-                                    <p class="text-xs text-slate-500 mt-0.5 truncate">{{ client.address }}</p>
-                                </div>
-                                <div class="ml-3 text-right flex-shrink-0">
-                                    {% set badge_map = {
-                                        'Lead': 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-                                        'Prospect': 'bg-sky-50 text-sky-700 ring-sky-200',
-                                        'Active': 'bg-brand-50 text-brand-700 ring-brand-200',
-                                        'Completed': 'bg-slate-100 text-slate-600 ring-slate-200',
-                                        'On Hold': 'bg-amber-50 text-amber-700 ring-amber-200'
-                                    } %}
-                                    <span class="inline-block px-2 py-0.5 text-[11px] font-medium rounded-md ring-1 {{ badge_map.get(client.status, 'bg-slate-100 text-slate-600 ring-slate-200') }}">{{ client.status }}</span>
-                                    {% if client.assigned_to and current_user.is_supervisor %}
-                                    <p class="text-[11px] text-slate-400 mt-1">{{ client.assigned_to.display_name }}</p>
-                                    {% endif %}
-                                </div>
-                            </div>
-                            {% if client.opportunity_value %}
-                            <p class="text-sm font-semibold text-slate-600 mt-1.5">${{ '{:,.0f}'.format(client.opportunity_value) }}</p>
-                            {% endif %}
+            </div>
+        </div>
+    </section>
+
+
+    <!-- ============================================================
+         SECTION 4: RECENT ACTIVITY (collapsible)
+         ============================================================ -->
+    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge overflow-hidden">
+        <button @click="toggle('activity')"
+                class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-surface-hover transition">
+            <h2 class="text-lg font-display font-bold text-txt-primary">Recent Activity</h2>
+            <svg :class="{ 'rotate-180': sections.activity }" class="w-5 h-5 text-txt-muted transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <div x-show="sections.activity" x-collapse x-cloak>
+            <div class="px-6 pb-6">
+                {% if recent_activities %}
+                <div class="space-y-3">
+                    {% for activity in recent_activities[:8] %}
+                    <div class="pb-3 border-b border-edge last:border-0 last:pb-0">
+                        <a href="{{ url_for('edit_client', client_id=activity.client.id) }}" class="font-semibold text-txt-primary hover:text-primary text-sm transition">
+                            {{ activity.client.name }}
                         </a>
-                        {% endfor %}
-                    </div>
-                    {% else %}
-                    <div class="text-center py-6">
-                        <p class="text-sm text-slate-400">No clients yet</p>
-                        <a href="{{ url_for('create_client') }}" class="text-sm font-medium text-brand-600 hover:text-brand-700 mt-1 inline-block">Add your first client</a>
-                    </div>
-                    {% endif %}
-                </div>
-            </div>
-
-            <!-- Recent Activity -->
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm overflow-hidden">
-                <div class="px-6 py-4 border-b border-slate-100">
-                    <h2 class="text-base font-semibold text-slate-900">Recent Activity</h2>
-                </div>
-                <div class="p-6">
-                    {% if recent_activities %}
-                    <div class="space-y-3">
-                        {% for activity in recent_activities[:5] %}
-                        <div class="pb-3 border-b border-slate-100 last:border-0 last:pb-0">
-                            <a href="{{ url_for('edit_client', client_id=activity.client.id) }}" class="font-semibold text-slate-900 hover:text-brand-600 text-sm transition">
-                                {{ activity.client.name }}
-                            </a>
-                            <p class="text-sm font-medium text-slate-700 mt-0.5">{{ activity.activity_type }}</p>
-                            <div class="flex items-center gap-2 mt-0.5">
-                                <p class="text-xs text-slate-400">{{ activity.activity_date|format_datetime }}</p>
-                                {% if activity.user and current_user.is_supervisor %}
-                                <span class="text-slate-300">&middot;</span>
-                                <p class="text-xs text-slate-400">{{ activity.user.display_name }}</p>
-                                {% endif %}
-                            </div>
-                            {% if activity.note_text %}
-                            <p class="text-sm text-slate-500 mt-1">{{ activity.note_text|truncate(80) }}</p>
+                        <p class="text-sm text-txt-secondary mt-0.5">{{ activity.activity_type }}</p>
+                        <div class="flex items-center gap-2 mt-0.5">
+                            <p class="text-xs text-txt-muted">{{ activity.activity_date|format_datetime }}</p>
+                            {% if activity.user and current_user.is_supervisor %}
+                            <span class="text-txt-faint">&middot;</span>
+                            <p class="text-xs text-txt-muted">{{ activity.user.display_name }}</p>
                             {% endif %}
                         </div>
-                        {% endfor %}
+                        {% if activity.note_text %}
+                        <p class="text-sm text-txt-muted mt-1">{{ activity.note_text|truncate(80) }}</p>
+                        {% endif %}
                     </div>
-                    {% else %}
-                    <p class="text-sm text-slate-400 text-center py-6">No recent activity</p>
-                    {% endif %}
+                    {% endfor %}
                 </div>
+                {% else %}
+                <p class="text-sm text-txt-muted text-center py-6">No recent activity</p>
+                {% endif %}
             </div>
         </div>
+    </section>
 
-        <!-- Right: Next Steps -->
-        <div class="lg:col-span-3 space-y-6">
-            <div class="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm overflow-hidden">
-                <div class="px-6 py-4 border-b border-slate-100">
-                    <h2 class="text-base font-semibold text-slate-900">Upcoming Next Steps</h2>
-                </div>
-                <div class="p-6">
-                    {% if next_steps %}
-                    <div class="space-y-3">
-                        {% for activity in next_steps[:3] %}
-                        <div class="pb-3 border-b border-slate-100 last:border-0 last:pb-0">
-                            <a href="{{ url_for('edit_client', client_id=activity.client.id) }}" class="font-semibold text-slate-900 hover:text-brand-600 text-sm transition">
-                                {{ activity.client.name }}
-                            </a>
-                            <p class="text-sm font-medium text-slate-700 mt-0.5">{{ activity.next_step_description }}</p>
-                            <p class="text-xs text-slate-400 mt-1">{{ activity.next_step_date|format_datetime }}</p>
-                        </div>
-                        {% endfor %}
-                    </div>
 
-                    {% if next_steps|length > 3 %}
-                    <details class="mt-4">
-                        <summary class="cursor-pointer text-sm text-brand-600 hover:text-brand-700 font-medium">
-                            Show {{ next_steps|length - 3 }} more
-                        </summary>
-                        <div class="space-y-3 mt-3">
-                            {% for activity in next_steps[3:] %}
-                            <div class="pb-3 border-b border-slate-100 last:border-0 last:pb-0">
-                                <a href="{{ url_for('edit_client', client_id=activity.client.id) }}" class="font-semibold text-slate-900 hover:text-brand-600 text-sm transition">
-                                    {{ activity.client.name }}
-                                </a>
-                                <p class="text-sm font-medium text-slate-700 mt-0.5">{{ activity.next_step_description }}</p>
-                                <p class="text-xs text-slate-400 mt-1">{{ activity.next_step_date|format_datetime }}</p>
-                            </div>
-                            {% endfor %}
-                        </div>
-                    </details>
-                    {% endif %}
-                    {% else %}
-                    <div class="text-center py-6">
-                        <div class="w-12 h-12 bg-slate-100 rounded-xl flex items-center justify-center mx-auto mb-3">
-                            <svg class="w-6 h-6 text-slate-300" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/></svg>
-                        </div>
-                        <p class="text-sm text-slate-400">No upcoming next steps</p>
-                    </div>
-                    {% endif %}
-                </div>
+    <!-- ============================================================
+         SECTION 5: TIME (compact, bottom)
+         ============================================================ -->
+    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge p-5">
+        <div class="flex items-center justify-between">
+            <div>
+                <h2 class="text-sm font-semibold text-txt-primary">Time</h2>
+                <p class="text-xs text-txt-muted mt-0.5">Pay period: <span class="font-medium text-txt-secondary">{{ '%.1f' | format(pay_period_hours) }}h</span></p>
             </div>
+
+            {% if active_clock %}
+            <div class="flex items-center gap-3">
+                <div class="text-right">
+                    <p class="text-xs text-txt-muted">Active shift</p>
+                    <p class="text-lg font-display font-bold text-success tabular-nums" id="elapsed-time">00:00:00</p>
+                </div>
+                <a href="{{ url_for('stop_clock') }}"
+                   class="px-4 py-2 text-sm font-medium bg-danger text-white rounded-lg hover:bg-danger/80 transition touch-target">
+                    Stop
+                </a>
+            </div>
+            {% else %}
+            <form method="POST" action="{{ url_for('start_clock') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <button type="submit"
+                        class="px-4 py-2 text-sm font-medium bg-surface-overlay text-txt-secondary border border-edge-strong rounded-lg hover:bg-surface-hover hover:text-txt-primary hover:border-primary/30 transition touch-target">
+                    Clock In
+                </button>
+            </form>
+            {% endif %}
         </div>
-    </div>
+    </section>
+
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-// --- Client filtering (preserved from original) ---
+// --- Collapsible section state (localStorage) ---
+function hubSections() {
+    const stored = JSON.parse(localStorage.getItem('hub_sections') || '{}');
+    return {
+        sections: {
+            pipeline: stored.pipeline !== undefined ? stored.pipeline : true,
+            activity: stored.activity !== undefined ? stored.activity : false,
+        },
+        toggle(key) {
+            this.sections[key] = !this.sections[key];
+            localStorage.setItem('hub_sections', JSON.stringify(this.sections));
+        }
+    };
+}
+
+// --- Client filtering ---
 const allClients = [
     {% for client in my_clients %}
     {
@@ -423,14 +411,14 @@ const isSupervisor = {{ 'true' if current_user.is_supervisor else 'false' }};
 
 function getStatusBadge(status) {
     const map = {
-        'Lead':      'bg-emerald-50 text-emerald-700 ring-emerald-200',
-        'Prospect':  'bg-sky-50 text-sky-700 ring-sky-200',
-        'Active':    'bg-brand-50 text-brand-700 ring-brand-200',
-        'Completed': 'bg-slate-100 text-slate-600 ring-slate-200',
-        'On Hold':   'bg-amber-50 text-amber-700 ring-amber-200'
+        'Lead':      'bg-success-light text-success border-success/20',
+        'Prospect':  'bg-[#0C1B2E] text-blue-400 border-blue-500/20',
+        'Active':    'bg-primary-light text-primary border-primary/20',
+        'Completed': 'bg-surface-overlay text-txt-secondary border-edge-strong',
+        'On Hold':   'bg-warning-light text-warning border-warning/20'
     };
-    const cls = map[status] || 'bg-slate-100 text-slate-600 ring-slate-200';
-    return `<span class="inline-block px-2 py-0.5 text-[11px] font-medium rounded-md ring-1 ${cls}">${status}</span>`;
+    const cls = map[status] || 'bg-surface-overlay text-txt-secondary border-edge-strong';
+    return `<span class="inline-block px-2 py-0.5 text-[11px] font-medium rounded-md border ${cls}">${status}</span>`;
 }
 
 function formatCurrency(v) {
@@ -446,23 +434,23 @@ function showFilteredClients(status) {
     title.textContent = status === 'All' ? 'All Clients' : status + ' Clients';
 
     if (filtered.length === 0) {
-        content.innerHTML = '<p class="text-sm text-slate-400 text-center py-4">No clients found</p>';
+        content.innerHTML = '<p class="text-sm text-txt-muted text-center py-4">No clients found</p>';
     } else {
         let html = '<div class="space-y-2">';
         filtered.forEach(c => {
             html += `
-                <a href="${c.edit_url}" class="block p-3 rounded-xl ring-1 ring-slate-200 hover:ring-brand-300 hover:bg-brand-50/50 transition">
+                <a href="${c.edit_url}" class="block p-3 rounded-xl border border-edge hover:border-primary/30 bg-surface-raised hover:bg-surface-hover transition hover:shadow-glow-sm">
                     <div class="flex justify-between items-start">
                         <div class="flex-1 min-w-0">
-                            <h4 class="font-semibold text-slate-900 text-sm truncate">${c.name}</h4>
-                            <p class="text-xs text-slate-500 mt-0.5 truncate">${c.address}</p>
+                            <h4 class="font-semibold text-txt-primary text-sm truncate">${c.name}</h4>
+                            <p class="text-xs text-txt-muted mt-0.5 truncate">${c.address}</p>
                         </div>
                         <div class="ml-3 text-right flex-shrink-0">
                             ${getStatusBadge(c.status)}
-                            ${isSupervisor && c.assigned_to_name ? `<p class="text-[11px] text-slate-400 mt-1">${c.assigned_to_name}</p>` : ''}
+                            ${isSupervisor && c.assigned_to_name ? `<p class="text-[11px] text-txt-muted mt-1">${c.assigned_to_name}</p>` : ''}
                         </div>
                     </div>
-                    ${c.opportunity_value > 0 ? `<p class="text-sm font-semibold text-slate-600 mt-1.5">${formatCurrency(c.opportunity_value)}</p>` : ''}
+                    ${c.opportunity_value > 0 ? `<p class="text-sm font-semibold text-txt-secondary mt-1.5">${formatCurrency(c.opportunity_value)}</p>` : ''}
                 </a>`;
         });
         html += '</div>';
@@ -478,54 +466,18 @@ function hideFilteredClients() {
 }
 
 // --- Clock update ---
+{% if active_clock %}
 function updateClock() {
     fetch('{{ url_for("clock_status") }}')
         .then(r => r.json())
         .then(data => {
             if (!data.active) return;
-            document.getElementById('elapsed-time').textContent = data.elapsed;
-            document.getElementById('start-time').textContent = data.start_time;
-
-            const b15 = document.getElementById('break-15-btn');
-            const lnch = document.getElementById('lunch-btn');
-            if (!b15 || !lnch) return;
-            const s = data.elapsed_seconds;
-
-            if (!data.break_15_taken && s >= 3600) {
-                b15.disabled = false;
-                b15.className = 'bg-amber-500 hover:bg-amber-600 text-white font-medium py-2 px-3 rounded-lg text-xs cursor-pointer transition';
-            } else if (data.break_15_taken) {
-                b15.textContent = 'Break Taken';
-                b15.className = 'bg-emerald-100 text-emerald-700 font-medium py-2 px-3 rounded-lg text-xs cursor-not-allowed transition';
-            }
-
-            if (!data.lunch_taken && s >= 7200) {
-                lnch.disabled = false;
-                lnch.className = 'bg-sky-500 hover:bg-sky-600 text-white font-medium py-2 px-3 rounded-lg text-xs cursor-pointer transition';
-            } else if (data.lunch_taken) {
-                lnch.textContent = 'Lunch Taken';
-                lnch.className = 'bg-emerald-100 text-emerald-700 font-medium py-2 px-3 rounded-lg text-xs cursor-not-allowed transition';
-            }
+            const el = document.getElementById('elapsed-time');
+            if (el) el.textContent = data.elapsed;
         });
 }
-
-{% if active_clock %}
 updateClock();
 setInterval(updateClock, 1000);
-
-document.getElementById('break-15-btn').addEventListener('click', function() {
-    if (this.disabled) return;
-    fetch('{{ url_for("take_break_15") }}', { method: 'POST', headers: { 'X-CSRFToken': '{{ csrf_token() }}' }})
-        .then(r => r.json())
-        .then(d => { if (d.success) { alert('15-minute break recorded! This will be deducted from your shift total.'); updateClock(); } else { alert(d.message); } });
-});
-
-document.getElementById('lunch-btn').addEventListener('click', function() {
-    if (this.disabled) return;
-    fetch('{{ url_for("take_lunch") }}', { method: 'POST', headers: { 'X-CSRFToken': '{{ csrf_token() }}' }})
-        .then(r => r.json())
-        .then(d => { if (d.success) { alert('1-hour lunch break recorded! This will be deducted from your shift total.'); updateClock(); } else { alert(d.message); } });
-});
 {% endif %}
 
 // --- Weekly chart ---
@@ -533,20 +485,12 @@ document.getElementById('lunch-btn').addEventListener('click', function() {
 {% if total_week_check > 0 %}
 document.addEventListener('DOMContentLoaded', function() {
     const weekData = {{ weekly_hours | tojson }};
-
-    // Format dates as short day names (Mon, Tue, ...)
     const labels = weekData.map(d => {
         const dt = new Date(d.date + 'T00:00:00');
         return dt.toLocaleDateString('en-US', { weekday: 'short' });
     });
     const values = weekData.map(d => d.hours);
-
     const ctx = document.getElementById('weeklyChart').getContext('2d');
-
-    // Gradient fill
-    const gradient = ctx.createLinearGradient(0, 0, 0, ctx.canvas.clientHeight || 220);
-    gradient.addColorStop(0, 'rgba(79, 70, 229, 0.15)');
-    gradient.addColorStop(1, 'rgba(79, 70, 229, 0.01)');
 
     new Chart(ctx, {
         type: 'bar',
@@ -555,11 +499,11 @@ document.addEventListener('DOMContentLoaded', function() {
             datasets: [{
                 label: 'Hours',
                 data: values,
-                backgroundColor: values.map(v => v > 0 ? 'rgba(79, 70, 229, 0.8)' : 'rgba(203, 213, 225, 0.4)'),
-                hoverBackgroundColor: 'rgba(79, 70, 229, 1)',
-                borderRadius: 8,
+                backgroundColor: values.map(v => v > 0 ? '#34D399CC' : '#1E2A38'),
+                hoverBackgroundColor: '#34D399',
+                borderRadius: 6,
                 borderSkipped: false,
-                maxBarThickness: 48
+                maxBarThickness: 40
             }]
         },
         options: {
@@ -583,40 +527,23 @@ document.addEventListener('DOMContentLoaded', function() {
             scales: {
                 y: {
                     beginAtZero: true,
-                    title: {
-                        display: true,
-                        text: 'Hours',
-                        font: { size: 12, weight: '500' },
-                        color: '#94a3b8'
-                    },
-                    ticks: {
-                        stepSize: 2,
-                        callback: function(v) { return v + 'h'; }
-                    },
-                    grid: { color: 'rgba(226, 232, 240, 0.6)' },
+                    ticks: { stepSize: 2, callback: v => v + 'h', color: '#64748B' },
+                    grid: { color: '#1E2A3840' },
                     border: { display: false }
                 },
                 x: {
-                    title: {
-                        display: true,
-                        text: 'Day of Week',
-                        font: { size: 12, weight: '500' },
-                        color: '#94a3b8'
-                    },
+                    ticks: { color: '#64748B' },
                     grid: { display: false },
                     border: { display: false }
                 }
             },
-            animation: {
-                duration: 800,
-                easing: 'easeOutQuart'
-            }
+            animation: { duration: 800, easing: 'easeOutQuart' }
         }
     });
 });
 {% endif %}
 
-// --- Count-up animations for stat cards ---
+// --- Count-up animations ---
 document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('[data-countup]').forEach(function(el) {
         const target = el.getAttribute('data-countup');
