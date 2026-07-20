@@ -15,7 +15,7 @@ from sqlalchemy.orm import joinedload
 from collections import defaultdict
 
 from app import app, db
-from models import User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage, LeadSource, ChannelSpend
+from models import User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage, LeadSource, ClientStatusChange, ChannelSpend
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
     utc_to_pacific, pacific_to_utc, calculate_duration, round_to_quarter_hour,
@@ -39,6 +39,120 @@ def build_daily_hours(entries, period_start, period_end):
     return result
 
 app.register_blueprint(google_auth)
+
+
+def _build_client_timeline(client, activities):
+    """Merge all client events into a single chronological timeline."""
+    events = []
+
+    # 1. Lead created
+    events.append({
+        'type': 'created',
+        'date': client.created_at,
+        'data': {
+            'source': client.lead_source,
+            'source_detail': client.source_detail,
+            'created_by': client.created_by,
+            'initial_status': client.status,
+        }
+    })
+
+    # 2. Status changes (from the structured table)
+    status_changes = ClientStatusChange.query.filter_by(client_id=client.id)\
+        .order_by(ClientStatusChange.changed_at).all()
+    for sc in status_changes:
+        events.append({
+            'type': 'status_change',
+            'date': sc.changed_at,
+            'data': {
+                'from_status': sc.from_status,
+                'to_status': sc.to_status,
+                'changed_by': sc.changed_by,
+            }
+        })
+
+    # 3. Activities (skip "Status Change" type — covered above)
+    for a in activities:
+        if a.activity_type == 'Status Change':
+            continue
+        events.append({
+            'type': 'activity',
+            'date': a.activity_date,
+            'data': {
+                'activity_type': a.activity_type,
+                'note_text': a.note_text,
+                'file_name': a.file_name,
+                'activity_id': a.id,
+                'user': a.user,
+                'next_step_description': a.next_step_description,
+                'next_step_date': a.next_step_date,
+            }
+        })
+
+    # 4. Property image uploads
+    images = PropertyImage.query.filter_by(client_id=client.id).order_by(PropertyImage.created_at).all()
+    for img in images:
+        events.append({
+            'type': 'upload',
+            'date': img.created_at,
+            'data': {
+                'file_name': img.file_name,
+                'uploaded_by': img.uploaded_by,
+            }
+        })
+
+    # 5. Deal closed (if completed with final value)
+    if client.status == 'Completed' and client.final_contract_value is not None:
+        # Use the last status change to Completed as the date
+        completed_change = ClientStatusChange.query.filter_by(
+            client_id=client.id, to_status='Completed'
+        ).order_by(ClientStatusChange.changed_at.desc()).first()
+        close_date = completed_change.changed_at if completed_change else client.updated_at
+        events.append({
+            'type': 'deal_closed',
+            'date': close_date,
+            'data': {
+                'final_value': client.final_contract_value,
+                'opportunity_value': client.opportunity_value,
+            }
+        })
+
+    # Sort chronologically
+    events.sort(key=lambda e: e['date'] or datetime.min)
+
+    # Calculate elapsed time between stage changes
+    stage_durations = []
+    for i, ev in enumerate(events):
+        if ev['type'] == 'status_change' and ev['data'].get('from_status'):
+            # Find previous status_change or created event
+            prev_date = client.created_at
+            for j in range(i - 1, -1, -1):
+                if events[j]['type'] in ('status_change', 'created'):
+                    prev_date = events[j]['date']
+                    break
+            if prev_date and ev['date']:
+                delta = (ev['date'] - prev_date).days
+                ev['data']['days_in_stage'] = delta
+                ev['data']['stage_label'] = ev['data']['from_status']
+
+    # Compute total deal age and current stage duration
+    now = datetime.utcnow()
+    total_age_days = (now - client.created_at).days if client.created_at else 0
+
+    # Current stage duration: time since last status change
+    last_change = ClientStatusChange.query.filter_by(client_id=client.id)\
+        .order_by(ClientStatusChange.changed_at.desc()).first()
+    if last_change:
+        current_stage_days = (now - last_change.changed_at).days
+    else:
+        current_stage_days = total_age_days
+
+    return {
+        'events': events,
+        'total_age_days': total_age_days,
+        'current_stage': client.status,
+        'current_stage_days': current_stage_days,
+    }
 
 
 @app.before_request
@@ -247,21 +361,28 @@ def home():
     ))
     last_week_completed_count = last_completed_q.count()
 
-    # === FOLLOW-UP DEBT ===
+    # === NEEDS ATTENTION (unified) ===
     now = datetime.utcnow()
+    stale_amber_days = app.config.get('STALE_AMBER_DAYS', 14)
+    stale_red_days = app.config.get('STALE_RED_DAYS', 28)
+    active_statuses = ['Lead', 'Prospect', 'Active']
+
+    from sqlalchemy import func as sa_func
+
     # Overdue next steps
     overdue_q = ClientActivity.query.join(Client).filter(
         Client.is_active == True,
+        Client.status.in_(active_statuses),
         ClientActivity.next_step_date.isnot(None),
         ClientActivity.next_step_date < now
     )
     if not is_company_wide:
         overdue_q = overdue_q.filter(Client.assigned_to_user_id == target_user_id)
-    overdue_steps = overdue_q.order_by(ClientActivity.next_step_date.asc()).all()
+    overdue_steps = overdue_q.options(
+        joinedload(ClientActivity.client).joinedload(Client.assigned_to)
+    ).order_by(ClientActivity.next_step_date.asc()).all()
 
-    # Clients with no next step scheduled (active pipeline only)
-    from sqlalchemy import func, and_, or_
-    # Subquery: clients that DO have a future next step
+    # Clients with no next step scheduled
     has_next_step_ids = db.session.query(ClientActivity.client_id).filter(
         ClientActivity.next_step_date.isnot(None),
         ClientActivity.next_step_date >= now
@@ -269,21 +390,131 @@ def home():
 
     no_next_step_q = Client.query.filter(
         Client.is_active == True,
-        Client.status.in_(['Lead', 'Prospect', 'Active']),
+        Client.status.in_(active_statuses),
         ~Client.id.in_(db.session.query(has_next_step_ids))
     )
     if not is_company_wide:
         no_next_step_q = no_next_step_q.filter(Client.assigned_to_user_id == target_user_id)
-    clients_no_next_step = no_next_step_q.all()
+    clients_no_next_step = no_next_step_q.options(joinedload(Client.assigned_to)).all()
 
-    # Stale clients (no activity in 14+ days)
-    stale_threshold = now - timedelta(days=14)
+    # Stale clients
+    stale_threshold = now - timedelta(days=stale_amber_days)
     stale_q = _user_filter(Client.query.filter(
         Client.is_active == True,
-        Client.status.in_(['Lead', 'Prospect', 'Active']),
+        Client.status.in_(active_statuses),
         Client.updated_at < stale_threshold
     ))
-    stale_clients = stale_q.order_by(Client.updated_at.asc()).all()
+    stale_clients = stale_q.options(joinedload(Client.assigned_to)).order_by(Client.updated_at.asc()).all()
+
+    # Clients missing lead source
+    missing_source_q = _user_filter(Client.query.filter(
+        Client.is_active == True,
+        Client.status.in_(active_statuses),
+        Client.lead_source_id.is_(None)
+    ))
+    clients_missing_source = missing_source_q.options(joinedload(Client.assigned_to)).all()
+
+    # Build unified attention_items list
+    attention_items = []
+    seen_client_ids = set()
+
+    # 1. Overdue steps (deduplicate to one per client - oldest overdue)
+    overdue_by_client = {}
+    for activity in overdue_steps:
+        cid = activity.client_id
+        if cid not in overdue_by_client:
+            overdue_by_client[cid] = activity
+    for cid, activity in overdue_by_client.items():
+        days_overdue = (now - activity.next_step_date).days
+        attention_items.append({
+            'client': activity.client,
+            'issue_type': 'overdue_step',
+            'label': 'Next step overdue',
+            'detail': activity.next_step_description or '',
+            'days': days_overdue,
+            'severity': 'red' if days_overdue >= 7 else 'amber',
+            'extra_issues': []
+        })
+        seen_client_ids.add(cid)
+
+    # 2. No next step
+    for client in clients_no_next_step:
+        if client.id not in seen_client_ids:
+            attention_items.append({
+                'client': client,
+                'issue_type': 'no_next_step',
+                'label': 'No next step set',
+                'detail': '',
+                'days': 0,
+                'severity': 'amber',
+                'extra_issues': []
+            })
+            seen_client_ids.add(client.id)
+
+    # 3. Stale
+    for client in stale_clients:
+        days_stale = (now - client.updated_at).days
+        severity = 'red' if days_stale >= stale_red_days else 'amber'
+        if client.id in seen_client_ids:
+            for item in attention_items:
+                if item['client'].id == client.id:
+                    item['extra_issues'].append({
+                        'issue_type': 'stale',
+                        'label': f'No activity in {days_stale} days',
+                        'days': days_stale,
+                        'severity': severity
+                    })
+                    if severity == 'red':
+                        item['severity'] = 'red'
+                    break
+        else:
+            attention_items.append({
+                'client': client,
+                'issue_type': 'stale',
+                'label': f'No activity in {days_stale} days',
+                'detail': '',
+                'days': days_stale,
+                'severity': severity,
+                'extra_issues': []
+            })
+            seen_client_ids.add(client.id)
+
+    # 4. Missing lead source
+    for client in clients_missing_source:
+        if client.id in seen_client_ids:
+            for item in attention_items:
+                if item['client'].id == client.id:
+                    item['extra_issues'].append({
+                        'issue_type': 'missing_source',
+                        'label': 'Missing lead source',
+                        'days': 0,
+                        'severity': 'amber'
+                    })
+                    break
+        else:
+            attention_items.append({
+                'client': client,
+                'issue_type': 'missing_source',
+                'label': 'Missing lead source',
+                'detail': '',
+                'days': 0,
+                'severity': 'amber',
+                'extra_issues': []
+            })
+            seen_client_ids.add(client.id)
+
+    # Sort: red first, then by days desc
+    attention_items.sort(key=lambda x: (0 if x['severity'] == 'red' else 1, -x['days']))
+
+    # Per-rep summary for supervisors
+    attention_rep_summary = []
+    if current_user.is_supervisor and not selected_user and attention_items:
+        rep_counts = defaultdict(int)
+        for item in attention_items:
+            rep = item['client'].assigned_to
+            name = rep.first_name if rep else 'Unassigned'
+            rep_counts[name] += 1
+        attention_rep_summary = sorted(rep_counts.items(), key=lambda x: -x[1])
 
     # === HOURS LOGGED (company-wide this week) ===
     hours_q = TimeEntry.query.filter(
@@ -338,10 +569,50 @@ def home():
                          overdue_steps=overdue_steps,
                          clients_no_next_step=clients_no_next_step,
                          stale_clients=stale_clients,
+                         attention_items=attention_items,
+                         attention_rep_summary=attention_rep_summary,
+                         stale_amber_days=stale_amber_days,
+                         stale_red_days=stale_red_days,
                          week_hours_total=week_hours_total,
                          last_week_hours_total=last_week_hours_total,
                          pay_period_hours=pay_period_hours,
                          missing_source_count=Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count() if current_user.is_supervisor else 0)
+
+
+@app.route('/clients/<int:client_id>/quick_next_step', methods=['POST'])
+@require_login
+def quick_add_next_step(client_id):
+    """Inline 'Add next step' from the Needs Attention section."""
+    client = Client.query.get_or_404(client_id)
+    step_type = request.form.get('step_type', '').strip()
+    step_date_str = request.form.get('step_date', '').strip()
+
+    if not step_type or not step_date_str:
+        flash('Step type and date are required.', 'error')
+        return redirect(url_for('home'))
+
+    try:
+        step_date_pacific = datetime.strptime(step_date_str, '%Y-%m-%d')
+        step_date_utc = pacific_to_utc(step_date_pacific).replace(tzinfo=None)
+    except ValueError:
+        flash('Invalid date format.', 'error')
+        return redirect(url_for('home'))
+
+    activity = ClientActivity(
+        client_id=client_id,
+        user_id=current_user.id,
+        activity_type='Next Step Scheduled',
+        note_text=f"Next step added: {step_type}",
+        activity_date=datetime.utcnow(),
+        next_step_description=step_type,
+        next_step_date=step_date_utc
+    )
+    db.session.add(activity)
+    client.updated_at = datetime.utcnow()
+    db.session.commit()
+
+    flash(f'Next step added for {client.name}.', 'success')
+    return redirect(url_for('home'))
 
 
 @app.route('/clock/start', methods=['POST'])
@@ -746,6 +1017,15 @@ def create_client():
     
     from r2_storage_helper import build_client_prefix
     client.storage_prefix = build_client_prefix(client.name, client.address)
+
+    # Log initial status
+    db.session.add(ClientStatusChange(
+        client_id=client.id,
+        from_status=None,
+        to_status=client.status,
+        changed_by_user_id=current_user.id,
+        changed_at=client.created_at or datetime.utcnow()
+    ))
     db.session.commit()
 
     flash(f'Client "{name}" created successfully.', 'success')
@@ -762,7 +1042,12 @@ def edit_client(client_id):
         all_users = User.query.filter_by(role='rep').all()
         all_users = sorted(all_users, key=lambda u: u.display_name.lower())
         lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
-        return render_template('client_form.html', client=client, activities=activities, all_users=all_users, lead_sources=lead_sources)
+
+        # Build journey timeline
+        timeline = _build_client_timeline(client, activities)
+
+        return render_template('client_form.html', client=client, activities=activities,
+                               all_users=all_users, lead_sources=lead_sources, timeline=timeline)
     
     name = request.form.get('name', '').strip()
     address = request.form.get('address', '').strip()
@@ -796,6 +1081,7 @@ def edit_client(client_id):
         flash('Name and address are required.', 'error')
         return redirect(url_for('edit_client', client_id=client_id))
     
+    old_status = client.status
     client.name = name
     client.address = address
     client.contact_name = contact_name if contact_name else None
@@ -803,6 +1089,15 @@ def edit_client(client_id):
     client.email = email if email else None
     client.status = status
     client.notes = notes if notes else None
+
+    if old_status != status:
+        db.session.add(ClientStatusChange(
+            client_id=client.id,
+            from_status=old_status,
+            to_status=status,
+            changed_by_user_id=current_user.id,
+            changed_at=datetime.utcnow()
+        ))
     
     client.lot_sqft = lot_sqft if lot_sqft else None
     client.sqft = sqft if sqft else None
@@ -878,7 +1173,7 @@ def update_client_status(client_id):
         except (InvalidOperation, ValueError):
             pass
 
-    # Log status change as activity for pipeline tracking
+    # Log status change as activity + structured record for timeline
     if old_status != new_status:
         activity = ClientActivity(
             client_id=client.id,
@@ -888,6 +1183,15 @@ def update_client_status(client_id):
             activity_date=datetime.utcnow()
         )
         db.session.add(activity)
+
+        status_change = ClientStatusChange(
+            client_id=client.id,
+            from_status=old_status,
+            to_status=new_status,
+            changed_by_user_id=current_user.id,
+            changed_at=datetime.utcnow()
+        )
+        db.session.add(status_change)
 
     db.session.commit()
 
@@ -2534,3 +2838,294 @@ def delete_channel_spend(spend_id):
     db.session.commit()
     flash('Spend entry deleted.', 'success')
     return redirect(url_for('channel_spend', month=month_str))
+
+
+# --- ROI Report (Supervisors Only) ---
+
+def _parse_roi_dates(req):
+    """Parse date range from request args. Returns (start, end, prev_start, prev_end, preset)."""
+    preset = req.args.get('preset', '')
+    today = date.today()
+
+    if preset == 'this_month':
+        start = today.replace(day=1)
+        end = today
+    elif preset == 'last_3_months':
+        m = today.replace(day=1)
+        end = m - timedelta(days=1)
+        m2 = end.replace(day=1)
+        m3 = (m2 - timedelta(days=1)).replace(day=1)
+        start = (m3 - timedelta(days=1)).replace(day=1)
+    elif preset == 'ytd':
+        start = today.replace(month=1, day=1)
+        end = today
+    elif preset == 'last_month' or (not req.args.get('start') and not preset):
+        first_this = today.replace(day=1)
+        end = first_this - timedelta(days=1)
+        start = end.replace(day=1)
+        preset = 'last_month'
+    else:
+        try:
+            start = datetime.strptime(req.args['start'], '%Y-%m-%d').date()
+            end = datetime.strptime(req.args['end'], '%Y-%m-%d').date()
+        except (KeyError, ValueError):
+            first_this = today.replace(day=1)
+            end = first_this - timedelta(days=1)
+            start = end.replace(day=1)
+            preset = 'last_month'
+
+    period_days = (end - start).days + 1
+    prev_end = start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=period_days - 1)
+    return start, end, prev_start, prev_end, preset
+
+
+def _build_roi_rows(clients_in_period, spend_by_source, all_source_ids):
+    """Build per-source ROI rows from clients created in the period."""
+    empty = lambda: {
+        'funnel_lead': 0, 'funnel_prospect': 0, 'funnel_active': 0,
+        'funnel_completed': 0, 'funnel_on_hold': 0, 'funnel_lost': 0,
+        'total_leads': 0,
+        'revenue_closed': Decimal(0), 'revenue_projected': Decimal(0),
+        '_days_to_close': [],  # list of day counts for completed clients
+    }
+    rows = {sid: empty() for sid in all_source_ids}
+    rows[None] = empty()
+
+    status_key = {
+        'Lead': 'funnel_lead', 'Prospect': 'funnel_prospect',
+        'Active': 'funnel_active', 'Completed': 'funnel_completed',
+        'On Hold': 'funnel_on_hold', 'Lost': 'funnel_lost',
+    }
+    for c in clients_in_period:
+        sid = c.lead_source_id if c.lead_source_id in rows else None
+        r = rows[sid]
+        r['total_leads'] += 1
+        r[status_key.get(c.status, 'funnel_lead')] += 1
+        if c.status == 'Completed' and c.final_contract_value:
+            r['revenue_closed'] += c.final_contract_value
+        if c.status == 'Completed' and c.created_at:
+            close_change = ClientStatusChange.query.filter_by(
+                client_id=c.id, to_status='Completed'
+            ).order_by(ClientStatusChange.changed_at.desc()).first()
+            close_date = close_change.changed_at if close_change else c.updated_at
+            if close_date:
+                r['_days_to_close'].append((close_date - c.created_at).days)
+        if c.status == 'Active' and c.opportunity_value:
+            r['revenue_projected'] += c.opportunity_value
+
+    for sid in rows:
+        r = rows[sid]
+        r['spend'] = spend_by_source.get(sid, Decimal(0))
+        tl = r['total_leads']
+        r['cpl'] = r['spend'] / tl if tl and r['spend'] else None
+        r['won'] = r['funnel_active'] + r['funnel_completed']
+        r['close_rate'] = (r['won'] / tl * 100) if tl else None
+        r['total_revenue'] = r['revenue_closed'] + r['revenue_projected']
+        r['roi'] = float(r['total_revenue'] / r['spend']) if r['spend'] else None
+        dtc = r.pop('_days_to_close')
+        r['avg_days_to_close'] = round(sum(dtc) / len(dtc), 1) if len(dtc) >= 5 else None
+        r['days_to_close_count'] = len(dtc)
+    return rows
+
+
+@app.route('/reports/roi')
+@require_supervisor
+def roi_report():
+    start, end, prev_start, prev_end, preset = _parse_roi_dates(request)
+
+    start_dt = datetime.combine(start, datetime.min.time())
+    end_dt = datetime.combine(end, datetime.max.time())
+    prev_start_dt = datetime.combine(prev_start, datetime.min.time())
+    prev_end_dt = datetime.combine(prev_end, datetime.max.time())
+
+    clients_current = Client.query.options(joinedload(Client.lead_source))\
+        .filter(Client.created_at >= start_dt, Client.created_at <= end_dt).all()
+    clients_prev = Client.query.options(joinedload(Client.lead_source))\
+        .filter(Client.created_at >= prev_start_dt, Client.created_at <= prev_end_dt).all()
+
+    spend_entries = ChannelSpend.query.filter(
+        ChannelSpend.period_month >= start.replace(day=1),
+        ChannelSpend.period_month <= end.replace(day=1)).all()
+    spend_by_source = defaultdict(Decimal)
+    for e in spend_entries:
+        spend_by_source[e.lead_source_id] += e.amount
+
+    prev_spend_entries = ChannelSpend.query.filter(
+        ChannelSpend.period_month >= prev_start.replace(day=1),
+        ChannelSpend.period_month <= prev_end.replace(day=1)).all()
+    prev_spend_by_source = defaultdict(Decimal)
+    for e in prev_spend_entries:
+        prev_spend_by_source[e.lead_source_id] += e.amount
+
+    all_source_ids = set()
+    for c in clients_current + clients_prev:
+        if c.lead_source_id:
+            all_source_ids.add(c.lead_source_id)
+    for sid in list(spend_by_source) + list(prev_spend_by_source):
+        all_source_ids.add(sid)
+
+    rows = _build_roi_rows(clients_current, spend_by_source, all_source_ids)
+    prev_rows = _build_roi_rows(clients_prev, prev_spend_by_source, all_source_ids)
+
+    sources = LeadSource.query.filter(LeadSource.id.in_(all_source_ids)).all() if all_source_ids else []
+    source_names = {s.id: s.name for s in sources}
+    source_names[None] = 'Unknown / No Source'
+
+    table = []
+    for sid, r in rows.items():
+        if r['total_leads'] == 0 and r['spend'] == 0:
+            continue
+        pr = prev_rows.get(sid, {})
+        table.append({
+            'source_id': sid, 'source_name': source_names.get(sid, 'Unknown'),
+            **r,
+            'prev_leads': pr.get('total_leads', 0),
+            'prev_won': pr.get('won', 0),
+            'prev_spend': pr.get('spend', Decimal(0)),
+            'prev_revenue': pr.get('total_revenue', Decimal(0)),
+            'prev_roi': pr.get('roi'),
+        })
+    table.sort(key=lambda x: (float(x['total_revenue']), x['total_leads']), reverse=True)
+
+    best = None
+    for r in table:
+        if r['roi'] and r['roi'] > 0 and r['spend'] > 0:
+            if best is None or r['roi'] > best['roi']:
+                best = r
+
+    totals = {
+        'spend': sum(r['spend'] for r in table),
+        'total_leads': sum(r['total_leads'] for r in table),
+        'won': sum(r['won'] for r in table),
+        'revenue_closed': sum(r['revenue_closed'] for r in table),
+        'revenue_projected': sum(r['revenue_projected'] for r in table),
+        'total_revenue': sum(r['total_revenue'] for r in table),
+        'prev_leads': sum(r['prev_leads'] for r in table),
+        'prev_won': sum(r['prev_won'] for r in table),
+        'prev_spend': sum(r['prev_spend'] for r in table),
+        'prev_revenue': sum(r['prev_revenue'] for r in table),
+    }
+    tl = totals['total_leads']
+    totals['cpl'] = totals['spend'] / tl if tl and totals['spend'] else None
+    totals['close_rate'] = (totals['won'] / tl * 100) if tl else None
+    totals['roi'] = float(totals['total_revenue'] / totals['spend']) if totals['spend'] else None
+    all_dtc = [r['avg_days_to_close'] for r in table if r.get('avg_days_to_close')]
+    totals['avg_days_to_close'] = round(sum(all_dtc) / len(all_dtc), 1) if all_dtc else None
+
+    return render_template('roi_report.html',
+                           table=table, totals=totals, best=best,
+                           start=start, end=end,
+                           prev_start=prev_start, prev_end=prev_end,
+                           preset=preset)
+
+
+@app.route('/reports/roi/export')
+@require_supervisor
+def roi_report_export():
+    start, end, prev_start, prev_end, preset = _parse_roi_dates(request)
+    start_dt = datetime.combine(start, datetime.min.time())
+    end_dt = datetime.combine(end, datetime.max.time())
+
+    clients_current = Client.query.options(joinedload(Client.lead_source))\
+        .filter(Client.created_at >= start_dt, Client.created_at <= end_dt).all()
+
+    spend_entries = ChannelSpend.query.filter(
+        ChannelSpend.period_month >= start.replace(day=1),
+        ChannelSpend.period_month <= end.replace(day=1)).all()
+    spend_by_source = defaultdict(Decimal)
+    for e in spend_entries:
+        spend_by_source[e.lead_source_id] += e.amount
+
+    all_source_ids = set()
+    for c in clients_current:
+        if c.lead_source_id:
+            all_source_ids.add(c.lead_source_id)
+    for sid in spend_by_source:
+        all_source_ids.add(sid)
+
+    rows = _build_roi_rows(clients_current, spend_by_source, all_source_ids)
+    sources = LeadSource.query.filter(LeadSource.id.in_(all_source_ids)).all() if all_source_ids else []
+    source_names = {s.id: s.name for s in sources}
+    source_names[None] = 'Unknown / No Source'
+
+    si = StringIO()
+    writer = csv.writer(si)
+    writer.writerow([
+        'Source', 'Spend', 'Leads', 'Cost per Lead',
+        'Won (Active+Completed)', 'Close Rate',
+        'Revenue (Closed)', 'Revenue (Projected)', 'Total Revenue', 'ROI Multiple',
+        'Avg Days to Close',
+        'Funnel: Lead', 'Funnel: Prospect', 'Funnel: Active', 'Funnel: Completed',
+        'Funnel: On Hold', 'Funnel: Lost',
+    ])
+    sorted_rows = sorted(rows.items(), key=lambda x: float(x[1]['total_revenue']), reverse=True)
+    for sid, r in sorted_rows:
+        if r['total_leads'] == 0 and r['spend'] == 0:
+            continue
+        writer.writerow([
+            source_names.get(sid, 'Unknown'),
+            f"{r['spend']:.2f}", r['total_leads'],
+            f"{r['cpl']:.2f}" if r['cpl'] else '',
+            r['won'],
+            f"{r['close_rate']:.1f}%" if r['close_rate'] is not None else '',
+            f"{r['revenue_closed']:.2f}", f"{r['revenue_projected']:.2f}",
+            f"{r['total_revenue']:.2f}",
+            f"{r['roi']:.2f}x" if r['roi'] else '',
+            f"{r['avg_days_to_close']}" if r.get('avg_days_to_close') else '',
+            r['funnel_lead'], r['funnel_prospect'], r['funnel_active'],
+            r['funnel_completed'], r['funnel_on_hold'], r['funnel_lost'],
+        ])
+
+    filename = f"roi_report_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}.csv"
+    return Response(
+        si.getvalue(), mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename={filename}'}
+    )
+
+
+@app.route('/api/search')
+@require_login
+def global_search():
+    """Search clients and activities by substring, case-insensitive."""
+    q = request.args.get('q', '').strip()
+    if len(q) < 2:
+        return jsonify({'clients': [], 'activities': []})
+
+    like_q = f'%{q}%'
+    results = {'clients': [], 'activities': []}
+
+    # Search clients: name, address, contact_name
+    clients = Client.query.filter(
+        db.or_(
+            Client.name.ilike(like_q),
+            Client.address.ilike(like_q),
+            Client.contact_name.ilike(like_q),
+        )
+    ).order_by(Client.name).limit(10).all()
+
+    for c in clients:
+        results['clients'].append({
+            'id': c.id,
+            'name': c.name,
+            'address': c.address or '',
+            'status': c.status or '',
+            'url': url_for('edit_client', client_id=c.id),
+        })
+
+    # Search activities: note_text
+    activities = ClientActivity.query.join(Client).filter(
+        ClientActivity.note_text.ilike(like_q)
+    ).order_by(ClientActivity.activity_date.desc()).limit(10).all()
+
+    for a in activities:
+        results['activities'].append({
+            'id': a.id,
+            'note': (a.note_text[:80] + '…') if len(a.note_text) > 80 else a.note_text,
+            'type': a.activity_type,
+            'client_name': a.client.name if a.client else '',
+            'client_id': a.client_id,
+            'url': url_for('edit_client', client_id=a.client_id),
+        })
+
+    return jsonify(results)

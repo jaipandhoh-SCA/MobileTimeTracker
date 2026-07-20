@@ -89,6 +89,47 @@ Rule: nothing goes to Claude Code until it's written under **Active** with enoug
 
 ## 4. Changelog
 
+### 2026-07-19 — Full Channel ROI Report
+
+**New report page** at `/reports/roi` (supervisors). Answers "which marketing channel deserves more budget?" with first-touch attribution (clients counted in the period they were created).
+
+**Features:** Date range picker with presets (last month default, this month, last 3 months, YTD, custom). Headline sentence ("Every $1 spent on [best channel] returned $X.XX"). Table per source: spend, leads, CPL, won (Active+Completed), close rate, revenue (closed + projected, labeled), ROI multiple. Sources with $0 spend still appear (referrals, organic) with revenue visible and ROI shown as "---". Per-source funnel expansion (Lead/Prospect/Active/Completed/On Hold/Lost counts + color bar). Comparison deltas vs previous equal-length period. CSV export. Attribution rule noted on page.
+
+**Routes added:** `/reports/roi`, `/reports/roi/export`. Helper functions `_parse_roi_dates()`, `_build_roi_rows()`.
+
+**Template:** `roi_report.html` rewritten (was a placeholder days-to-close page). Updated `base.html` nav highlights to include `roi_report`.
+
+### 2026-07-19 — Journey Timeline + Days-to-Close ROI
+
+**New model:** `ClientStatusChange` (client_id, from_status, to_status, changed_by_user_id, changed_at). Logged on every status change (AJAX update, edit form save, and initial creation). Table auto-created by `db.create_all()`.
+
+**Journey timeline:** Replaced the flat "Recent Activities" list on the client detail page with a vertical timeline merging all events chronologically: lead created (with source badge + detail), every status change with elapsed time ("12 days as Lead"), activities (type-specific icons, notes, attachments, next steps), file uploads, and deal closed (final contract value). Header shows total deal age and current stage duration. Events beyond 6 are collapsed with expand/collapse toggle via Alpine.js.
+
+**ROI report — days-to-close:** Added "Avg Days to Close" column to the existing Channel ROI report (`/reports/roi`). Shows average days from lead creation to Completed status per lead source, using `ClientStatusChange` records. Only displayed for sources with 5+ closed clients; sources below threshold show "N/5 closed" hint. Added to both table view and CSV export. Computed in `_build_roi_rows()`.
+
+**Routes modified:** `update_client_status`, `edit_client` (POST), `create_client` — all now log `ClientStatusChange`. `edit_client` (GET) builds timeline data via `_build_client_timeline()` helper.
+
+### 2026-07-19 — Global Search
+Added search bar in the nav (visible on Hub, Clients, Reports, Settings). Searches clients (name, address, contact_name) and activities (note_text) by substring, case-insensitive. Results grouped by type (Clients / Activities) in a dropdown with keyboard navigation (arrow keys + Enter). Press `/` to focus from anywhere. Mobile: search input in the hamburger menu. New route: `/api/search?q=` (JSON, returns max 10 per type). Debounced input with `AbortController` to cancel stale requests.
+
+### 2026-07-19 — Needs Attention section rebuild
+Rebuilt the hub's "Needs Attention" section (Section 2) from a basic overdue/stale list into a unified, prioritized feed. Four trigger rules: (1) overdue next step date, (2) no next step set at all, (3) stale client — no activity in 14+ days (amber) / 28+ days (red), (4) missing lead source. Thresholds are config values (`STALE_AMBER_DAYS`, `STALE_RED_DAYS` in `app.py`). Items sorted red-first, then by days desc. Each row shows client name, what's wrong, days count, and two inline actions: "Add next step" (opens inline form with type + date, posts to new `quick_add_next_step` route) and "Log activity" (links to client page anchored at activity form). Supervisors see a per-rep count summary at the top ("Mike: 3 · Sarah: 1"). If nothing needs attention, shows a warm "All caught up" message. Multiple issues per client are merged into a single row.
+
+### 2026-07-18 — Weekly Brief Hub Overhaul
+
+**Design overhaul:** Replaced warm-palette daily clock UI with dark futuristic theme. Forest green primary (`#34D399`), 5-level surface system (`#0B0F14` → `#253344`), cool-tinted text hierarchy, scan-line texture overlay. New typography: Fraunces (display) + Inter (body). Nav shrunk to 4 items: Hub, Clients, Reports, Settings. Created `DESIGN.md` with full token reference.
+
+**Hub restructure (`home.html`):** Replaced daily time-clock homepage with 5-section weekly brief:
+1. **This Week** — rich brief with new leads (source breakdown, WoW delta), pipeline movement (status-change pills with client names), deals closed (revenue, WoW delta), follow-up debt count, hours logged (WoW delta), and weekly bar chart.
+2. **Needs Attention** — overdue follow-ups + stale clients with action buttons.
+3. **Pipeline** — collapsible status grid with filtered client list.
+4. **Recent Activity** — collapsible feed.
+5. **Time** — compact clock in/out + pay period total.
+
+**Route changes (`routes.py`):** `home()` expanded with Mon–Sun Pacific week boundaries, lead source breakdown via `joinedload`, pipeline movement via `ClientActivity.activity_type == 'Status Change'`, follow-up debt (overdue steps + no-next-step subquery), WoW deltas for leads/deals/hours. `update_client_status()` now logs Status Change activities to `ClientActivity`.
+
+**Templates:** `base.html` rewritten (dark theme Tailwind config, Alpine.js collapse plugin, 4-item nav). `landing.html` restyled to match. `home.html` completely rewritten as weekly brief hub. Remaining templates not yet propagated.
+
 ### 2026-07-18 — Channel Spend + Revenue Capture
 
 **Feature A — Channel Spend (supervisors):** New `ChannelSpend` model (id, lead_source_id FK, amount, period_month, note, created_by). Page at `/reports/channel-spend` with month picker, add/edit/delete entries, per-source totals. Any lead source can have spend (ads, referral fees, etc.). Template uses Alpine.js for inline edit toggle.
