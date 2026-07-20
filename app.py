@@ -19,7 +19,11 @@ class Base(DeclarativeBase):
 
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SESSION_SECRET", "dev-secret-key-for-mobile-time-tracker")
+app.secret_key = os.environ.get("SESSION_SECRET") or os.environ.get("SECRET_KEY")
+if not app.secret_key:
+    if os.environ.get("RENDER") or os.environ.get("PRODUCTION"):
+        raise RuntimeError("SESSION_SECRET environment variable is required in production")
+    app.secret_key = "dev-secret-key-for-mobile-time-tracker"
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")

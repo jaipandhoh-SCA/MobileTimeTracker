@@ -165,6 +165,11 @@ def favicon():
     return redirect(url_for('static', filename='favicon.jpg'))
 
 
+@app.route('/healthz')
+def healthz():
+    return jsonify({'status': 'ok'}), 200
+
+
 @app.route('/')
 def index():
     if current_user.is_authenticated:
