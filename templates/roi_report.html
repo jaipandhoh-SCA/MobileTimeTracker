@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block title %}Channel ROI Report{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6">
+
+    <!-- Header row -->
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <h1 class="text-2xl font-display font-bold text-txt-primary">Channel ROI</h1>
+        <div class="flex items-center gap-2 flex-wrap">
+            <a href="{{ url_for('channel_spend') }}" class="text-xs text-txt-muted hover:text-primary transition">Manage Spend</a>
+            <span class="text-edge">|</span>
+            <a href="{{ url_for('roi_report_export', preset=preset, start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d')) }}"
+               class="inline-flex items-center gap-1 text-xs font-medium text-txt-muted hover:text-primary transition">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>
+                Export CSV
+            </a>
+        </div>
+    </div>
+
+    <!-- Date range picker -->
+    <div class="bg-surface-raised border border-edge rounded-xl p-4">
+        <div class="flex flex-col sm:flex-row sm:items-end gap-3">
+            <!-- Presets -->
+            <div class="flex flex-wrap gap-1.5">
+                {% for key, label in [('last_month','Last month'), ('this_month','This month'), ('last_3_months','Last 3 months'), ('ytd','Year to date')] %}
+                <a href="{{ url_for('roi_report', preset=key) }}"
+                   class="px-3 py-1.5 rounded-lg text-xs font-medium transition
+                          {{ 'bg-primary text-surface-base' if preset == key else 'bg-surface-overlay text-txt-muted hover:text-txt-primary hover:bg-surface-hover border border-edge' }}">
+                    {{ label }}
+                </a>
+                {% endfor %}
+            </div>
+            <!-- Custom range -->
+            <form method="GET" class="flex items-end gap-2 ml-auto">
+                <div>
+                    <label class="block text-[10px] uppercase tracking-wider text-txt-muted mb-1">From</label>
+                    <input type="date" name="start" value="{{ start.strftime('%Y-%m-%d') }}"
+                           class="bg-surface-overlay border border-edge text-txt-primary rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-primary">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase tracking-wider text-txt-muted mb-1">To</label>
+                    <input type="date" name="end" value="{{ end.strftime('%Y-%m-%d') }}"
+                           class="bg-surface-overlay border border-edge text-txt-primary rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-primary">
+                </div>
+                <button type="submit"
+                        class="bg-surface-overlay border border-edge text-txt-secondary hover:text-txt-primary rounded-lg px-3 py-1.5 text-xs font-medium transition">
+                    Apply
+                </button>
+            </form>
+        </div>
+        <p class="text-[10px] text-txt-muted mt-2">
+            {{ start.strftime('%m/%d/%Y') }} &ndash; {{ end.strftime('%m/%d/%Y') }}
+            <span class="text-txt-faint ml-1">(vs {{ prev_start.strftime('%m/%d/%Y') }} &ndash; {{ prev_end.strftime('%m/%d/%Y') }})</span>
+        </p>
+    </div>
+
+    <!-- Headline -->
+    {% if best %}
+    <div class="bg-primary-light border border-edge-glow rounded-xl px-5 py-4">
+        <p class="text-base text-txt-primary">
+            Every <span class="font-bold text-primary">$1</span> spent on
+            <span class="font-bold text-primary">{{ best.source_name }}</span> returned
+            <span class="font-bold text-primary">${{ '{:,.2f}'.format(best.roi) }}</span>
+        </p>
+    </div>
+    {% endif %}
+
+    <!-- Main table -->
+    <div class="bg-surface-raised border border-edge rounded-xl overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="border-b border-edge-strong text-[10px] uppercase tracking-wider text-txt-muted">
+                        <th class="text-left px-4 py-3 font-semibold">Source</th>
+                        <th class="text-right px-3 py-3 font-semibold">Spend</th>
+                        <th class="text-right px-3 py-3 font-semibold">Leads</th>
+                        <th class="text-right px-3 py-3 font-semibold">CPL</th>
+                        <th class="text-right px-3 py-3 font-semibold">Won</th>
+                        <th class="text-right px-3 py-3 font-semibold">Close %</th>
+                        <th class="text-right px-3 py-3 font-semibold">Revenue</th>
+                        <th class="text-right px-3 py-3 font-semibold">ROI</th>
+                        <th class="text-right px-3 py-3 font-semibold">Avg Days to Close</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-edge">
+                    {% for row in table %}
+                    <tr class="hover:bg-surface-hover transition-colors group" x-data="{ expanded: false }">
+                        <td class="px-4 py-3">
+                            <button @click="expanded = !expanded" class="flex items-center gap-1.5 text-left w-full">
+                                <svg class="w-3.5 h-3.5 text-txt-faint transition-transform" :class="expanded && 'rotate-90'" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+                                </svg>
+                                <span class="font-medium text-txt-primary">{{ row.source_name }}</span>
+                            </button>
+                        </td>
+                        <td class="text-right px-3 py-3 text-txt-secondary tabular-nums">
+                            {% if row.spend %}${{ '{:,.0f}'.format(row.spend) }}{% else %}<span class="text-txt-faint">$0</span>{% endif %}
+                            {% set ds = row.spend - row.prev_spend %}
+                            {% if ds > 0 %}<span class="text-[10px] text-danger ml-1">+${{ '{:,.0f}'.format(ds) }}</span>
+                            {% elif ds < 0 %}<span class="text-[10px] text-success ml-1">-${{ '{:,.0f}'.format(ds|abs) }}</span>{% endif %}
+                        </td>
+                        <td class="text-right px-3 py-3 text-txt-secondary tabular-nums">
+                            {{ row.total_leads }}
+                            {% set dl = row.total_leads - row.prev_leads %}
+                            {% if dl > 0 %}<span class="text-[10px] text-success ml-1">&#9650;{{ dl }}</span>
+                            {% elif dl < 0 %}<span class="text-[10px] text-danger ml-1">&#9660;{{ dl|abs }}</span>{% endif %}
+                        </td>
+                        <td class="text-right px-3 py-3 text-txt-secondary tabular-nums">
+                            {% if row.cpl %}${{ '{:,.0f}'.format(row.cpl) }}{% else %}<span class="text-txt-faint">&mdash;</span>{% endif %}
+                        </td>
+                        <td class="text-right px-3 py-3 text-txt-secondary tabular-nums">
+                            {{ row.won }}
+                            {% set dw = row.won - row.prev_won %}
+                            {% if dw > 0 %}<span class="text-[10px] text-success ml-1">&#9650;{{ dw }}</span>
+                            {% elif dw < 0 %}<span class="text-[10px] text-danger ml-1">&#9660;{{ dw|abs }}</span>{% endif %}
+                        </td>
+                        <td class="text-right px-3 py-3 text-txt-secondary tabular-nums">
+                            {% if row.close_rate is not none %}{{ '{:.0f}'.format(row.close_rate) }}%{% else %}<span class="text-txt-faint">&mdash;</span>{% endif %}
+                        </td>
+                        <td class="text-right px-3 py-3 tabular-nums">
+                            {% if row.total_revenue %}
+                            <span class="text-txt-primary font-medium">${{ '{:,.0f}'.format(row.total_revenue) }}</span>
+                            {% if row.revenue_projected %}
+                            <span class="text-[10px] text-txt-muted block">{{ '{:,.0f}'.format(row.revenue_closed) }} closed + {{ '{:,.0f}'.format(row.revenue_projected) }} proj.</span>
+                            {% endif %}
+                            {% set dr = row.total_revenue - row.prev_revenue %}
+                            {% if dr > 0 %}<span class="text-[10px] text-success">&#9650;${{ '{:,.0f}'.format(dr) }}</span>
+                            {% elif dr < 0 %}<span class="text-[10px] text-danger">&#9660;${{ '{:,.0f}'.format(dr|abs) }}</span>{% endif %}
+                            {% else %}<span class="text-txt-faint">$0</span>{% endif %}
+                        </td>
+                        <td class="text-right px-3 py-3 tabular-nums">
+                            {% if row.roi %}
+                            <span class="font-bold {{ 'text-success' if row.roi >= 1 else 'text-danger' }}">{{ '{:,.1f}'.format(row.roi) }}x</span>
+                            {% else %}<span class="text-txt-faint">&mdash;</span>{% endif %}
+                        </td>
+                        <td class="text-right px-3 py-3 tabular-nums">
+                            {% if row.avg_days_to_close %}
+                            <span class="font-display font-bold text-txt-primary">{{ row.avg_days_to_close }}</span>
+                            <span class="text-[10px] text-txt-muted">days</span>
+                            {% elif row.days_to_close_count > 0 %}
+                            <span class="text-[10px] text-txt-faint">{{ row.days_to_close_count }}/5 closed</span>
+                            {% else %}<span class="text-txt-faint">&mdash;</span>{% endif %}
+                        </td>
+                    </tr>
+                    <!-- Funnel expansion row -->
+                    <tr x-show="expanded" x-cloak class="bg-surface-base/50">
+                        <td colspan="9" class="px-4 py-3">
+                            <div class="flex flex-wrap gap-x-6 gap-y-2 text-xs">
+                                <span class="text-txt-muted">Funnel:</span>
+                                {% set funnel = [
+                                    ('Lead', row.funnel_lead, 'text-teal-400'),
+                                    ('Prospect', row.funnel_prospect, 'text-slate-400'),
+                                    ('Active', row.funnel_active, 'text-red-400'),
+                                    ('Completed', row.funnel_completed, 'text-purple-400'),
+                                    ('On Hold', row.funnel_on_hold, 'text-amber-400'),
+                                    ('Lost', row.funnel_lost, 'text-gray-500'),
+                                ] %}
+                                {% for label, count, color in funnel %}
+                                <span class="{{ color }}">{{ label }} <span class="font-semibold">{{ count }}</span></span>
+                                {% if not loop.last %}<span class="text-txt-faint">&rarr;</span>{% endif %}
+                                {% endfor %}
+                            </div>
+                            {% if row.total_leads > 0 %}
+                            <!-- Mini funnel bar -->
+                            <div class="flex h-2 rounded-full overflow-hidden mt-2 bg-surface-overlay">
+                                {% if row.funnel_lead %}
+                                <div class="bg-teal-500" style="width:{{ (row.funnel_lead / row.total_leads * 100)|round(1) }}%"></div>
+                                {% endif %}
+                                {% if row.funnel_prospect %}
+                                <div class="bg-slate-500" style="width:{{ (row.funnel_prospect / row.total_leads * 100)|round(1) }}%"></div>
+                                {% endif %}
+                                {% if row.funnel_active %}
+                                <div class="bg-red-500" style="width:{{ (row.funnel_active / row.total_leads * 100)|round(1) }}%"></div>
+                                {% endif %}
+                                {% if row.funnel_completed %}
+                                <div class="bg-purple-500" style="width:{{ (row.funnel_completed / row.total_leads * 100)|round(1) }}%"></div>
+                                {% endif %}
+                                {% if row.funnel_on_hold %}
+                                <div class="bg-amber-500" style="width:{{ (row.funnel_on_hold / row.total_leads * 100)|round(1) }}%"></div>
+                                {% endif %}
+                                {% if row.funnel_lost %}
+                                <div class="bg-gray-600" style="width:{{ (row.funnel_lost / row.total_leads * 100)|round(1) }}%"></div>
+                                {% endif %}
+                            </div>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+                <!-- Totals -->
+                {% if table %}
+                <tfoot>
+                    <tr class="border-t-2 border-edge-strong bg-surface-overlay/30 font-semibold text-txt-primary">
+                        <td class="px-4 py-3">All Sources</td>
+                        <td class="text-right px-3 py-3 tabular-nums">${{ '{:,.0f}'.format(totals.spend) }}</td>
+                        <td class="text-right px-3 py-3 tabular-nums">{{ totals.total_leads }}</td>
+                        <td class="text-right px-3 py-3 tabular-nums">{% if totals.cpl %}${{ '{:,.0f}'.format(totals.cpl) }}{% else %}&mdash;{% endif %}</td>
+                        <td class="text-right px-3 py-3 tabular-nums">{{ totals.won }}</td>
+                        <td class="text-right px-3 py-3 tabular-nums">{% if totals.close_rate is not none %}{{ '{:.0f}'.format(totals.close_rate) }}%{% else %}&mdash;{% endif %}</td>
+                        <td class="text-right px-3 py-3 tabular-nums">${{ '{:,.0f}'.format(totals.total_revenue) }}</td>
+                        <td class="text-right px-3 py-3 tabular-nums">{% if totals.roi %}{{ '{:,.1f}'.format(totals.roi) }}x{% else %}&mdash;{% endif %}</td>
+                        <td class="text-right px-3 py-3 tabular-nums">{% if totals.avg_days_to_close %}{{ totals.avg_days_to_close }} days{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                </tfoot>
+                {% endif %}
+            </table>
+        </div>
+
+        {% if not table %}
+        <div class="p-12 text-center text-txt-muted text-sm">
+            No leads or spend data for this period.
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Attribution note -->
+    <p class="text-[10px] text-txt-faint leading-relaxed max-w-xl">
+        Attribution: first-touch &mdash; each client is counted in the period their lead was created, regardless of when they closed.
+        Revenue includes final contract values for Completed clients and projected opportunity values (labeled) for Active clients.
+        "Won" = reached Active or Completed status.
+    </p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+{% endblock %}

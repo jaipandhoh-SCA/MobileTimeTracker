@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="w-full mx-auto">
+    <div class="flex justify-between items-center mb-6">
+        <h1 class="text-3xl font-bold text-gray-900">Clients</h1>
+        <a href="{{ url_for('create_client') }}" class="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-6 rounded-lg">
+            + Add Client
+        </a>
+    </div>
+    
+    <!-- Dashboard Metrics -->
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+        {% set status_counts = {'Lead': 0, 'Prospect': 0, 'Active': 0, 'Completed': 0, 'On Hold': 0} %}
+        {% set status_values = {'Lead': 0, 'Prospect': 0, 'Active': 0, 'Completed': 0, 'On Hold': 0} %}
+        {% set total_value = 0 %}
+        {% for client in clients %}
+            {% if client.status in status_counts %}
+                {% set _ = status_counts.update({client.status: status_counts[client.status] + 1}) %}
+                {% set client_value = client.opportunity_value or 0 %}
+                {% set _ = status_values.update({client.status: status_values[client.status] + client_value}) %}
+                {% set total_value = total_value + client_value %}
+            {% endif %}
+        {% endfor %}
+        
+        <div class="bg-white rounded-lg shadow p-4 border-t-4 border-stone-500">
+            <div class="text-2xl font-bold text-gray-900">{{ clients|length }}</div>
+            <div class="text-sm text-gray-600">Total Opportunities</div>
+            <div class="text-lg font-semibold text-gray-700 mt-1">${{ '{:,.0f}'.format(total_value) }}</div>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow p-4 border-t-4 border-teal-400">
+            <div class="text-2xl font-bold text-gray-900">{{ status_counts['Lead'] }}</div>
+            <div class="text-sm text-gray-600">Leads</div>
+            <div class="text-lg font-semibold text-teal-800 mt-1">${{ '{:,.0f}'.format(status_values['Lead']) }}</div>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow p-4 border-t-4 border-slate-500">
+            <div class="text-2xl font-bold text-gray-900">{{ status_counts['Prospect'] }}</div>
+            <div class="text-sm text-gray-600">Prospects</div>
+            <div class="text-lg font-semibold text-slate-800 mt-1">${{ '{:,.0f}'.format(status_values['Prospect']) }}</div>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow p-4 border-t-4 border-red-700">
+            <div class="text-2xl font-bold text-gray-900">{{ status_counts['Active'] }}</div>
+            <div class="text-sm text-gray-600">Active</div>
+            <div class="text-lg font-semibold text-red-900 mt-1">${{ '{:,.0f}'.format(status_values['Active']) }}</div>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow p-4 border-t-4 border-gray-500">
+            <div class="text-2xl font-bold text-gray-900">{{ status_counts['Completed'] }}</div>
+            <div class="text-sm text-gray-600">Completed</div>
+            <div class="text-lg font-semibold text-gray-700 mt-1">${{ '{:,.0f}'.format(status_values['Completed']) }}</div>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow p-4 border-t-4 border-stone-400">
+            <div class="text-2xl font-bold text-gray-900">{{ status_counts['On Hold'] }}</div>
+            <div class="text-sm text-gray-600">On Hold</div>
+            <div class="text-lg font-semibold text-stone-700 mt-1">${{ '{:,.0f}'.format(status_values['On Hold']) }}</div>
+        </div>
+    </div>
+    
+    <!-- Search Bar -->
+    <div class="bg-white rounded-lg shadow p-4 mb-6">
+        <form method="GET" class="flex gap-4">
+            <input type="text" name="search" value="{{ search }}" placeholder="Search clients..." class="flex-1 p-3 border border-gray-300 rounded-lg">
+            <button type="submit" class="bg-stone-600 hover:bg-stone-700 text-white font-semibold py-3 px-6 rounded-lg">
+                Search
+            </button>
+            {% if current_user.is_supervisor %}
+            <label class="flex items-center gap-2">
+                <input type="checkbox" name="show_all" value="true" {% if show_all %}checked{% endif %} onchange="this.form.submit()">
+                <span class="text-sm text-gray-700">Show inactive</span>
+            </label>
+            {% endif %}
+        </form>
+    </div>
+    
+    <!-- Clients Table -->
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full" id="clientsTable">
+                <thead class="bg-gray-50 border-b border-gray-200">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onclick="sortTable(0)">
+                            Client Name <span class="sort-indicator">↕</span>
+                        </th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onclick="sortTable(1)">
+                            Status <span class="sort-indicator">↕</span>
+                        </th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onclick="sortTable(2)">
+                            Opportunity <span class="sort-indicator">↕</span>
+                        </th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 hidden md:table-cell" onclick="sortTable(3)">
+                            Contact <span class="sort-indicator">↕</span>
+                        </th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 hidden lg:table-cell" onclick="sortTable(4)">
+                            Address <span class="sort-indicator">↕</span>
+                        </th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 hidden xl:table-cell" onclick="sortTable(5)">
+                            Created By <span class="sort-indicator">↕</span>
+                        </th>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Actions
+                        </th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-100">
+                    {% for client in clients %}
+                    <tr class="hover:bg-gray-50 {% if not client.is_active %}opacity-50{% endif %}" onclick="window.location='{{ url_for('edit_client', client_id=client.id) }}';" style="cursor: pointer;">
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <div class="font-medium text-gray-900">{{ client.name }}</div>
+                            {% if client.lead_source %}
+                            <span class="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 mt-1">{{ client.lead_source.name }}</span>
+                            {% endif %}
+                            {% if not client.is_active %}
+                            <span class="inline-block px-2 py-0.5 text-xs font-semibold rounded bg-gray-200 text-gray-600 mt-1">Inactive</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            {% if client.status %}
+                            <span class="inline-block px-2 py-1 text-xs font-semibold rounded 
+                                {% if client.status == 'Lead' %}bg-teal-50 text-teal-800 border border-teal-400
+                                {% elif client.status == 'Prospect' %}bg-slate-100 text-slate-800 border border-slate-400
+                                {% elif client.status == 'Active' %}bg-red-50 text-red-900 border border-red-700
+                                {% elif client.status == 'Completed' %}bg-gray-100 text-gray-700 border border-gray-400
+                                {% elif client.status == 'On Hold' %}bg-stone-100 text-stone-700 border border-stone-400
+                                {% endif %}">
+                                {{ client.status }}
+                            </span>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <div class="text-sm font-semibold text-gray-900">${{ '{:,.0f}'.format(client.opportunity_value or 0) }}</div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap hidden md:table-cell">
+                            <div class="text-sm text-gray-900">{{ client.contact_name or '-' }}</div>
+                            {% if client.phone %}
+                            <div class="text-xs text-gray-500">{{ client.phone }}</div>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 hidden lg:table-cell">
+                            <div class="text-sm text-gray-600 max-w-xs truncate">{{ client.address }}</div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap hidden xl:table-cell">
+                            <div class="text-sm text-gray-600">{{ client.created_by.display_name if client.created_by else 'Unknown' }}</div>
+                            {% if client.created_at %}
+                            <div class="text-xs text-gray-500">{{ client.created_at.strftime('%m/%d/%Y') }}</div>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium" onclick="event.stopPropagation();">
+                            <a href="{{ url_for('edit_client', client_id=client.id) }}" class="text-blue-600 hover:text-blue-900 mr-3">
+                                View
+                            </a>
+                            {% if current_user.is_supervisor %}
+                            <form method="POST" action="{{ url_for('toggle_client', client_id=client.id) }}" class="inline" onsubmit="event.stopPropagation();">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                                <button type="submit" class="text-gray-600 hover:text-gray-900">
+                                    {% if client.is_active %}Deactivate{% else %}Activate{% endif %}
+                                </button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="px-6 py-12 text-center text-gray-500">
+                            No clients found.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+let sortDirection = {};
+
+function sortTable(columnIndex) {
+    const table = document.getElementById('clientsTable');
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr')).filter(row => row.cells.length > 1);
+    
+    if (!sortDirection[columnIndex]) {
+        sortDirection[columnIndex] = 'asc';
+    } else {
+        sortDirection[columnIndex] = sortDirection[columnIndex] === 'asc' ? 'desc' : 'asc';
+    }
+    
+    const direction = sortDirection[columnIndex];
+    
+    rows.sort((a, b) => {
+        let aValue = a.cells[columnIndex].textContent.trim();
+        let bValue = b.cells[columnIndex].textContent.trim();
+        
+        // Handle special cases
+        if (aValue === '-') aValue = '';
+        if (bValue === '-') bValue = '';
+        
+        // Compare
+        if (aValue < bValue) {
+            return direction === 'asc' ? -1 : 1;
+        }
+        if (aValue > bValue) {
+            return direction === 'asc' ? 1 : -1;
+        }
+        return 0;
+    });
+    
+    // Clear existing rows
+    while (tbody.firstChild) {
+        tbody.removeChild(tbody.firstChild);
+    }
+    
+    // Append sorted rows
+    rows.forEach(row => tbody.appendChild(row));
+    
+    // Update sort indicators
+    const indicators = table.querySelectorAll('.sort-indicator');
+    indicators.forEach((indicator, index) => {
+        if (index === columnIndex) {
+            indicator.textContent = direction === 'asc' ? '↑' : '↓';
+        } else {
+            indicator.textContent = '↕';
+        }
+    });
+}
+</script>
+{% endblock %}

@@ -12,8 +12,10 @@ from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from sqlalchemy.orm import joinedload
 
+from collections import defaultdict
+
 from app import app, db
-from models import User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage
+from models import User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage, LeadSource, ClientStatusChange, ChannelSpend
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
     utc_to_pacific, pacific_to_utc, calculate_duration, round_to_quarter_hour,
@@ -22,7 +24,135 @@ from utils import (
     get_last_30_days_dates, get_month_to_date_dates
 )
 
+
+def build_daily_hours(entries, period_start, period_end):
+    """Build a date->hours dict for every day in the period, filling gaps with 0."""
+    daily = defaultdict(float)
+    for e in entries:
+        if e.date and e.duration_hours:
+            daily[e.date] += float(e.duration_hours)
+    result = []
+    current = period_start
+    while current <= period_end:
+        result.append({'date': current.strftime('%Y-%m-%d'), 'hours': round(daily[current], 2)})
+        current += timedelta(days=1)
+    return result
+
 app.register_blueprint(google_auth)
+
+
+def _build_client_timeline(client, activities):
+    """Merge all client events into a single chronological timeline."""
+    events = []
+
+    # 1. Lead created
+    events.append({
+        'type': 'created',
+        'date': client.created_at,
+        'data': {
+            'source': client.lead_source,
+            'source_detail': client.source_detail,
+            'created_by': client.created_by,
+            'initial_status': client.status,
+        }
+    })
+
+    # 2. Status changes (from the structured table)
+    status_changes = ClientStatusChange.query.filter_by(client_id=client.id)\
+        .order_by(ClientStatusChange.changed_at).all()
+    for sc in status_changes:
+        events.append({
+            'type': 'status_change',
+            'date': sc.changed_at,
+            'data': {
+                'from_status': sc.from_status,
+                'to_status': sc.to_status,
+                'changed_by': sc.changed_by,
+            }
+        })
+
+    # 3. Activities (skip "Status Change" type — covered above)
+    for a in activities:
+        if a.activity_type == 'Status Change':
+            continue
+        events.append({
+            'type': 'activity',
+            'date': a.activity_date,
+            'data': {
+                'activity_type': a.activity_type,
+                'note_text': a.note_text,
+                'file_name': a.file_name,
+                'activity_id': a.id,
+                'user': a.user,
+                'next_step_description': a.next_step_description,
+                'next_step_date': a.next_step_date,
+            }
+        })
+
+    # 4. Property image uploads
+    images = PropertyImage.query.filter_by(client_id=client.id).order_by(PropertyImage.created_at).all()
+    for img in images:
+        events.append({
+            'type': 'upload',
+            'date': img.created_at,
+            'data': {
+                'file_name': img.file_name,
+                'uploaded_by': img.uploaded_by,
+            }
+        })
+
+    # 5. Deal closed (if completed with final value)
+    if client.status == 'Completed' and client.final_contract_value is not None:
+        # Use the last status change to Completed as the date
+        completed_change = ClientStatusChange.query.filter_by(
+            client_id=client.id, to_status='Completed'
+        ).order_by(ClientStatusChange.changed_at.desc()).first()
+        close_date = completed_change.changed_at if completed_change else client.updated_at
+        events.append({
+            'type': 'deal_closed',
+            'date': close_date,
+            'data': {
+                'final_value': client.final_contract_value,
+                'opportunity_value': client.opportunity_value,
+            }
+        })
+
+    # Sort chronologically
+    events.sort(key=lambda e: e['date'] or datetime.min)
+
+    # Calculate elapsed time between stage changes
+    stage_durations = []
+    for i, ev in enumerate(events):
+        if ev['type'] == 'status_change' and ev['data'].get('from_status'):
+            # Find previous status_change or created event
+            prev_date = client.created_at
+            for j in range(i - 1, -1, -1):
+                if events[j]['type'] in ('status_change', 'created'):
+                    prev_date = events[j]['date']
+                    break
+            if prev_date and ev['date']:
+                delta = (ev['date'] - prev_date).days
+                ev['data']['days_in_stage'] = delta
+                ev['data']['stage_label'] = ev['data']['from_status']
+
+    # Compute total deal age and current stage duration
+    now = datetime.utcnow()
+    total_age_days = (now - client.created_at).days if client.created_at else 0
+
+    # Current stage duration: time since last status change
+    last_change = ClientStatusChange.query.filter_by(client_id=client.id)\
+        .order_by(ClientStatusChange.changed_at.desc()).first()
+    if last_change:
+        current_stage_days = (now - last_change.changed_at).days
+    else:
+        current_stage_days = total_age_days
+
+    return {
+        'events': events,
+        'total_age_days': total_age_days,
+        'current_stage': client.status,
+        'current_stage_days': current_stage_days,
+    }
 
 
 @app.before_request
@@ -137,7 +267,283 @@ def home():
             Client.assigned_to_user_id == current_user.id
         ).order_by(ClientActivity.activity_date.desc()).limit(5).all()
     
-    return render_template('home.html', 
+    # --- Compute Mon-Sun Pacific week boundaries ---
+    from utils import PACIFIC_TZ
+    import pytz
+    now_pacific = datetime.now(PACIFIC_TZ)
+    today = now_pacific.date()
+    # Monday of this week
+    this_week_start = today - timedelta(days=today.weekday())
+    this_week_end = this_week_start + timedelta(days=6)
+    # Last week for deltas
+    last_week_start = this_week_start - timedelta(days=7)
+    last_week_end = this_week_start - timedelta(days=1)
+
+    # Convert to UTC datetimes for queries
+    this_week_start_utc = PACIFIC_TZ.localize(datetime.combine(this_week_start, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
+    last_week_start_utc = PACIFIC_TZ.localize(datetime.combine(last_week_start, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
+    last_week_end_utc = PACIFIC_TZ.localize(datetime.combine(last_week_end + timedelta(days=1), datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
+
+    # Build weekly hours for chart (last 7 days)
+    chart_start = today - timedelta(days=6)
+    week_entries = TimeEntry.query.filter(
+        TimeEntry.user_id == current_user.id,
+        TimeEntry.date >= chart_start,
+        TimeEntry.date <= today
+    ).all()
+    weekly_hours = build_daily_hours(week_entries, chart_start, today)
+
+    # --- Helper: scope filter for queries ---
+    is_company_wide = current_user.is_supervisor and not selected_user
+    target_user_id = (selected_user.id if selected_user else current_user.id) if not is_company_wide else None
+
+    def _user_filter(query):
+        if not is_company_wide:
+            return query.filter(Client.assigned_to_user_id == target_user_id)
+        return query
+
+    # === NEW LEADS THIS WEEK (with lead source breakdown) ===
+    new_leads_q = _user_filter(Client.query.filter(
+        Client.is_active == True,
+        Client.created_at >= this_week_start_utc
+    ))
+    new_leads_this_week_list = new_leads_q.options(joinedload(Client.lead_source)).all()
+    new_leads_this_week = len(new_leads_this_week_list)
+
+    # Breakdown by source
+    lead_source_counts = defaultdict(int)
+    for c in new_leads_this_week_list:
+        source_name = c.lead_source.name if c.lead_source else 'Unknown'
+        lead_source_counts[source_name] += 1
+    # Sort descending by count
+    lead_source_breakdown = sorted(lead_source_counts.items(), key=lambda x: -x[1])
+
+    # Last week's leads for delta
+    last_week_leads_q = _user_filter(Client.query.filter(
+        Client.is_active == True,
+        Client.created_at >= last_week_start_utc,
+        Client.created_at < this_week_start_utc
+    ))
+    last_week_leads_count = last_week_leads_q.count()
+
+    # === PIPELINE MOVEMENT (status changes this week) ===
+    # We detect movement via ClientActivity entries of type "Status Change" this week
+    pipeline_moves_q = ClientActivity.query.join(Client).filter(
+        Client.is_active == True,
+        ClientActivity.activity_type == 'Status Change',
+        ClientActivity.activity_date >= this_week_start_utc
+    )
+    if not is_company_wide:
+        pipeline_moves_q = pipeline_moves_q.filter(Client.assigned_to_user_id == target_user_id)
+    pipeline_moves = pipeline_moves_q.options(joinedload(ClientActivity.client)).all()
+
+    # Group by transition description
+    pipeline_move_summary = defaultdict(list)
+    for pm in pipeline_moves:
+        pipeline_move_summary[pm.note_text].append(pm.client.name)
+
+    # === DEALS CLOSED THIS WEEK ===
+    completed_q = _user_filter(Client.query.filter(
+        Client.status == 'Completed',
+        Client.is_active == True,
+        Client.updated_at >= this_week_start_utc
+    ))
+    completed_this_week = completed_q.all()
+    completed_count = len(completed_this_week)
+    completed_revenue = sum(float(c.final_contract_value or c.opportunity_value or 0) for c in completed_this_week)
+
+    # Last week's closed for delta
+    last_completed_q = _user_filter(Client.query.filter(
+        Client.status == 'Completed',
+        Client.is_active == True,
+        Client.updated_at >= last_week_start_utc,
+        Client.updated_at < this_week_start_utc
+    ))
+    last_week_completed_count = last_completed_q.count()
+
+    # === NEEDS ATTENTION (unified) ===
+    now = datetime.utcnow()
+    stale_amber_days = app.config.get('STALE_AMBER_DAYS', 14)
+    stale_red_days = app.config.get('STALE_RED_DAYS', 28)
+    active_statuses = ['Lead', 'Prospect', 'Active']
+
+    from sqlalchemy import func as sa_func
+
+    # Overdue next steps
+    overdue_q = ClientActivity.query.join(Client).filter(
+        Client.is_active == True,
+        Client.status.in_(active_statuses),
+        ClientActivity.next_step_date.isnot(None),
+        ClientActivity.next_step_date < now
+    )
+    if not is_company_wide:
+        overdue_q = overdue_q.filter(Client.assigned_to_user_id == target_user_id)
+    overdue_steps = overdue_q.options(
+        joinedload(ClientActivity.client).joinedload(Client.assigned_to)
+    ).order_by(ClientActivity.next_step_date.asc()).all()
+
+    # Clients with no next step scheduled
+    has_next_step_ids = db.session.query(ClientActivity.client_id).filter(
+        ClientActivity.next_step_date.isnot(None),
+        ClientActivity.next_step_date >= now
+    ).distinct().subquery()
+
+    no_next_step_q = Client.query.filter(
+        Client.is_active == True,
+        Client.status.in_(active_statuses),
+        ~Client.id.in_(db.session.query(has_next_step_ids))
+    )
+    if not is_company_wide:
+        no_next_step_q = no_next_step_q.filter(Client.assigned_to_user_id == target_user_id)
+    clients_no_next_step = no_next_step_q.options(joinedload(Client.assigned_to)).all()
+
+    # Stale clients
+    stale_threshold = now - timedelta(days=stale_amber_days)
+    stale_q = _user_filter(Client.query.filter(
+        Client.is_active == True,
+        Client.status.in_(active_statuses),
+        Client.updated_at < stale_threshold
+    ))
+    stale_clients = stale_q.options(joinedload(Client.assigned_to)).order_by(Client.updated_at.asc()).all()
+
+    # Clients missing lead source
+    missing_source_q = _user_filter(Client.query.filter(
+        Client.is_active == True,
+        Client.status.in_(active_statuses),
+        Client.lead_source_id.is_(None)
+    ))
+    clients_missing_source = missing_source_q.options(joinedload(Client.assigned_to)).all()
+
+    # Build unified attention_items list
+    attention_items = []
+    seen_client_ids = set()
+
+    # 1. Overdue steps (deduplicate to one per client - oldest overdue)
+    overdue_by_client = {}
+    for activity in overdue_steps:
+        cid = activity.client_id
+        if cid not in overdue_by_client:
+            overdue_by_client[cid] = activity
+    for cid, activity in overdue_by_client.items():
+        days_overdue = (now - activity.next_step_date).days
+        attention_items.append({
+            'client': activity.client,
+            'issue_type': 'overdue_step',
+            'label': 'Next step overdue',
+            'detail': activity.next_step_description or '',
+            'days': days_overdue,
+            'severity': 'red' if days_overdue >= 7 else 'amber',
+            'extra_issues': []
+        })
+        seen_client_ids.add(cid)
+
+    # 2. No next step
+    for client in clients_no_next_step:
+        if client.id not in seen_client_ids:
+            attention_items.append({
+                'client': client,
+                'issue_type': 'no_next_step',
+                'label': 'No next step set',
+                'detail': '',
+                'days': 0,
+                'severity': 'amber',
+                'extra_issues': []
+            })
+            seen_client_ids.add(client.id)
+
+    # 3. Stale
+    for client in stale_clients:
+        days_stale = (now - client.updated_at).days
+        severity = 'red' if days_stale >= stale_red_days else 'amber'
+        if client.id in seen_client_ids:
+            for item in attention_items:
+                if item['client'].id == client.id:
+                    item['extra_issues'].append({
+                        'issue_type': 'stale',
+                        'label': f'No activity in {days_stale} days',
+                        'days': days_stale,
+                        'severity': severity
+                    })
+                    if severity == 'red':
+                        item['severity'] = 'red'
+                    break
+        else:
+            attention_items.append({
+                'client': client,
+                'issue_type': 'stale',
+                'label': f'No activity in {days_stale} days',
+                'detail': '',
+                'days': days_stale,
+                'severity': severity,
+                'extra_issues': []
+            })
+            seen_client_ids.add(client.id)
+
+    # 4. Missing lead source
+    for client in clients_missing_source:
+        if client.id in seen_client_ids:
+            for item in attention_items:
+                if item['client'].id == client.id:
+                    item['extra_issues'].append({
+                        'issue_type': 'missing_source',
+                        'label': 'Missing lead source',
+                        'days': 0,
+                        'severity': 'amber'
+                    })
+                    break
+        else:
+            attention_items.append({
+                'client': client,
+                'issue_type': 'missing_source',
+                'label': 'Missing lead source',
+                'detail': '',
+                'days': 0,
+                'severity': 'amber',
+                'extra_issues': []
+            })
+            seen_client_ids.add(client.id)
+
+    # Sort: red first, then by days desc
+    attention_items.sort(key=lambda x: (0 if x['severity'] == 'red' else 1, -x['days']))
+
+    # Per-rep summary for supervisors
+    attention_rep_summary = []
+    if current_user.is_supervisor and not selected_user and attention_items:
+        rep_counts = defaultdict(int)
+        for item in attention_items:
+            rep = item['client'].assigned_to
+            name = rep.first_name if rep else 'Unassigned'
+            rep_counts[name] += 1
+        attention_rep_summary = sorted(rep_counts.items(), key=lambda x: -x[1])
+
+    # === HOURS LOGGED (company-wide this week) ===
+    hours_q = TimeEntry.query.filter(
+        TimeEntry.date >= this_week_start,
+        TimeEntry.date <= today
+    )
+    if not is_company_wide:
+        hours_q = hours_q.filter(TimeEntry.user_id == (target_user_id or current_user.id))
+    week_hours_total = sum(float(e.duration_hours or 0) for e in hours_q.all())
+
+    # Last week hours for delta
+    last_hours_q = TimeEntry.query.filter(
+        TimeEntry.date >= last_week_start,
+        TimeEntry.date <= last_week_end
+    )
+    if not is_company_wide:
+        last_hours_q = last_hours_q.filter(TimeEntry.user_id == (target_user_id or current_user.id))
+    last_week_hours_total = sum(float(e.duration_hours or 0) for e in last_hours_q.all())
+
+    # === PAY PERIOD ===
+    pay_start, pay_end, _ = get_pay_period_dates()
+    pay_period_entries = TimeEntry.query.filter(
+        TimeEntry.user_id == current_user.id,
+        TimeEntry.date >= pay_start,
+        TimeEntry.date <= pay_end
+    ).all()
+    pay_period_hours = sum(float(e.duration_hours or 0) for e in pay_period_entries)
+
+    return render_template('home.html',
                          active_clock=active_clock,
                          long_running=long_running,
                          recent_entries=recent_entries,
@@ -149,7 +555,64 @@ def home():
                          next_steps=next_steps,
                          recent_activities=recent_activities,
                          all_users=all_users,
-                         selected_user=selected_user)
+                         selected_user=selected_user,
+                         weekly_hours=weekly_hours,
+                         # This Week scoreboard
+                         new_leads_this_week=new_leads_this_week,
+                         lead_source_breakdown=lead_source_breakdown,
+                         last_week_leads_count=last_week_leads_count,
+                         pipeline_moves=pipeline_moves,
+                         pipeline_move_summary=pipeline_move_summary,
+                         completed_count=completed_count,
+                         completed_revenue=completed_revenue,
+                         last_week_completed_count=last_week_completed_count,
+                         overdue_steps=overdue_steps,
+                         clients_no_next_step=clients_no_next_step,
+                         stale_clients=stale_clients,
+                         attention_items=attention_items,
+                         attention_rep_summary=attention_rep_summary,
+                         stale_amber_days=stale_amber_days,
+                         stale_red_days=stale_red_days,
+                         week_hours_total=week_hours_total,
+                         last_week_hours_total=last_week_hours_total,
+                         pay_period_hours=pay_period_hours,
+                         missing_source_count=Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count() if current_user.is_supervisor else 0)
+
+
+@app.route('/clients/<int:client_id>/quick_next_step', methods=['POST'])
+@require_login
+def quick_add_next_step(client_id):
+    """Inline 'Add next step' from the Needs Attention section."""
+    client = Client.query.get_or_404(client_id)
+    step_type = request.form.get('step_type', '').strip()
+    step_date_str = request.form.get('step_date', '').strip()
+
+    if not step_type or not step_date_str:
+        flash('Step type and date are required.', 'error')
+        return redirect(url_for('home'))
+
+    try:
+        step_date_pacific = datetime.strptime(step_date_str, '%Y-%m-%d')
+        step_date_utc = pacific_to_utc(step_date_pacific).replace(tzinfo=None)
+    except ValueError:
+        flash('Invalid date format.', 'error')
+        return redirect(url_for('home'))
+
+    activity = ClientActivity(
+        client_id=client_id,
+        user_id=current_user.id,
+        activity_type='Next Step Scheduled',
+        note_text=f"Next step added: {step_type}",
+        activity_date=datetime.utcnow(),
+        next_step_description=step_type,
+        next_step_date=step_date_utc
+    )
+    db.session.add(activity)
+    client.updated_at = datetime.utcnow()
+    db.session.commit()
+
+    flash(f'Next step added for {client.name}.', 'success')
+    return redirect(url_for('home'))
 
 
 @app.route('/clock/start', methods=['POST'])
@@ -422,9 +885,10 @@ def my_logs():
     summary_entry_count = len(summary_entries)
     summary_unique_clients = len(set(e.client_id for e in summary_entries if e.client_id))
     summary_pay = float(summary_hours) * float(current_user.hourly_rate or 0)
-    
-    return render_template('my_logs.html', 
-                         entries=entries, 
+    daily_hours = build_daily_hours(summary_entries, summary_start, summary_end)
+
+    return render_template('my_logs.html',
+                         entries=entries,
                          clients=clients,
                          date_from=date_from,
                          date_to=date_to,
@@ -438,29 +902,8 @@ def my_logs():
                          summary_billable=summary_billable,
                          summary_entry_count=summary_entry_count,
                          summary_unique_clients=summary_unique_clients,
-                         summary_pay=summary_pay)
-
-
-# Correction notes feature disabled - field doesn't exist in production DB
-# @app.route('/entry/<int:entry_id>/note', methods=['POST'])
-# @require_login
-# def add_correction_note(entry_id):
-#     entry = TimeEntry.query.get_or_404(entry_id)
-#     
-#     if entry.user_id != current_user.id:
-#         flash('You can only add notes to your own entries.', 'error')
-#         return redirect(url_for('my_logs'))
-#     
-#     note = request.form.get('note', '').strip()
-#     if not note:
-#         flash('Note cannot be empty.', 'error')
-#         return redirect(url_for('my_logs'))
-#     
-#     entry.correction_note = note
-#     db.session.commit()
-#     
-#     flash('Note added successfully. A supervisor will review it.', 'success')
-#     return redirect(url_for('my_logs'))
+                         summary_pay=summary_pay,
+                         daily_hours=daily_hours)
 
 
 @app.route('/clients')
@@ -468,9 +911,9 @@ def my_logs():
 def clients():
     search = request.args.get('search', '')
     show_all = request.args.get('show_all', 'false') == 'true'
-    
-    query = Client.query
-    
+
+    query = Client.query.options(joinedload(Client.lead_source))
+
     if not show_all:
         query = query.filter_by(is_active=True)
     
@@ -494,7 +937,8 @@ def clients():
 @require_login
 def create_client():
     if request.method == 'GET':
-        return render_template('client_form.html', client=None)
+        lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
+        return render_template('client_form.html', client=None, lead_sources=lead_sources)
     
     name = request.form.get('name', '').strip()
     address = request.form.get('address', '').strip()
@@ -523,16 +967,22 @@ def create_client():
     estimated_start_date = request.form.get('estimated_start_date', '').strip()
     estimated_end_date = request.form.get('estimated_end_date', '').strip()
     permitting_status = request.form.get('permitting_status', '').strip()
-    
+    lead_source_id = request.form.get('lead_source_id', '').strip()
+    source_detail = request.form.get('source_detail', '').strip()
+
     if not name or not address:
         flash('Name and address are required.', 'error')
         return redirect(url_for('create_client'))
-    
+
+    if not lead_source_id:
+        flash('Lead source is required.', 'error')
+        return redirect(url_for('create_client'))
+
     from datetime import datetime
-    
+
     client = Client(
-        name=name, 
-        address=address, 
+        name=name,
+        address=address,
         contact_name=contact_name if contact_name else None,
         phone=phone if phone else None,
         email=email if email else None,
@@ -557,23 +1007,27 @@ def create_client():
         estimated_start_date=datetime.strptime(estimated_start_date, '%Y-%m-%d').date() if estimated_start_date else None,
         estimated_end_date=datetime.strptime(estimated_end_date, '%Y-%m-%d').date() if estimated_end_date else None,
         permitting_status=permitting_status if permitting_status else None,
+        lead_source_id=int(lead_source_id),
+        source_detail=source_detail if source_detail else None,
         created_by_user_id=current_user.id,
         assigned_to_user_id=current_user.id
     )
     db.session.add(client)
     db.session.commit()
     
-    try:
-        from google_drive_helper import create_client_folder_structure
-        folder_ids = create_client_folder_structure(client.name, client.address)
-        client.gdrive_client_folder_id = folder_ids['client_folder_id']
-        client.gdrive_property_images_id = folder_ids['property_images_id']
-        client.gdrive_documents_id = folder_ids['documents_id']
-        client.gdrive_contracts_id = folder_ids['contracts_id']
-        db.session.commit()
-    except Exception as e:
-        print(f"Warning: Could not create Google Drive folders: {e}")
-    
+    from r2_storage_helper import build_client_prefix
+    client.storage_prefix = build_client_prefix(client.name, client.address)
+
+    # Log initial status
+    db.session.add(ClientStatusChange(
+        client_id=client.id,
+        from_status=None,
+        to_status=client.status,
+        changed_by_user_id=current_user.id,
+        changed_at=client.created_at or datetime.utcnow()
+    ))
+    db.session.commit()
+
     flash(f'Client "{name}" created successfully.', 'success')
     return redirect(url_for('clients'))
 
@@ -587,7 +1041,13 @@ def edit_client(client_id):
         activities = ClientActivity.query.filter_by(client_id=client_id).order_by(ClientActivity.activity_date.desc()).all()
         all_users = User.query.filter_by(role='rep').all()
         all_users = sorted(all_users, key=lambda u: u.display_name.lower())
-        return render_template('client_form.html', client=client, activities=activities, all_users=all_users)
+        lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
+
+        # Build journey timeline
+        timeline = _build_client_timeline(client, activities)
+
+        return render_template('client_form.html', client=client, activities=activities,
+                               all_users=all_users, lead_sources=lead_sources, timeline=timeline)
     
     name = request.form.get('name', '').strip()
     address = request.form.get('address', '').strip()
@@ -621,6 +1081,7 @@ def edit_client(client_id):
         flash('Name and address are required.', 'error')
         return redirect(url_for('edit_client', client_id=client_id))
     
+    old_status = client.status
     client.name = name
     client.address = address
     client.contact_name = contact_name if contact_name else None
@@ -628,6 +1089,15 @@ def edit_client(client_id):
     client.email = email if email else None
     client.status = status
     client.notes = notes if notes else None
+
+    if old_status != status:
+        db.session.add(ClientStatusChange(
+            client_id=client.id,
+            from_status=old_status,
+            to_status=status,
+            changed_by_user_id=current_user.id,
+            changed_at=datetime.utcnow()
+        ))
     
     client.lot_sqft = lot_sqft if lot_sqft else None
     client.sqft = sqft if sqft else None
@@ -652,12 +1122,17 @@ def edit_client(client_id):
     client.estimated_end_date = datetime.strptime(estimated_end_date, '%Y-%m-%d').date() if estimated_end_date else None
     
     client.permitting_status = permitting_status if permitting_status else None
-    
+
+    lead_source_id = request.form.get('lead_source_id', '').strip()
+    source_detail = request.form.get('source_detail', '').strip()
+    client.lead_source_id = int(lead_source_id) if lead_source_id else None
+    client.source_detail = source_detail if source_detail else None
+
     if current_user.is_supervisor:
         assigned_to = request.form.get('assigned_to_user_id', '').strip()
         if assigned_to:
             client.assigned_to_user_id = assigned_to
-    
+
     db.session.commit()
     
     flash(f'Client "{name}" updated successfully.', 'success')
@@ -683,15 +1158,60 @@ def update_client_status(client_id):
     
     client = Client.query.get_or_404(client_id)
     new_status = request.form.get('status', '').strip()
-    
+
     valid_statuses = ['Lead', 'Prospect', 'Active', 'Completed', 'On Hold', 'Lost']
     if new_status not in valid_statuses:
         return jsonify({'success': False, 'error': 'Invalid status'}), 400
-    
+
+    old_status = client.status
     client.status = new_status
+    # Also save final_contract_value if provided (when completing)
+    final_val = request.form.get('final_contract_value', '').strip().replace(',', '').replace('$', '')
+    if final_val:
+        try:
+            client.final_contract_value = Decimal(final_val)
+        except (InvalidOperation, ValueError):
+            pass
+
+    # Log status change as activity + structured record for timeline
+    if old_status != new_status:
+        activity = ClientActivity(
+            client_id=client.id,
+            user_id=current_user.id,
+            activity_type='Status Change',
+            note_text=f'{old_status} → {new_status}',
+            activity_date=datetime.utcnow()
+        )
+        db.session.add(activity)
+
+        status_change = ClientStatusChange(
+            client_id=client.id,
+            from_status=old_status,
+            to_status=new_status,
+            changed_by_user_id=current_user.id,
+            changed_at=datetime.utcnow()
+        )
+        db.session.add(status_change)
+
     db.session.commit()
-    
-    return jsonify({'success': True, 'status': new_status})
+
+    needs_final_value = (new_status == 'Completed' and client.final_contract_value is None)
+    return jsonify({'success': True, 'status': new_status, 'needs_final_value': needs_final_value})
+
+
+@app.route('/clients/<int:client_id>/update_final_value', methods=['POST'])
+@require_login
+def update_client_final_value(client_id):
+    client = Client.query.get_or_404(client_id)
+    val_str = request.form.get('final_contract_value', '').strip().replace(',', '').replace('$', '')
+    if not val_str:
+        return jsonify({'success': False, 'error': 'Value is required'}), 400
+    try:
+        client.final_contract_value = Decimal(val_str)
+    except (InvalidOperation, ValueError):
+        return jsonify({'success': False, 'error': 'Invalid number'}), 400
+    db.session.commit()
+    return jsonify({'success': True, 'final_contract_value': float(client.final_contract_value)})
 
 
 @app.route('/clients/<int:client_id>/update_opportunity', methods=['POST'])
@@ -757,99 +1277,79 @@ def add_activity(client_id):
             flash('Invalid next step date format.', 'error')
             return redirect(url_for('edit_client', client_id=client_id))
     
-    file_path = None
+    storage_key = None
     file_name = None
-    gdrive_file_id = None
-    gdrive_web_view_link = None
-    
+
     if 'file' in request.files:
         file = request.files['file']
         if file and file.filename:
-            
+
             filename = secure_filename(file.filename)
             if not filename:
                 flash('Invalid filename.', 'error')
                 return redirect(url_for('edit_client', client_id=client_id))
-            
+
             ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
-            
+
             if ext not in current_app.config['ALLOWED_EXTENSIONS']:
                 flash(f'File type .{ext} not allowed. Allowed types: PDF, DOC, DOCX, TXT, JPG, PNG, XLS, XLSX, CSV', 'error')
                 return redirect(url_for('edit_client', client_id=client_id))
-            
-            if not client.gdrive_documents_id:
-                try:
-                    from google_drive_helper import create_client_folder_structure
-                    folder_ids = create_client_folder_structure(client.name, client.address)
-                    client.gdrive_client_folder_id = folder_ids['client_folder_id']
-                    client.gdrive_property_images_id = folder_ids['property_images_id']
-                    client.gdrive_documents_id = folder_ids['documents_id']
-                    client.gdrive_contracts_id = folder_ids['contracts_id']
-                    db.session.commit()
-                except Exception as e:
-                    flash(f'Could not create Google Drive folders: {str(e)}', 'error')
-                    return redirect(url_for('edit_client', client_id=client_id))
-            
+
+            if not client.storage_prefix:
+                from r2_storage_helper import build_client_prefix
+                client.storage_prefix = build_client_prefix(client.name, client.address)
+                db.session.commit()
+
             timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
             unique_filename = f"{timestamp}_{filename}"
-            
+
             try:
                 import mimetypes
-                from google_drive_helper import upload_file_to_drive
-                
+                from r2_storage_helper import upload_file as r2_upload
+
                 file_content = file.read()
                 mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-                
-                upload_result = upload_file_to_drive(
-                    file_content,
-                    unique_filename,
-                    client.gdrive_documents_id,
-                    mime_type
-                )
-                
-                gdrive_file_id = upload_result['id']
-                gdrive_web_view_link = upload_result['web_view_link']
+                key = f"{client.storage_prefix}/documents/{unique_filename}"
+
+                r2_upload(file_content, key, mime_type)
+
+                storage_key = key
                 file_name = filename
             except Exception as e:
-                flash(f'Failed to save file to Google Drive: {str(e)}', 'error')
+                flash(f'Failed to upload file: {str(e)}', 'error')
                 return redirect(url_for('edit_client', client_id=client_id))
-    
+
     try:
         final_note_text = note_text
-        if gdrive_web_view_link and file_name:
-            final_note_text = f"{note_text}\n\nUploaded {file_name} to Google Drive ({gdrive_web_view_link})"
-        
+        if file_name:
+            final_note_text = f"{note_text}\n\nAttached: {file_name}"
+
         activity = ClientActivity(
             client_id=client_id,
             user_id=current_user.id,
             activity_type=activity_type,
             note_text=final_note_text,
             activity_date=activity_date_utc,
-            file_path=file_path,
+            file_path=storage_key,
             file_name=file_name,
             next_step_description=next_step_description if next_step_description else None,
             next_step_date=next_step_date_utc
         )
-        
+
         db.session.add(activity)
         db.session.commit()
-        
+
         flash('Activity added successfully.', 'success')
     except Exception as e:
         db.session.rollback()
-        if gdrive_file_id:
+        if storage_key:
             try:
-                from google_drive_helper import delete_file_from_drive
-                delete_file_from_drive(gdrive_file_id)
-            except:
-                pass
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
+                from r2_storage_helper import delete_file as r2_delete
+                r2_delete(storage_key)
             except:
                 pass
         flash('Failed to save activity. Please try again.', 'error')
-    
+
     return redirect(url_for('edit_client', client_id=client_id))
 
 
@@ -866,26 +1366,25 @@ def download_activity_file(client_id, activity_id):
         flash('No file attached to this activity.', 'error')
         return redirect(url_for('edit_client', client_id=client_id))
     
-    import re
-    gdrive_url_match = re.search(r'(https://drive\.google\.com/[^\)]+)', activity.note_text or '')
-    if gdrive_url_match:
-        gdrive_url = gdrive_url_match.group(1)
-        return redirect(gdrive_url)
-    
+    if activity.file_path and activity.file_path.startswith('property-files/'):
+        from r2_storage_helper import generate_presigned_url
+        url = generate_presigned_url(activity.file_path)
+        return redirect(url)
+
     if activity.file_path:
         upload_folder = os.path.abspath(current_app.config['UPLOAD_FOLDER'])
         file_path = os.path.abspath(activity.file_path)
-        
+
         if not file_path.startswith(upload_folder):
             flash('Invalid file path.', 'error')
             return redirect(url_for('edit_client', client_id=client_id))
-        
+
         if not os.path.exists(file_path):
             flash('File not found.', 'error')
             return redirect(url_for('edit_client', client_id=client_id))
-        
+
         return send_file(file_path, as_attachment=True, download_name=activity.file_name)
-    
+
     flash('File not found.', 'error')
     return redirect(url_for('edit_client', client_id=client_id))
 
@@ -917,53 +1416,40 @@ def upload_property_image(client_id):
     if ext not in ALLOWED_IMAGE_EXTENSIONS:
         return jsonify({'success': False, 'error': f'File type .{ext} not allowed. Only images (JPG, PNG, GIF, WebP) are accepted'}), 400
     
-    if not client.gdrive_property_images_id:
-        try:
-            from google_drive_helper import create_client_folder_structure
-            folder_ids = create_client_folder_structure(client.name, client.address)
-            client.gdrive_client_folder_id = folder_ids['client_folder_id']
-            client.gdrive_property_images_id = folder_ids['property_images_id']
-            client.gdrive_documents_id = folder_ids['documents_id']
-            client.gdrive_contracts_id = folder_ids['contracts_id']
-            db.session.commit()
-        except Exception as e:
-            return jsonify({'success': False, 'error': f'Could not create Google Drive folders: {str(e)}'}), 500
-    
+    if not client.storage_prefix:
+        from r2_storage_helper import build_client_prefix
+        client.storage_prefix = build_client_prefix(client.name, client.address)
+        db.session.commit()
+
     try:
-        from google_drive_helper import upload_file_to_drive
-        
+        from r2_storage_helper import upload_file as r2_upload
+
         file_content = file.read()
         mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-        
+
         timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
         unique_filename = f"property_{timestamp}_{filename}"
-        
-        upload_result = upload_file_to_drive(
-            file_content,
-            unique_filename,
-            client.gdrive_property_images_id,
-            mime_type
-        )
-        
+        key = f"{client.storage_prefix}/property-images/{unique_filename}"
+
+        r2_upload(file_content, key, mime_type)
+
         property_image = PropertyImage(
             client_id=client_id,
             file_name=filename,
-            gdrive_file_id=upload_result['id'],
-            gdrive_web_view_link=upload_result['web_view_link'],
+            storage_key=key,
             uploaded_by_user_id=current_user.id
         )
-        
+
         db.session.add(property_image)
         db.session.commit()
-        
+
         return jsonify({
             'success': True,
             'image_id': property_image.id,
             'file_name': property_image.file_name,
             'image_url': url_for('view_property_image', client_id=client_id, image_id=property_image.id),
-            'gdrive_link': upload_result['web_view_link']
         })
-        
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'success': False, 'error': f'Failed to save image: {str(e)}'}), 500
@@ -979,20 +1465,20 @@ def view_property_image(client_id, image_id):
     
     property_image = PropertyImage.query.filter_by(id=image_id, client_id=client_id).first_or_404()
     
-    if property_image.gdrive_file_id:
+    if property_image.storage_key:
         try:
-            from google_drive_helper import get_file_content
-            file_content = get_file_content(property_image.gdrive_file_id)
-            
+            from r2_storage_helper import download_file
+            file_content = download_file(property_image.storage_key)
+
             mime_type = mimetypes.guess_type(property_image.file_name)[0] or 'image/jpeg'
-            
+
             return send_file(
                 io.BytesIO(file_content),
                 mimetype=mime_type,
                 as_attachment=False
             )
         except Exception as e:
-            flash(f'Error loading image from Google Drive: {str(e)}', 'error')
+            flash(f'Error loading image: {str(e)}', 'error')
             return redirect(url_for('edit_client', client_id=client_id))
     
     if property_image.file_path:
@@ -1018,28 +1504,28 @@ def delete_property_image(client_id, image_id):
     
     property_image = PropertyImage.query.filter_by(id=image_id, client_id=client_id).first_or_404()
     
-    gdrive_file_id = property_image.gdrive_file_id
+    r2_key = property_image.storage_key
     file_path = property_image.file_path
-    
+
     try:
         db.session.delete(property_image)
         db.session.commit()
-        
-        if gdrive_file_id:
+
+        if r2_key:
             try:
-                from google_drive_helper import delete_file_from_drive
-                delete_file_from_drive(gdrive_file_id)
+                from r2_storage_helper import delete_file as r2_delete
+                r2_delete(r2_key)
             except Exception as e:
-                print(f"Warning: Could not delete file from Google Drive: {e}")
-        
+                print(f"Warning: Could not delete file from R2: {e}")
+
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
             except:
                 pass
-        
+
         return jsonify({'success': True})
-        
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'success': False, 'error': 'Failed to delete image'}), 500
@@ -1085,71 +1571,52 @@ def upload_to_folder(client_id):
         if ext not in ALLOWED_EXTENSIONS:
             return jsonify({'success': False, 'error': 'Only PDF or DOC files allowed'}), 400
     
-    folder_id_map = {
-        'property_images': client.gdrive_property_images_id,
-        'documents': client.gdrive_documents_id,
-        'contracts': client.gdrive_contracts_id
+    if not client.storage_prefix:
+        from r2_storage_helper import build_client_prefix
+        client.storage_prefix = build_client_prefix(client.name, client.address)
+        db.session.commit()
+
+    folder_key_segment = {
+        'property_images': 'property-images',
+        'documents': 'documents',
+        'contracts': 'contracts',
     }
-    target_folder_id = folder_id_map[folder_type]
-    
-    if not target_folder_id:
-        try:
-            from google_drive_helper import create_client_folder_structure
-            folder_ids = create_client_folder_structure(client.name, client.address)
-            client.gdrive_client_folder_id = folder_ids['client_folder_id']
-            client.gdrive_property_images_id = folder_ids['property_images_id']
-            client.gdrive_documents_id = folder_ids['documents_id']
-            client.gdrive_contracts_id = folder_ids['contracts_id']
-            db.session.commit()
-            
-            target_folder_id = folder_ids[folder_type + '_id']
-        except Exception as e:
-            print(f"ERROR creating folders: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return jsonify({'success': False, 'error': f'Could not create Google Drive folders: {str(e)}'}), 500
-    
+
     try:
-        from google_drive_helper import upload_file_to_drive
-        
+        from r2_storage_helper import upload_file as r2_upload
+
         file_content = file.read()
         mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-        
+
         timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
         unique_filename = f"{timestamp}_{filename}"
-        
-        upload_result = upload_file_to_drive(
-            file_content,
-            unique_filename,
-            target_folder_id,
-            mime_type
-        )
-        
+        key = f"{client.storage_prefix}/{folder_key_segment[folder_type]}/{unique_filename}"
+
+        r2_upload(file_content, key, mime_type)
+
         activity_type_map = {
             'property_images': 'Property image uploaded',
             'documents': 'Document uploaded',
             'contracts': 'Contract uploaded'
         }
-        
+
         activity = ClientActivity(
             client_id=client_id,
             user_id=current_user.id,
             activity_type=activity_type_map[folder_type],
-            note_text=f"Uploaded {filename} to Google Drive ({upload_result['web_view_link']})",
+            note_text=f"Uploaded {filename}",
             activity_date=datetime.utcnow(),
+            file_path=key,
             file_name=filename
         )
-        
+
         db.session.add(activity)
         db.session.commit()
-        
+
         return jsonify({'success': True, 'file_name': filename})
-        
+
     except Exception as e:
         db.session.rollback()
-        print(f"ERROR in upload_to_folder: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return jsonify({'success': False, 'error': f'Failed to upload file: {str(e)}'}), 500
 
 
@@ -1287,6 +1754,15 @@ def admin_dashboard():
                     'pay': filtered_pay
                 })
     
+    # Build daily totals for the current pay period (company-wide trend chart)
+    daily_totals = build_daily_hours(
+        TimeEntry.query.filter(
+            TimeEntry.date >= current_period_start,
+            TimeEntry.date <= current_period_end
+        ).all(),
+        current_period_start, current_period_end
+    )
+
     return render_template('admin_dashboard.html',
                          entries=entries,
                          total_hours=total_hours,
@@ -1307,7 +1783,8 @@ def admin_dashboard():
                          filters_applied=filters_applied,
                          filtered_payroll_data=filtered_payroll_data,
                          filtered_date_from=filtered_date_from,
-                         filtered_date_to=filtered_date_to)
+                         filtered_date_to=filtered_date_to,
+                         daily_totals=daily_totals)
 
 
 @app.route('/admin/entry/<int:entry_id>/edit', methods=['GET', 'POST'])
@@ -1403,7 +1880,8 @@ def rep_time_entries(user_id):
     summary_entry_count = len(summary_entries)
     summary_unique_clients = len(set(e.client_id for e in summary_entries if e.client_id))
     summary_pay = float(summary_hours) * float(rep.hourly_rate or 0)
-    
+    daily_hours = build_daily_hours(summary_entries, summary_start, summary_end)
+
     return render_template('rep_time_entries.html',
                          rep=rep,
                          entries=entries,
@@ -1420,7 +1898,8 @@ def rep_time_entries(user_id):
                          summary_billable=summary_billable,
                          summary_entry_count=summary_entry_count,
                          summary_unique_clients=summary_unique_clients,
-                         summary_pay=summary_pay)
+                         summary_pay=summary_pay,
+                         daily_hours=daily_hours)
 
 
 @app.route('/admin/export')
@@ -2128,26 +2607,6 @@ def remove_user(user_id):
     return redirect(url_for('manage_users'))
 
 
-@app.route('/admin/fix-folder-permissions')
-@require_login
-def fix_folder_permissions():
-    """Utility route to make existing Google Drive folders shareable.
-    Only accessible by supervisors.
-    """
-    if not current_user.is_supervisor:
-        flash('Access denied. Only supervisors can access this feature.', 'error')
-        return redirect(url_for('index'))
-    
-    try:
-        from google_drive_helper import update_existing_folders_permissions
-        updated_count = update_existing_folders_permissions()
-        flash(f'Successfully updated {updated_count} folder permissions. All client folders are now accessible to anyone with the link.', 'success')
-    except Exception as e:
-        flash(f'Error updating folder permissions: {str(e)}', 'error')
-    
-    return redirect(url_for('clients'))
-
-
 @app.template_filter('format_hours')
 def format_hours_filter(value):
     return format_hours(value)
@@ -2170,3 +2629,503 @@ def format_datetime_input_filter(value):
 
 
 from utils import PACIFIC_TZ
+
+
+# --- Lead Source Management (Supervisors Only) ---
+
+@app.route('/settings/lead-sources')
+@require_supervisor
+def lead_sources_settings():
+    sources = LeadSource.query.order_by(LeadSource.is_active.desc(), LeadSource.name).all()
+    return render_template('lead_sources_settings.html', sources=sources, channel_types=LeadSource.CHANNEL_TYPES)
+
+
+@app.route('/settings/lead-sources/add', methods=['POST'])
+@require_supervisor
+def add_lead_source():
+    name = request.form.get('name', '').strip()
+    channel_type = request.form.get('channel_type', '').strip()
+    if not name or channel_type not in LeadSource.CHANNEL_TYPES:
+        flash('Name and valid channel type are required.', 'error')
+        return redirect(url_for('lead_sources_settings'))
+    source = LeadSource(name=name, channel_type=channel_type)
+    db.session.add(source)
+    db.session.commit()
+    flash(f'Lead source "{name}" added.', 'success')
+    return redirect(url_for('lead_sources_settings'))
+
+
+@app.route('/settings/lead-sources/<int:source_id>/update', methods=['POST'])
+@require_supervisor
+def update_lead_source(source_id):
+    source = LeadSource.query.get_or_404(source_id)
+    name = request.form.get('name', '').strip()
+    channel_type = request.form.get('channel_type', '').strip()
+    is_active = request.form.get('is_active') == '1'
+    if name:
+        source.name = name
+    if channel_type in LeadSource.CHANNEL_TYPES:
+        source.channel_type = channel_type
+    source.is_active = is_active
+    db.session.commit()
+    flash(f'Lead source "{source.name}" updated.', 'success')
+    return redirect(url_for('lead_sources_settings'))
+
+
+@app.route('/settings/lead-sources/seed', methods=['POST'])
+@require_supervisor
+def seed_lead_sources():
+    """Seed the default lead sources if none exist."""
+    if LeadSource.query.count() > 0:
+        flash('Lead sources already exist.', 'error')
+        return redirect(url_for('lead_sources_settings'))
+    defaults = [
+        ('Google Ads', 'paid_ads'),
+        ('Meta Ads', 'paid_ads'),
+        ('Instagram Organic', 'organic_social'),
+        ('Facebook Organic', 'organic_social'),
+        ('Website / SEO', 'website'),
+        ('Phone Call', 'phone'),
+        ('Referral — Client', 'referral'),
+        ('Referral — Partner', 'referral'),
+        ('Repeat Client', 'other'),
+        ('Other', 'other'),
+    ]
+    for name, channel in defaults:
+        db.session.add(LeadSource(name=name, channel_type=channel))
+    db.session.commit()
+    flash('Default lead sources seeded.', 'success')
+    return redirect(url_for('lead_sources_settings'))
+
+
+# --- Lead Source Backfill (Supervisors Only) ---
+
+@app.route('/settings/lead-sources/backfill')
+@require_supervisor
+def lead_source_backfill():
+    clients_missing = Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).order_by(Client.name).all()
+    lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
+    return render_template('lead_source_backfill.html', clients=clients_missing, lead_sources=lead_sources)
+
+
+@app.route('/settings/lead-sources/backfill/save', methods=['POST'])
+@require_supervisor
+def lead_source_backfill_save():
+    data = request.form
+    updated = 0
+    for key, value in data.items():
+        if key.startswith('source_') and value:
+            client_id = int(key.replace('source_', ''))
+            client = Client.query.get(client_id)
+            if client:
+                client.lead_source_id = int(value)
+                detail = data.get(f'detail_{client_id}', '').strip()
+                client.source_detail = detail if detail else None
+                updated += 1
+    db.session.commit()
+    flash(f'{updated} client(s) updated with lead source.', 'success')
+    return redirect(url_for('lead_source_backfill'))
+
+
+@app.route('/api/missing-lead-source-count')
+@require_login
+def missing_lead_source_count():
+    count = Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count()
+    return jsonify({'count': count})
+
+
+# --- Channel Spend (Supervisors Only) ---
+
+@app.route('/reports/channel-spend')
+@require_supervisor
+def channel_spend():
+    month_str = request.args.get('month')
+    if month_str:
+        try:
+            selected_month = datetime.strptime(month_str, '%Y-%m').date().replace(day=1)
+        except ValueError:
+            selected_month = date.today().replace(day=1)
+    else:
+        selected_month = date.today().replace(day=1)
+
+    entries = ChannelSpend.query.filter_by(period_month=selected_month)\
+        .options(joinedload(ChannelSpend.lead_source))\
+        .order_by(ChannelSpend.created_at.desc()).all()
+
+    source_totals = defaultdict(Decimal)
+    for e in entries:
+        source_totals[e.lead_source.name] += e.amount
+    grand_total = sum(source_totals.values())
+
+    lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
+
+    return render_template('channel_spend.html',
+                           entries=entries,
+                           source_totals=dict(sorted(source_totals.items())),
+                           grand_total=grand_total,
+                           lead_sources=lead_sources,
+                           selected_month=selected_month)
+
+
+@app.route('/reports/channel-spend/add', methods=['POST'])
+@require_supervisor
+def add_channel_spend():
+    lead_source_id = request.form.get('lead_source_id', '').strip()
+    amount_str = request.form.get('amount', '').strip().replace(',', '').replace('$', '')
+    month_str = request.form.get('period_month', '').strip()
+    note = request.form.get('note', '').strip()
+
+    if not lead_source_id or not amount_str or not month_str:
+        flash('Source and amount are required.', 'error')
+        return redirect(url_for('channel_spend', month=month_str))
+
+    try:
+        amount = Decimal(amount_str)
+        if amount <= 0:
+            raise ValueError
+    except (InvalidOperation, ValueError):
+        flash('Enter a valid positive amount.', 'error')
+        return redirect(url_for('channel_spend', month=month_str))
+
+    try:
+        period_month = datetime.strptime(month_str, '%Y-%m').date().replace(day=1)
+    except ValueError:
+        flash('Invalid month.', 'error')
+        return redirect(url_for('channel_spend'))
+
+    entry = ChannelSpend(
+        lead_source_id=int(lead_source_id),
+        amount=amount,
+        period_month=period_month,
+        note=note if note else None,
+        created_by=current_user.id
+    )
+    db.session.add(entry)
+    db.session.commit()
+    flash('Spend entry added.', 'success')
+    return redirect(url_for('channel_spend', month=month_str))
+
+
+@app.route('/reports/channel-spend/<int:spend_id>/edit', methods=['POST'])
+@require_supervisor
+def edit_channel_spend(spend_id):
+    entry = ChannelSpend.query.get_or_404(spend_id)
+    lead_source_id = request.form.get('lead_source_id', '').strip()
+    amount_str = request.form.get('amount', '').strip().replace(',', '').replace('$', '')
+    note = request.form.get('note', '').strip()
+    month_str = request.form.get('period_month', '').strip()
+
+    if lead_source_id:
+        entry.lead_source_id = int(lead_source_id)
+    if amount_str:
+        try:
+            entry.amount = Decimal(amount_str)
+        except (InvalidOperation, ValueError):
+            flash('Invalid amount.', 'error')
+            return redirect(url_for('channel_spend', month=month_str))
+    entry.note = note if note else None
+    db.session.commit()
+    flash('Spend entry updated.', 'success')
+    return redirect(url_for('channel_spend', month=month_str))
+
+
+@app.route('/reports/channel-spend/<int:spend_id>/delete', methods=['POST'])
+@require_supervisor
+def delete_channel_spend(spend_id):
+    entry = ChannelSpend.query.get_or_404(spend_id)
+    month_str = entry.period_month.strftime('%Y-%m')
+    db.session.delete(entry)
+    db.session.commit()
+    flash('Spend entry deleted.', 'success')
+    return redirect(url_for('channel_spend', month=month_str))
+
+
+# --- ROI Report (Supervisors Only) ---
+
+def _parse_roi_dates(req):
+    """Parse date range from request args. Returns (start, end, prev_start, prev_end, preset)."""
+    preset = req.args.get('preset', '')
+    today = date.today()
+
+    if preset == 'this_month':
+        start = today.replace(day=1)
+        end = today
+    elif preset == 'last_3_months':
+        m = today.replace(day=1)
+        end = m - timedelta(days=1)
+        m2 = end.replace(day=1)
+        m3 = (m2 - timedelta(days=1)).replace(day=1)
+        start = (m3 - timedelta(days=1)).replace(day=1)
+    elif preset == 'ytd':
+        start = today.replace(month=1, day=1)
+        end = today
+    elif preset == 'last_month' or (not req.args.get('start') and not preset):
+        first_this = today.replace(day=1)
+        end = first_this - timedelta(days=1)
+        start = end.replace(day=1)
+        preset = 'last_month'
+    else:
+        try:
+            start = datetime.strptime(req.args['start'], '%Y-%m-%d').date()
+            end = datetime.strptime(req.args['end'], '%Y-%m-%d').date()
+        except (KeyError, ValueError):
+            first_this = today.replace(day=1)
+            end = first_this - timedelta(days=1)
+            start = end.replace(day=1)
+            preset = 'last_month'
+
+    period_days = (end - start).days + 1
+    prev_end = start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=period_days - 1)
+    return start, end, prev_start, prev_end, preset
+
+
+def _build_roi_rows(clients_in_period, spend_by_source, all_source_ids):
+    """Build per-source ROI rows from clients created in the period."""
+    empty = lambda: {
+        'funnel_lead': 0, 'funnel_prospect': 0, 'funnel_active': 0,
+        'funnel_completed': 0, 'funnel_on_hold': 0, 'funnel_lost': 0,
+        'total_leads': 0,
+        'revenue_closed': Decimal(0), 'revenue_projected': Decimal(0),
+        '_days_to_close': [],  # list of day counts for completed clients
+    }
+    rows = {sid: empty() for sid in all_source_ids}
+    rows[None] = empty()
+
+    status_key = {
+        'Lead': 'funnel_lead', 'Prospect': 'funnel_prospect',
+        'Active': 'funnel_active', 'Completed': 'funnel_completed',
+        'On Hold': 'funnel_on_hold', 'Lost': 'funnel_lost',
+    }
+    for c in clients_in_period:
+        sid = c.lead_source_id if c.lead_source_id in rows else None
+        r = rows[sid]
+        r['total_leads'] += 1
+        r[status_key.get(c.status, 'funnel_lead')] += 1
+        if c.status == 'Completed' and c.final_contract_value:
+            r['revenue_closed'] += c.final_contract_value
+        if c.status == 'Completed' and c.created_at:
+            close_change = ClientStatusChange.query.filter_by(
+                client_id=c.id, to_status='Completed'
+            ).order_by(ClientStatusChange.changed_at.desc()).first()
+            close_date = close_change.changed_at if close_change else c.updated_at
+            if close_date:
+                r['_days_to_close'].append((close_date - c.created_at).days)
+        if c.status == 'Active' and c.opportunity_value:
+            r['revenue_projected'] += c.opportunity_value
+
+    for sid in rows:
+        r = rows[sid]
+        r['spend'] = spend_by_source.get(sid, Decimal(0))
+        tl = r['total_leads']
+        r['cpl'] = r['spend'] / tl if tl and r['spend'] else None
+        r['won'] = r['funnel_active'] + r['funnel_completed']
+        r['close_rate'] = (r['won'] / tl * 100) if tl else None
+        r['total_revenue'] = r['revenue_closed'] + r['revenue_projected']
+        r['roi'] = float(r['total_revenue'] / r['spend']) if r['spend'] else None
+        dtc = r.pop('_days_to_close')
+        r['avg_days_to_close'] = round(sum(dtc) / len(dtc), 1) if len(dtc) >= 5 else None
+        r['days_to_close_count'] = len(dtc)
+    return rows
+
+
+@app.route('/reports/roi')
+@require_supervisor
+def roi_report():
+    start, end, prev_start, prev_end, preset = _parse_roi_dates(request)
+
+    start_dt = datetime.combine(start, datetime.min.time())
+    end_dt = datetime.combine(end, datetime.max.time())
+    prev_start_dt = datetime.combine(prev_start, datetime.min.time())
+    prev_end_dt = datetime.combine(prev_end, datetime.max.time())
+
+    clients_current = Client.query.options(joinedload(Client.lead_source))\
+        .filter(Client.created_at >= start_dt, Client.created_at <= end_dt).all()
+    clients_prev = Client.query.options(joinedload(Client.lead_source))\
+        .filter(Client.created_at >= prev_start_dt, Client.created_at <= prev_end_dt).all()
+
+    spend_entries = ChannelSpend.query.filter(
+        ChannelSpend.period_month >= start.replace(day=1),
+        ChannelSpend.period_month <= end.replace(day=1)).all()
+    spend_by_source = defaultdict(Decimal)
+    for e in spend_entries:
+        spend_by_source[e.lead_source_id] += e.amount
+
+    prev_spend_entries = ChannelSpend.query.filter(
+        ChannelSpend.period_month >= prev_start.replace(day=1),
+        ChannelSpend.period_month <= prev_end.replace(day=1)).all()
+    prev_spend_by_source = defaultdict(Decimal)
+    for e in prev_spend_entries:
+        prev_spend_by_source[e.lead_source_id] += e.amount
+
+    all_source_ids = set()
+    for c in clients_current + clients_prev:
+        if c.lead_source_id:
+            all_source_ids.add(c.lead_source_id)
+    for sid in list(spend_by_source) + list(prev_spend_by_source):
+        all_source_ids.add(sid)
+
+    rows = _build_roi_rows(clients_current, spend_by_source, all_source_ids)
+    prev_rows = _build_roi_rows(clients_prev, prev_spend_by_source, all_source_ids)
+
+    sources = LeadSource.query.filter(LeadSource.id.in_(all_source_ids)).all() if all_source_ids else []
+    source_names = {s.id: s.name for s in sources}
+    source_names[None] = 'Unknown / No Source'
+
+    table = []
+    for sid, r in rows.items():
+        if r['total_leads'] == 0 and r['spend'] == 0:
+            continue
+        pr = prev_rows.get(sid, {})
+        table.append({
+            'source_id': sid, 'source_name': source_names.get(sid, 'Unknown'),
+            **r,
+            'prev_leads': pr.get('total_leads', 0),
+            'prev_won': pr.get('won', 0),
+            'prev_spend': pr.get('spend', Decimal(0)),
+            'prev_revenue': pr.get('total_revenue', Decimal(0)),
+            'prev_roi': pr.get('roi'),
+        })
+    table.sort(key=lambda x: (float(x['total_revenue']), x['total_leads']), reverse=True)
+
+    best = None
+    for r in table:
+        if r['roi'] and r['roi'] > 0 and r['spend'] > 0:
+            if best is None or r['roi'] > best['roi']:
+                best = r
+
+    totals = {
+        'spend': sum(r['spend'] for r in table),
+        'total_leads': sum(r['total_leads'] for r in table),
+        'won': sum(r['won'] for r in table),
+        'revenue_closed': sum(r['revenue_closed'] for r in table),
+        'revenue_projected': sum(r['revenue_projected'] for r in table),
+        'total_revenue': sum(r['total_revenue'] for r in table),
+        'prev_leads': sum(r['prev_leads'] for r in table),
+        'prev_won': sum(r['prev_won'] for r in table),
+        'prev_spend': sum(r['prev_spend'] for r in table),
+        'prev_revenue': sum(r['prev_revenue'] for r in table),
+    }
+    tl = totals['total_leads']
+    totals['cpl'] = totals['spend'] / tl if tl and totals['spend'] else None
+    totals['close_rate'] = (totals['won'] / tl * 100) if tl else None
+    totals['roi'] = float(totals['total_revenue'] / totals['spend']) if totals['spend'] else None
+    all_dtc = [r['avg_days_to_close'] for r in table if r.get('avg_days_to_close')]
+    totals['avg_days_to_close'] = round(sum(all_dtc) / len(all_dtc), 1) if all_dtc else None
+
+    return render_template('roi_report.html',
+                           table=table, totals=totals, best=best,
+                           start=start, end=end,
+                           prev_start=prev_start, prev_end=prev_end,
+                           preset=preset)
+
+
+@app.route('/reports/roi/export')
+@require_supervisor
+def roi_report_export():
+    start, end, prev_start, prev_end, preset = _parse_roi_dates(request)
+    start_dt = datetime.combine(start, datetime.min.time())
+    end_dt = datetime.combine(end, datetime.max.time())
+
+    clients_current = Client.query.options(joinedload(Client.lead_source))\
+        .filter(Client.created_at >= start_dt, Client.created_at <= end_dt).all()
+
+    spend_entries = ChannelSpend.query.filter(
+        ChannelSpend.period_month >= start.replace(day=1),
+        ChannelSpend.period_month <= end.replace(day=1)).all()
+    spend_by_source = defaultdict(Decimal)
+    for e in spend_entries:
+        spend_by_source[e.lead_source_id] += e.amount
+
+    all_source_ids = set()
+    for c in clients_current:
+        if c.lead_source_id:
+            all_source_ids.add(c.lead_source_id)
+    for sid in spend_by_source:
+        all_source_ids.add(sid)
+
+    rows = _build_roi_rows(clients_current, spend_by_source, all_source_ids)
+    sources = LeadSource.query.filter(LeadSource.id.in_(all_source_ids)).all() if all_source_ids else []
+    source_names = {s.id: s.name for s in sources}
+    source_names[None] = 'Unknown / No Source'
+
+    si = StringIO()
+    writer = csv.writer(si)
+    writer.writerow([
+        'Source', 'Spend', 'Leads', 'Cost per Lead',
+        'Won (Active+Completed)', 'Close Rate',
+        'Revenue (Closed)', 'Revenue (Projected)', 'Total Revenue', 'ROI Multiple',
+        'Avg Days to Close',
+        'Funnel: Lead', 'Funnel: Prospect', 'Funnel: Active', 'Funnel: Completed',
+        'Funnel: On Hold', 'Funnel: Lost',
+    ])
+    sorted_rows = sorted(rows.items(), key=lambda x: float(x[1]['total_revenue']), reverse=True)
+    for sid, r in sorted_rows:
+        if r['total_leads'] == 0 and r['spend'] == 0:
+            continue
+        writer.writerow([
+            source_names.get(sid, 'Unknown'),
+            f"{r['spend']:.2f}", r['total_leads'],
+            f"{r['cpl']:.2f}" if r['cpl'] else '',
+            r['won'],
+            f"{r['close_rate']:.1f}%" if r['close_rate'] is not None else '',
+            f"{r['revenue_closed']:.2f}", f"{r['revenue_projected']:.2f}",
+            f"{r['total_revenue']:.2f}",
+            f"{r['roi']:.2f}x" if r['roi'] else '',
+            f"{r['avg_days_to_close']}" if r.get('avg_days_to_close') else '',
+            r['funnel_lead'], r['funnel_prospect'], r['funnel_active'],
+            r['funnel_completed'], r['funnel_on_hold'], r['funnel_lost'],
+        ])
+
+    filename = f"roi_report_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}.csv"
+    return Response(
+        si.getvalue(), mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename={filename}'}
+    )
+
+
+@app.route('/api/search')
+@require_login
+def global_search():
+    """Search clients and activities by substring, case-insensitive."""
+    q = request.args.get('q', '').strip()
+    if len(q) < 2:
+        return jsonify({'clients': [], 'activities': []})
+
+    like_q = f'%{q}%'
+    results = {'clients': [], 'activities': []}
+
+    # Search clients: name, address, contact_name
+    clients = Client.query.filter(
+        db.or_(
+            Client.name.ilike(like_q),
+            Client.address.ilike(like_q),
+            Client.contact_name.ilike(like_q),
+        )
+    ).order_by(Client.name).limit(10).all()
+
+    for c in clients:
+        results['clients'].append({
+            'id': c.id,
+            'name': c.name,
+            'address': c.address or '',
+            'status': c.status or '',
+            'url': url_for('edit_client', client_id=c.id),
+        })
+
+    # Search activities: note_text
+    activities = ClientActivity.query.join(Client).filter(
+        ClientActivity.note_text.ilike(like_q)
+    ).order_by(ClientActivity.activity_date.desc()).limit(10).all()
+
+    for a in activities:
+        results['activities'].append({
+            'id': a.id,
+            'note': (a.note_text[:80] + '…') if len(a.note_text) > 80 else a.note_text,
+            'type': a.activity_type,
+            'client_name': a.client.name if a.client else '',
+            'client_id': a.client_id,
+            'url': url_for('edit_client', client_id=a.client_id),
+        })
+
+    return jsonify(results)

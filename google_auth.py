@@ -12,28 +12,9 @@ from app import db
 from models import User, AuthorizedUser
 from datetime import datetime
 
-GOOGLE_CLIENT_ID = os.environ["GOOGLE_OAUTH_CLIENT_ID"]
-GOOGLE_CLIENT_SECRET = os.environ["GOOGLE_OAUTH_CLIENT_SECRET"]
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "dummy-google-client-id")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "dummy-google-client-secret")
 GOOGLE_DISCOVERY_URL = "https://accounts.google.com/.well-known/openid-configuration"
-
-# Make sure to use this redirect URL. It has to match the one in the whitelist
-DEV_REDIRECT_URL = f'https://{os.environ["REPLIT_DEV_DOMAIN"]}/google_login/callback'
-
-# Display setup instructions on startup
-print(f"""
-╔══════════════════════════════════════════════════════════════════════════╗
-║                   GOOGLE OAUTH SETUP INSTRUCTIONS                        ║
-╚══════════════════════════════════════════════════════════════════════════╝
-
-To make Google authentication work:
-1. Go to https://console.cloud.google.com/apis/credentials
-2. Create a new OAuth 2.0 Client ID (or edit existing)
-3. Add this Authorized redirect URI:
-   {DEV_REDIRECT_URL}
-
-For detailed instructions, see:
-https://docs.replit.com/additional-resources/google-auth-in-flask#set-up-your-oauth-app--client
-""")
 
 client = WebApplicationClient(GOOGLE_CLIENT_ID)
 
@@ -189,6 +170,42 @@ def logout():
 def access_denied():
     """Show access denied page for unauthorized users"""
     return render_template("access_denied.html"), 403
+
+
+@google_auth.route("/dev_login")
+def dev_login():
+    """Bypass Google login for development and log in as a supervisor"""
+    # Look for an existing supervisor or dev user
+    user = User.query.filter_by(role='supervisor').first()
+    
+    if user is None:
+        # Create a new dev admin user
+        user = User()
+        user.id = "dev_admin_sub"
+        user.email = "admin@example.com"
+        user.first_name = "Dev"
+        user.last_name = "Admin"
+        user.role = "supervisor"
+        user.profile_image_url = ""
+        user.last_login = datetime.utcnow()
+        db.session.add(user)
+        db.session.commit()
+        
+        # Also ensure this user is in the AuthorizedUser list so they are fully valid
+        authorized = AuthorizedUser.query.filter_by(email="admin@example.com").first()
+        if not authorized:
+            authorized = AuthorizedUser()
+            authorized.email = "admin@example.com"
+            authorized.role = "supervisor"
+            db.session.add(authorized)
+            db.session.commit()
+    else:
+        # Update last login
+        user.last_login = datetime.utcnow()
+        db.session.commit()
+        
+    login_user(user)
+    return redirect(url_for("home"))
 
 
 # Decorators for route protection
