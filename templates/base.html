@@ -161,9 +161,9 @@
                                   {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['clients', 'create_client', 'edit_client'] else 'text-txt-muted hover:text-txt-primary hover:bg-surface-hover' }}">
                             Clients
                         </a>
-                        <a href="{{ url_for('my_logs') }}"
+                        <a href="{{ url_for('channel_spend') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition
-                                  {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['my_logs', 'admin_dashboard', 'rep_time_entries', 'channel_spend', 'roi_report'] else 'text-txt-muted hover:text-txt-primary hover:bg-surface-hover' }}">
+                                  {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['channel_spend', 'roi_report'] else 'text-txt-muted hover:text-txt-primary hover:bg-surface-hover' }}">
                             Reports
                         </a>
                         <a href="{{ url_for('edit_profile') }}"
@@ -257,10 +257,8 @@
                     </div>
                 </div>
 
-                <!-- Right: Shift indicator + Profile -->
+                <!-- Right: Profile -->
                 <div class="flex items-center gap-3">
-                    <div id="navShiftIndicator"></div>
-
                     <!-- Profile dropdown -->
                     <div class="relative">
                         <button @click="profileOpen = !profileOpen"
@@ -316,7 +314,7 @@
                                 {% endif %}
                                 <a href="{{ url_for('google_auth.logout') }}"
                                    class="flex items-center gap-2 px-4 py-2.5 text-sm text-danger hover:bg-danger-light transition"
-                                   id="logoutLink">
+                                  >
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
                                     Log Out
                                 </a>
@@ -371,9 +369,9 @@
                           {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['clients', 'create_client', 'edit_client'] else 'text-txt-muted hover:bg-surface-hover' }}">
                     Clients
                 </a>
-                <a href="{{ url_for('my_logs') }}"
+                <a href="{{ url_for('channel_spend') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition
-                          {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['my_logs', 'admin_dashboard', 'rep_time_entries', 'channel_spend', 'roi_report'] else 'text-txt-muted hover:bg-surface-hover' }}">
+                          {{ 'bg-[var(--primary-light)] text-[var(--primary)]' if current_endpoint in ['channel_spend', 'roi_report'] else 'text-txt-muted hover:bg-surface-hover' }}">
                     Reports
                 </a>
                 <a href="{{ url_for('edit_profile') }}"
@@ -430,57 +428,6 @@
     {% block scripts %}{% endblock %}
 
     <script>
-    // --- Logout confirmation (checks active clock) ---
-    document.addEventListener('DOMContentLoaded', function() {
-        const logoutLink = document.getElementById('logoutLink');
-        if (logoutLink) {
-            logoutLink.addEventListener('click', async function(e) {
-                e.preventDefault();
-                const logoutUrl = this.href;
-                try {
-                    const response = await fetch('{{ url_for("clock_status") }}');
-                    const data = await response.json();
-                    if (data.active) {
-                        if (confirm('You are currently clocked in! Are you sure you want to log out without clocking out?')) {
-                            window.location.href = logoutUrl;
-                        }
-                    } else {
-                        window.location.href = logoutUrl;
-                    }
-                } catch (error) {
-                    window.location.href = logoutUrl;
-                }
-            });
-        }
-
-        // --- Shift status indicator in navbar ---
-        function updateNavShiftIndicator() {
-            fetch('{{ url_for("clock_status") }}')
-                .then(r => r.json())
-                .then(data => {
-                    const el = document.getElementById('navShiftIndicator');
-                    if (!el) return;
-                    if (data.active) {
-                        el.innerHTML = `
-                            <a href="{{ url_for('home') }}" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-success-light text-success ring-1 ring-success/20 hover:ring-success/40 transition">
-                                <span class="relative flex h-2 w-2">
-                                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
-                                    <span class="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
-                                </span>
-                                On Clock
-                            </a>
-                        `;
-                    } else {
-                        el.innerHTML = '';
-                    }
-                })
-                .catch(() => {});
-        }
-
-        updateNavShiftIndicator();
-        setInterval(updateNavShiftIndicator, 30000);
-    });
-
     // --- Shared chart defaults (Chart.js) ---
     if (typeof Chart !== 'undefined') {
         Chart.defaults.font.family = "'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'";

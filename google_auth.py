@@ -132,7 +132,6 @@ def callback():
             authorized_user = AuthorizedUser.query.filter_by(email=user_email).first()
             if authorized_user:
                 user.role = authorized_user.role
-                user.hourly_rate = authorized_user.hourly_rate
         
         # Set last_login timestamp for new users
         user.last_login = datetime.utcnow()

@@ -4,39 +4,17 @@ from datetime import datetime, date, timedelta
 from decimal import Decimal, InvalidOperation
 import csv
 from io import StringIO, BytesIO
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from sqlalchemy.orm import joinedload
 
 from collections import defaultdict
 
 from app import app, db
-from models import User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage, LeadSource, ClientStatusChange, ChannelSpend
+from models import User, Client, ClientActivity, PropertyImage, LeadSource, ClientStatusChange, ChannelSpend
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
-    utc_to_pacific, pacific_to_utc, calculate_duration, round_to_quarter_hour,
-    format_hours, format_date_for_display, format_datetime_for_display,
-    get_pay_period_dates, get_next_pay_period_dates, get_previous_pay_period_dates,
-    get_last_30_days_dates, get_month_to_date_dates
+    utc_to_pacific, pacific_to_utc,
+    format_date_for_display, format_datetime_for_display,
 )
-
-
-def build_daily_hours(entries, period_start, period_end):
-    """Build a date->hours dict for every day in the period, filling gaps with 0."""
-    daily = defaultdict(float)
-    for e in entries:
-        if e.date and e.duration_hours:
-            daily[e.date] += float(e.duration_hours)
-    result = []
-    current = period_start
-    while current <= period_end:
-        result.append({'date': current.strftime('%Y-%m-%d'), 'hours': round(daily[current], 2)})
-        current += timedelta(days=1)
-    return result
 
 app.register_blueprint(google_auth)
 
@@ -192,17 +170,6 @@ def fresh_login():
 @app.route('/home')
 @require_login
 def home():
-    active_clock = ActiveClock.query.filter_by(user_id=current_user.id).first()
-    
-    if active_clock and (datetime.utcnow() - active_clock.start_time).total_seconds() > 86400:
-        long_running = True
-    else:
-        long_running = False
-    
-    recent_entries = TimeEntry.query.filter_by(user_id=current_user.id).order_by(
-        TimeEntry.date.desc(), TimeEntry.created_at.desc()
-    ).limit(5).all()
-    
     filter_user_id = request.args.get('filter_user')
     all_users = []
     selected_user = None
@@ -283,15 +250,6 @@ def home():
     this_week_start_utc = PACIFIC_TZ.localize(datetime.combine(this_week_start, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
     last_week_start_utc = PACIFIC_TZ.localize(datetime.combine(last_week_start, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
     last_week_end_utc = PACIFIC_TZ.localize(datetime.combine(last_week_end + timedelta(days=1), datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
-
-    # Build weekly hours for chart (last 7 days)
-    chart_start = today - timedelta(days=6)
-    week_entries = TimeEntry.query.filter(
-        TimeEntry.user_id == current_user.id,
-        TimeEntry.date >= chart_start,
-        TimeEntry.date <= today
-    ).all()
-    weekly_hours = build_daily_hours(week_entries, chart_start, today)
 
     # --- Helper: scope filter for queries ---
     is_company_wide = current_user.is_supervisor and not selected_user
@@ -516,37 +474,7 @@ def home():
             rep_counts[name] += 1
         attention_rep_summary = sorted(rep_counts.items(), key=lambda x: -x[1])
 
-    # === HOURS LOGGED (company-wide this week) ===
-    hours_q = TimeEntry.query.filter(
-        TimeEntry.date >= this_week_start,
-        TimeEntry.date <= today
-    )
-    if not is_company_wide:
-        hours_q = hours_q.filter(TimeEntry.user_id == (target_user_id or current_user.id))
-    week_hours_total = sum(float(e.duration_hours or 0) for e in hours_q.all())
-
-    # Last week hours for delta
-    last_hours_q = TimeEntry.query.filter(
-        TimeEntry.date >= last_week_start,
-        TimeEntry.date <= last_week_end
-    )
-    if not is_company_wide:
-        last_hours_q = last_hours_q.filter(TimeEntry.user_id == (target_user_id or current_user.id))
-    last_week_hours_total = sum(float(e.duration_hours or 0) for e in last_hours_q.all())
-
-    # === PAY PERIOD ===
-    pay_start, pay_end, _ = get_pay_period_dates()
-    pay_period_entries = TimeEntry.query.filter(
-        TimeEntry.user_id == current_user.id,
-        TimeEntry.date >= pay_start,
-        TimeEntry.date <= pay_end
-    ).all()
-    pay_period_hours = sum(float(e.duration_hours or 0) for e in pay_period_entries)
-
     return render_template('home.html',
-                         active_clock=active_clock,
-                         long_running=long_running,
-                         recent_entries=recent_entries,
                          my_clients=my_clients,
                          recent_clients=recent_clients,
                          status_counts=status_counts,
@@ -556,8 +484,6 @@ def home():
                          recent_activities=recent_activities,
                          all_users=all_users,
                          selected_user=selected_user,
-                         weekly_hours=weekly_hours,
-                         # This Week scoreboard
                          new_leads_this_week=new_leads_this_week,
                          lead_source_breakdown=lead_source_breakdown,
                          last_week_leads_count=last_week_leads_count,
@@ -573,9 +499,6 @@ def home():
                          attention_rep_summary=attention_rep_summary,
                          stale_amber_days=stale_amber_days,
                          stale_red_days=stale_red_days,
-                         week_hours_total=week_hours_total,
-                         last_week_hours_total=last_week_hours_total,
-                         pay_period_hours=pay_period_hours,
                          missing_source_count=Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count() if current_user.is_supervisor else 0)
 
 
@@ -613,297 +536,6 @@ def quick_add_next_step(client_id):
 
     flash(f'Next step added for {client.name}.', 'success')
     return redirect(url_for('home'))
-
-
-@app.route('/clock/start', methods=['POST'])
-@require_login
-def start_clock():
-    existing = ActiveClock.query.filter_by(user_id=current_user.id).first()
-    if existing:
-        flash('You already have an active clock running.', 'warning')
-        return redirect(url_for('home'))
-    
-    new_clock = ActiveClock(user_id=current_user.id, start_time=datetime.utcnow())
-    db.session.add(new_clock)
-    db.session.commit()
-    
-    flash('Clock started successfully!', 'success')
-    return redirect(url_for('home'))
-
-
-@app.route('/clock/status')
-@require_login
-def clock_status():
-    active_clock = ActiveClock.query.filter_by(user_id=current_user.id).first()
-    if active_clock:
-        elapsed = (datetime.utcnow() - active_clock.start_time).total_seconds()
-        hours = int(elapsed // 3600)
-        minutes = int((elapsed % 3600) // 60)
-        seconds = int(elapsed % 60)
-        return jsonify({
-            'active': True,
-            'elapsed': f"{hours:02d}:{minutes:02d}:{seconds:02d}",
-            'start_time': format_datetime_for_display(active_clock.start_time),
-            'break_15_taken': active_clock.break_15_taken,
-            'lunch_taken': active_clock.lunch_taken,
-            'elapsed_seconds': int(elapsed)
-        })
-    return jsonify({'active': False})
-
-
-@app.route('/clock/break15', methods=['POST'])
-@require_login
-def take_break_15():
-    active_clock = ActiveClock.query.filter_by(user_id=current_user.id).first()
-    if not active_clock:
-        return jsonify({'success': False, 'message': 'No active clock found'}), 400
-    
-    if active_clock.break_15_taken:
-        return jsonify({'success': False, 'message': '15-minute break already taken'}), 400
-    
-    elapsed = (datetime.utcnow() - active_clock.start_time).total_seconds()
-    if elapsed < 3600:
-        return jsonify({'success': False, 'message': 'Must work at least 1 hour before taking break'}), 400
-    
-    active_clock.break_15_taken = True
-    db.session.commit()
-    
-    return jsonify({'success': True, 'message': '15-minute break recorded'})
-
-
-@app.route('/clock/lunch', methods=['POST'])
-@require_login
-def take_lunch():
-    active_clock = ActiveClock.query.filter_by(user_id=current_user.id).first()
-    if not active_clock:
-        return jsonify({'success': False, 'message': 'No active clock found'}), 400
-    
-    if active_clock.lunch_taken:
-        return jsonify({'success': False, 'message': 'Lunch break already taken'}), 400
-    
-    elapsed = (datetime.utcnow() - active_clock.start_time).total_seconds()
-    if elapsed < 7200:
-        return jsonify({'success': False, 'message': 'Must work at least 2 hours before taking lunch'}), 400
-    
-    active_clock.lunch_taken = True
-    db.session.commit()
-    
-    return jsonify({'success': True, 'message': '1-hour lunch break recorded'})
-
-
-@app.route('/clock/stop', methods=['GET', 'POST'])
-@require_login
-def stop_clock():
-    active_clock = ActiveClock.query.filter_by(user_id=current_user.id).first()
-    if not active_clock:
-        flash('No active clock found.', 'error')
-        return redirect(url_for('home'))
-    
-    if request.method == 'GET':
-        clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
-        duration = calculate_duration(active_clock.start_time, datetime.utcnow())
-        return render_template('stop_clock.html', 
-                             active_clock=active_clock,
-                             clients=clients,
-                             duration=duration)
-    
-    client_id = request.form.get('client_id')
-    new_client_name = request.form.get('new_client_name', '').strip()
-    new_client_address = request.form.get('new_client_address', '').strip()
-    work_description = request.form.get('work_description', '').strip()
-    
-    if client_id == 'daily_activities':
-        client_id = None
-    elif new_client_name and new_client_address:
-        client = Client(name=new_client_name, address=new_client_address, created_by_user_id=current_user.id)
-        db.session.add(client)
-        db.session.flush()
-        client_id = client.id
-    elif not client_id:
-        flash('Please select a client or add a new one.', 'error')
-        return redirect(url_for('stop_clock'))
-    
-    if not work_description or len(work_description) < 10:
-        flash('Work description must be at least 10 characters.', 'error')
-        return redirect(url_for('stop_clock'))
-    
-    end_time = datetime.utcnow()
-    duration = calculate_duration(active_clock.start_time, end_time)
-    
-    break_deduction = 0
-    if active_clock.break_15_taken:
-        break_deduction += 0.25
-    if active_clock.lunch_taken:
-        break_deduction += 1.0
-    
-    final_duration = max(0, duration - break_deduction)
-    
-    entry = TimeEntry(
-        user_id=current_user.id,
-        client_id=client_id,
-        date=utc_to_pacific(end_time).date(),
-        start_time=active_clock.start_time,
-        end_time=end_time,
-        duration_hours=final_duration,
-        work_description=work_description,
-        is_manual=False
-    )
-    
-    db.session.add(entry)
-    db.session.delete(active_clock)
-    db.session.commit()
-    
-    flash(f'Shift logged: {format_hours(duration)} hours', 'success')
-    return redirect(url_for('my_logs'))
-
-
-@app.route('/quick-log', methods=['GET', 'POST'])
-@require_login
-def quick_log():
-    if request.method == 'GET':
-        clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
-        return render_template('quick_log.html', clients=clients, today=date.today())
-    
-    entry_date = request.form.get('date')
-    client_id = request.form.get('client_id')
-    new_client_name = request.form.get('new_client_name', '').strip()
-    new_client_address = request.form.get('new_client_address', '').strip()
-    work_description = request.form.get('work_description', '').strip()
-    hours = request.form.get('hours')
-    
-    try:
-        entry_date = datetime.strptime(entry_date, '%Y-%m-%d').date()
-    except:
-        flash('Invalid date format.', 'error')
-        return redirect(url_for('quick_log'))
-    
-    if entry_date > date.today():
-        flash('Date cannot be in the future.', 'error')
-        return redirect(url_for('quick_log'))
-    
-    if client_id == 'daily_activities':
-        client_id = None
-    elif new_client_name and new_client_address:
-        client = Client(name=new_client_name, address=new_client_address, created_by_user_id=current_user.id)
-        db.session.add(client)
-        db.session.flush()
-        client_id = client.id
-    elif not client_id:
-        flash('Please select a client or add a new one.', 'error')
-        return redirect(url_for('quick_log'))
-    
-    if not work_description or len(work_description) < 10:
-        flash('Work description must be at least 10 characters.', 'error')
-        return redirect(url_for('quick_log'))
-    
-    try:
-        hours_decimal = Decimal(hours)
-        if hours_decimal <= 0 or hours_decimal > 12:
-            raise ValueError()
-        hours_decimal = round_to_quarter_hour(hours_decimal)
-    except:
-        flash('Hours must be between 0.25 and 12.00.', 'error')
-        return redirect(url_for('quick_log'))
-    
-    pacific_dt = PACIFIC_TZ.localize(datetime.combine(entry_date, datetime.min.time()))
-    start_time = pacific_to_utc(pacific_dt)
-    
-    entry = TimeEntry(
-        user_id=current_user.id,
-        client_id=client_id,
-        date=entry_date,
-        start_time=start_time,
-        end_time=start_time,
-        duration_hours=hours_decimal,
-        work_description=work_description,
-        is_manual=True
-    )
-    
-    db.session.add(entry)
-    db.session.commit()
-    
-    flash(f'Manual entry logged: {format_hours(hours_decimal)} hours', 'success')
-    return redirect(url_for('my_logs'))
-
-
-@app.route('/my-logs')
-@require_login
-def my_logs():
-    date_from = request.args.get('date_from')
-    date_to = request.args.get('date_to')
-    client_id = request.args.get('client_id')
-    timeframe = request.args.get('timeframe', 'current_period')
-    
-    if timeframe == 'current_period':
-        summary_start, summary_end, summary_pay_date = get_pay_period_dates()
-        summary_label = f"Current Pay Period: {format_date_for_display(summary_start)} - {format_date_for_display(summary_end)}"
-    elif timeframe == 'previous_period':
-        summary_start, summary_end, summary_pay_date = get_previous_pay_period_dates()
-        summary_label = f"Previous Pay Period: {format_date_for_display(summary_start)} - {format_date_for_display(summary_end)}"
-    elif timeframe == 'month_to_date':
-        summary_start, summary_end, summary_label = get_month_to_date_dates()
-        summary_pay_date = None
-    else:
-        summary_start, summary_end, summary_label = get_last_30_days_dates()
-        summary_pay_date = None
-    
-    query = TimeEntry.query.filter_by(user_id=current_user.id)
-    
-    if date_from:
-        try:
-            query = query.filter(TimeEntry.date >= datetime.strptime(date_from, '%Y-%m-%d').date())
-        except:
-            pass
-    else:
-        query = query.filter(TimeEntry.date >= summary_start)
-        date_from = summary_start.strftime('%Y-%m-%d')
-    
-    if date_to:
-        try:
-            query = query.filter(TimeEntry.date <= datetime.strptime(date_to, '%Y-%m-%d').date())
-        except:
-            pass
-    else:
-        query = query.filter(TimeEntry.date <= summary_end)
-        date_to = summary_end.strftime('%Y-%m-%d')
-    
-    if client_id:
-        query = query.filter_by(client_id=client_id)
-    
-    entries = query.order_by(TimeEntry.date.desc(), TimeEntry.created_at.desc()).all()
-    
-    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
-    
-    summary_entries = TimeEntry.query.filter(
-        TimeEntry.user_id == current_user.id,
-        TimeEntry.date >= summary_start,
-        TimeEntry.date <= summary_end
-    ).all()
-    
-    summary_hours = sum((e.duration_hours or 0) for e in summary_entries)
-    summary_billable = sum((e.duration_hours or 0) for e in summary_entries if e.client_id)
-    summary_entry_count = len(summary_entries)
-    summary_unique_clients = len(set(e.client_id for e in summary_entries if e.client_id))
-    summary_pay = float(summary_hours) * float(current_user.hourly_rate or 0)
-    daily_hours = build_daily_hours(summary_entries, summary_start, summary_end)
-
-    return render_template('my_logs.html',
-                         entries=entries,
-                         clients=clients,
-                         date_from=date_from,
-                         date_to=date_to,
-                         client_id=client_id,
-                         timeframe=timeframe,
-                         summary_label=summary_label,
-                         summary_start=summary_start,
-                         summary_end=summary_end,
-                         summary_pay_date=summary_pay_date,
-                         summary_hours=summary_hours,
-                         summary_billable=summary_billable,
-                         summary_entry_count=summary_entry_count,
-                         summary_unique_clients=summary_unique_clients,
-                         summary_pay=summary_pay,
-                         daily_hours=daily_hours)
 
 
 @app.route('/clients')
@@ -1620,645 +1252,6 @@ def upload_to_folder(client_id):
         return jsonify({'success': False, 'error': f'Failed to upload file: {str(e)}'}), 500
 
 
-@app.route('/admin')
-@require_supervisor
-def admin_dashboard():
-    date_from = request.args.get('date_from')
-    date_to = request.args.get('date_to')
-    rep_id = request.args.get('rep_id')
-    client_id = request.args.get('client_id')
-    
-    # Determine default dates for comparison
-    first_day_of_month = date.today().replace(day=1)
-    default_date_from = first_day_of_month.strftime('%Y-%m-%d')
-    
-    # Check if filters are actively applied (different from defaults)
-    filters_applied = bool(
-        (date_from and date_from != default_date_from) or
-        date_to or
-        rep_id or
-        client_id
-    )
-    
-    query = TimeEntry.query
-    
-    if date_from:
-        try:
-            query = query.filter(TimeEntry.date >= datetime.strptime(date_from, '%Y-%m-%d').date())
-        except:
-            pass
-    else:
-        query = query.filter(TimeEntry.date >= first_day_of_month)
-        date_from = default_date_from
-    
-    if date_to:
-        try:
-            query = query.filter(TimeEntry.date <= datetime.strptime(date_to, '%Y-%m-%d').date())
-        except:
-            pass
-    
-    if rep_id:
-        query = query.filter_by(user_id=rep_id)
-    
-    if client_id:
-        query = query.filter_by(client_id=client_id)
-    
-    entries = query.order_by(TimeEntry.date.desc()).all()
-    
-    total_hours = sum((e.duration_hours or 0) for e in entries)
-    total_billable = sum((e.duration_hours or 0) for e in entries if e.client_id)
-    entry_count = len(entries)
-    unique_clients = len(set(e.client_id for e in entries if e.client_id))
-    
-    reps = User.query.filter_by(role='rep').order_by(User.first_name).all()
-    supervisors = User.query.filter_by(role='supervisor').order_by(User.first_name).all()
-    all_users = reps + supervisors
-    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
-    
-    current_period_start, current_period_end, current_pay_date = get_pay_period_dates()
-    next_period_start, next_period_end, next_pay_date = get_next_pay_period_dates()
-    
-    # Calculate Current Pay Period payroll (always shown)
-    payroll_data = []
-    for rep in reps:
-        current_hours = TimeEntry.query.filter(
-            TimeEntry.user_id == rep.id,
-            TimeEntry.date >= current_period_start,
-            TimeEntry.date <= current_period_end
-        ).all()
-        current_total_hours = sum((e.duration_hours or 0) for e in current_hours)
-        current_pay = float(current_total_hours) * float(rep.hourly_rate or 0)
-        
-        next_hours = TimeEntry.query.filter(
-            TimeEntry.user_id == rep.id,
-            TimeEntry.date >= next_period_start,
-            TimeEntry.date <= next_period_end
-        ).all()
-        next_total_hours = sum((e.duration_hours or 0) for e in next_hours)
-        next_pay = float(next_total_hours) * float(rep.hourly_rate or 0)
-        
-        payroll_data.append({
-            'rep': rep,
-            'current_hours': float(current_total_hours),
-            'current_pay': current_pay,
-            'next_hours': float(next_total_hours),
-            'next_pay': next_pay
-        })
-    
-    # Calculate Filtered Period payroll (only when filters are applied)
-    filtered_payroll_data = None
-    filtered_date_from = None
-    filtered_date_to = None
-    
-    if filters_applied:
-        # Parse the filter dates
-        try:
-            filtered_date_from = datetime.strptime(date_from, '%Y-%m-%d').date() if date_from else None
-        except:
-            filtered_date_from = None
-        
-        try:
-            filtered_date_to = datetime.strptime(date_to, '%Y-%m-%d').date() if date_to else None
-        except:
-            filtered_date_to = None
-        
-        # Determine which reps to include (single rep or all reps)
-        if rep_id:
-            filtered_reps = [User.query.get(rep_id)] if User.query.get(rep_id) else []
-        else:
-            filtered_reps = reps
-        
-        filtered_payroll_data = []
-        for rep in filtered_reps:
-            # Build filtered query for this rep
-            filtered_query = TimeEntry.query.filter_by(user_id=rep.id)
-            
-            if filtered_date_from:
-                filtered_query = filtered_query.filter(TimeEntry.date >= filtered_date_from)
-            
-            if filtered_date_to:
-                filtered_query = filtered_query.filter(TimeEntry.date <= filtered_date_to)
-            
-            if client_id:
-                filtered_query = filtered_query.filter_by(client_id=client_id)
-            
-            filtered_hours = filtered_query.all()
-            filtered_total_hours = sum((e.duration_hours or 0) for e in filtered_hours)
-            filtered_pay = float(filtered_total_hours) * float(rep.hourly_rate or 0)
-            
-            # Only include reps with hours in the filtered period
-            if filtered_total_hours > 0:
-                filtered_payroll_data.append({
-                    'rep': rep,
-                    'hours': float(filtered_total_hours),
-                    'pay': filtered_pay
-                })
-    
-    # Build daily totals for the current pay period (company-wide trend chart)
-    daily_totals = build_daily_hours(
-        TimeEntry.query.filter(
-            TimeEntry.date >= current_period_start,
-            TimeEntry.date <= current_period_end
-        ).all(),
-        current_period_start, current_period_end
-    )
-
-    return render_template('admin_dashboard.html',
-                         entries=entries,
-                         total_hours=total_hours,
-                         total_billable=total_billable,
-                         entry_count=entry_count,
-                         unique_clients=unique_clients,
-                         users=all_users,
-                         clients=clients,
-                         date_from=date_from,
-                         date_to=date_to,
-                         payroll_data=payroll_data,
-                         current_period_start=current_period_start,
-                         current_period_end=current_period_end,
-                         current_pay_date=current_pay_date,
-                         next_period_start=next_period_start,
-                         next_period_end=next_period_end,
-                         next_pay_date=next_pay_date,
-                         filters_applied=filters_applied,
-                         filtered_payroll_data=filtered_payroll_data,
-                         filtered_date_from=filtered_date_from,
-                         filtered_date_to=filtered_date_to,
-                         daily_totals=daily_totals)
-
-
-@app.route('/admin/entry/<int:entry_id>/edit', methods=['GET', 'POST'])
-@require_supervisor
-def edit_entry(entry_id):
-    entry = TimeEntry.query.get_or_404(entry_id)
-    return_url = request.args.get('return_url') or request.form.get('return_url')
-    
-    if request.method == 'GET':
-        clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
-        return render_template('edit_entry.html', entry=entry, clients=clients, return_url=return_url)
-    
-    entry_date = request.form.get('date')
-    client_id = request.form.get('client_id')
-    work_description = request.form.get('work_description', '').strip()
-    duration_hours = request.form.get('duration_hours')
-    
-    try:
-        entry.date = datetime.strptime(entry_date, '%Y-%m-%d').date()
-        entry.client_id = client_id if client_id else None
-        entry.work_description = work_description
-        entry.duration_hours = round_to_quarter_hour(Decimal(duration_hours))
-        
-        db.session.commit()
-        flash('Entry updated successfully.', 'success')
-        
-        if return_url:
-            return redirect(return_url)
-        return redirect(url_for('admin_dashboard'))
-    except Exception as e:
-        flash(f'Error updating entry: {str(e)}', 'error')
-        return redirect(url_for('edit_entry', entry_id=entry_id, return_url=return_url))
-
-
-@app.route('/admin/rep/<user_id>/entries')
-@require_supervisor
-def rep_time_entries(user_id):
-    rep = User.query.get_or_404(user_id)
-    
-    date_from = request.args.get('date_from')
-    date_to = request.args.get('date_to')
-    client_id = request.args.get('client_id')
-    timeframe = request.args.get('timeframe', 'current_period')
-    
-    if timeframe == 'current_period':
-        summary_start, summary_end, summary_pay_date = get_pay_period_dates()
-        summary_label = f"Current Pay Period: {format_date_for_display(summary_start)} - {format_date_for_display(summary_end)}"
-    elif timeframe == 'previous_period':
-        summary_start, summary_end, summary_pay_date = get_previous_pay_period_dates()
-        summary_label = f"Previous Pay Period: {format_date_for_display(summary_start)} - {format_date_for_display(summary_end)}"
-    elif timeframe == 'month_to_date':
-        summary_start, summary_end, summary_label = get_month_to_date_dates()
-        summary_pay_date = None
-    else:
-        summary_start, summary_end, summary_label = get_last_30_days_dates()
-        summary_pay_date = None
-    
-    query = TimeEntry.query.filter_by(user_id=user_id)
-    
-    if date_from:
-        try:
-            query = query.filter(TimeEntry.date >= datetime.strptime(date_from, '%Y-%m-%d').date())
-        except:
-            pass
-    else:
-        query = query.filter(TimeEntry.date >= summary_start)
-        date_from = summary_start.strftime('%Y-%m-%d')
-    
-    if date_to:
-        try:
-            query = query.filter(TimeEntry.date <= datetime.strptime(date_to, '%Y-%m-%d').date())
-        except:
-            pass
-    else:
-        query = query.filter(TimeEntry.date <= summary_end)
-        date_to = summary_end.strftime('%Y-%m-%d')
-    
-    if client_id:
-        query = query.filter_by(client_id=client_id)
-    
-    entries = query.order_by(TimeEntry.date.desc()).all()
-    
-    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
-    
-    summary_entries = TimeEntry.query.filter(
-        TimeEntry.user_id == user_id,
-        TimeEntry.date >= summary_start,
-        TimeEntry.date <= summary_end
-    ).all()
-    
-    summary_hours = sum((e.duration_hours or 0) for e in summary_entries)
-    summary_billable = sum((e.duration_hours or 0) for e in summary_entries if e.client_id)
-    summary_entry_count = len(summary_entries)
-    summary_unique_clients = len(set(e.client_id for e in summary_entries if e.client_id))
-    summary_pay = float(summary_hours) * float(rep.hourly_rate or 0)
-    daily_hours = build_daily_hours(summary_entries, summary_start, summary_end)
-
-    return render_template('rep_time_entries.html',
-                         rep=rep,
-                         entries=entries,
-                         clients=clients,
-                         date_from=date_from,
-                         date_to=date_to,
-                         client_id=client_id,
-                         timeframe=timeframe,
-                         summary_label=summary_label,
-                         summary_start=summary_start,
-                         summary_end=summary_end,
-                         summary_pay_date=summary_pay_date,
-                         summary_hours=summary_hours,
-                         summary_billable=summary_billable,
-                         summary_entry_count=summary_entry_count,
-                         summary_unique_clients=summary_unique_clients,
-                         summary_pay=summary_pay,
-                         daily_hours=daily_hours)
-
-
-@app.route('/admin/export')
-@require_supervisor
-def export_csv():
-    date_from = request.args.get('date_from')
-    date_to = request.args.get('date_to')
-    rep_id = request.args.get('rep_id')
-    client_id = request.args.get('client_id')
-    
-    query = TimeEntry.query
-    
-    if date_from:
-        try:
-            query = query.filter(TimeEntry.date >= datetime.strptime(date_from, '%Y-%m-%d').date())
-        except:
-            pass
-    
-    if date_to:
-        try:
-            query = query.filter(TimeEntry.date <= datetime.strptime(date_to, '%Y-%m-%d').date())
-        except:
-            pass
-    
-    if rep_id:
-        query = query.filter_by(user_id=rep_id)
-    
-    if client_id:
-        query = query.filter_by(client_id=client_id)
-    
-    entries = query.order_by(TimeEntry.date).all()
-    
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['Date', 'Client Name', 'Client Address', 'Work completed', 'Time (hours)', 'Rep'])
-    
-    for entry in entries:
-        client = Client.query.get(entry.client_id) if entry.client_id else None
-        user = User.query.get(entry.user_id)
-        
-        writer.writerow([
-            format_date_for_display(entry.date),
-            client.name if client else 'N/A',
-            client.address if client else 'N/A',
-            entry.work_description,
-            format_hours(entry.duration_hours),
-            user.display_name if user else 'Unknown'
-        ])
-    
-    output.seek(0)
-    filename = f"time_entries_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    
-    return Response(
-        output.getvalue(),
-        mimetype='text/csv',
-        headers={'Content-Disposition': f'attachment; filename={filename}'}
-    )
-
-
-def generate_time_entries_pdf(user, entries, summary_data, timeframe_label):
-    """Helper function to generate PDF for time entries"""
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=50, leftMargin=50, topMargin=50, bottomMargin=50)
-    
-    story = []
-    styles = getSampleStyleSheet()
-    
-    # Custom styles
-    title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=18, textColor=colors.HexColor('#1f2937'), spaceAfter=12, alignment=TA_CENTER)
-    subtitle_style = ParagraphStyle('CustomSubtitle', parent=styles['Normal'], fontSize=12, textColor=colors.HexColor('#4b5563'), spaceAfter=6, alignment=TA_CENTER)
-    heading_style = ParagraphStyle('CustomHeading', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor('#1f2937'), spaceBefore=12, spaceAfter=6)
-    
-    # Title
-    title = Paragraph(f"{user.display_name}'s Time Entries", title_style)
-    story.append(title)
-    
-    # Timeframe and rate info
-    subtitle = Paragraph(f"Rate: ${user.hourly_rate}/hr | {timeframe_label}", subtitle_style)
-    story.append(subtitle)
-    
-    story.append(Spacer(1, 0.3*inch))
-    
-    # Activity Summary Section
-    story.append(Paragraph("Activity Summary", heading_style))
-    
-    # Summary info paragraph
-    summary_text = f"{summary_data['timeframe_header']}"
-    if summary_data.get('pay_date'):
-        summary_text += f"<br/>Pay Date: {summary_data['pay_date']}"
-    story.append(Paragraph(summary_text, styles['Normal']))
-    story.append(Spacer(1, 0.2*inch))
-    
-    # Summary stats table
-    summary_table_data = [
-        ['Total Hours', 'Billable Hours', 'Entries', 'Clients'],
-        [
-            format_hours(summary_data['total_hours']),
-            format_hours(summary_data['billable_hours']),
-            str(summary_data['num_entries']),
-            str(summary_data['num_clients'])
-        ]
-    ]
-    
-    summary_table = Table(summary_table_data, colWidths=[1.5*inch, 1.5*inch, 1.5*inch, 1.5*inch])
-    summary_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 1), (-1, -1), 10),
-        ('TOPPADDING', (0, 1), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
-    ]))
-    
-    story.append(summary_table)
-    
-    # Total Pay (large)
-    story.append(Spacer(1, 0.2*inch))
-    total_pay_text = f"<b>Total Pay: ${summary_data['summary_pay']:.2f}</b>"
-    total_pay = Paragraph(total_pay_text, ParagraphStyle('TotalPay', parent=styles['Normal'], fontSize=16, textColor=colors.HexColor('#3b82f6'), alignment=TA_CENTER))
-    story.append(total_pay)
-    
-    story.append(Spacer(1, 0.3*inch))
-    
-    # All Time Entries Section
-    story.append(Paragraph("All Time Entries", heading_style))
-    story.append(Spacer(1, 0.1*inch))
-    
-    if entries:
-        # Time entries table
-        table_data = [['Date', 'Client', 'Work Description', 'Hours']]
-        
-        for entry in entries:
-            client = Client.query.get(entry.client_id) if entry.client_id else None
-            client_name = client.name if client else 'N/A'
-            
-            # Truncate work description if too long
-            work_desc = entry.work_description
-            if len(work_desc) > 60:
-                work_desc = work_desc[:57] + '...'
-            
-            table_data.append([
-                format_date_for_display(entry.date),
-                client_name,
-                work_desc,
-                format_hours(entry.duration_hours)
-            ])
-        
-        entries_table = Table(table_data, colWidths=[1.2*inch, 1.8*inch, 3*inch, 0.8*inch])
-        entries_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f2937')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('ALIGN', (3, 0), (3, -1), 'RIGHT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 8),
-            ('TOPPADDING', (0, 1), (-1, -1), 6),
-            ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f9fafb')]),
-        ]))
-        
-        story.append(entries_table)
-    else:
-        story.append(Paragraph("No time entries found for this period.", styles['Normal']))
-    
-    # Footer with generated timestamp
-    story.append(Spacer(1, 0.3*inch))
-    footer_text = f"<i>Generated on {datetime.now().strftime('%m/%d/%Y at %I:%M %p PST')}</i>"
-    footer = Paragraph(footer_text, ParagraphStyle('Footer', parent=styles['Normal'], fontSize=8, textColor=colors.grey, alignment=TA_CENTER))
-    story.append(footer)
-    
-    # Build PDF
-    doc.build(story)
-    
-    buffer.seek(0)
-    return buffer
-
-
-@app.route('/rep/<user_id>/export_pdf')
-@require_supervisor
-def export_rep_time_entries_pdf(user_id):
-    """Export a rep's time entries as PDF (supervisor view)"""
-    user = User.query.get_or_404(user_id)
-    
-    # Get filters from URL
-    timeframe = request.args.get('timeframe', 'current_period')
-    date_from = request.args.get('date_from')
-    date_to = request.args.get('date_to')
-    client_id = request.args.get('client_id')
-    
-    # Determine timeframe dates
-    if timeframe == 'current_period':
-        summary_start, summary_end, period_pay_date = get_pay_period_dates()
-        timeframe_label = f"Current Pay Period: {summary_start.strftime('%m/%d/%Y')} - {summary_end.strftime('%m/%d/%Y')}"
-        pay_date = period_pay_date.strftime('%m/%d/%Y') if period_pay_date else None
-    elif timeframe == 'previous_period':
-        summary_start, summary_end, period_pay_date = get_previous_pay_period_dates()
-        timeframe_label = f"Previous Pay Period: {summary_start.strftime('%m/%d/%Y')} - {summary_end.strftime('%m/%d/%Y')}"
-        pay_date = period_pay_date.strftime('%m/%d/%Y') if period_pay_date else None
-    elif timeframe == 'month_to_date':
-        summary_start, summary_end, _ = get_month_to_date_dates()
-        timeframe_label = f"Month-to-Date: {summary_start.strftime('%m/%d/%Y')} - {summary_end.strftime('%m/%d/%Y')}"
-        pay_date = None
-    else:
-        summary_start, summary_end, _ = get_last_30_days_dates()
-        timeframe_label = f"Last 30 Days: {summary_start.strftime('%m/%d/%Y')} - {summary_end.strftime('%m/%d/%Y')}"
-        pay_date = None
-    
-    # Build entries query
-    query = TimeEntry.query.filter_by(user_id=user_id)
-    
-    # Apply date filters (manual filters override timeframe)
-    if date_from:
-        try:
-            from_date = datetime.strptime(date_from, '%Y-%m-%d').date()
-            query = query.filter(TimeEntry.date >= from_date)
-        except:
-            query = query.filter(TimeEntry.date >= summary_start)
-    else:
-        query = query.filter(TimeEntry.date >= summary_start)
-    
-    if date_to:
-        try:
-            to_date = datetime.strptime(date_to, '%Y-%m-%d').date()
-            query = query.filter(TimeEntry.date <= to_date)
-        except:
-            query = query.filter(TimeEntry.date <= summary_end)
-    else:
-        query = query.filter(TimeEntry.date <= summary_end)
-    
-    if client_id:
-        query = query.filter_by(client_id=client_id)
-    
-    entries = query.order_by(TimeEntry.date.desc()).all()
-    
-    # Calculate summary stats
-    total_hours = sum(entry.duration_hours for entry in entries)
-    billable_hours = sum(entry.duration_hours for entry in entries if entry.client_id)
-    num_entries = len(entries)
-    num_clients = len(set(entry.client_id for entry in entries if entry.client_id))
-    summary_pay = total_hours * user.hourly_rate if user.hourly_rate else Decimal('0')
-    
-    summary_data = {
-        'timeframe_header': timeframe_label.split(': ')[0],
-        'pay_date': pay_date,
-        'total_hours': total_hours,
-        'billable_hours': billable_hours,
-        'num_entries': num_entries,
-        'num_clients': num_clients,
-        'summary_pay': summary_pay
-    }
-    
-    # Generate PDF
-    pdf_buffer = generate_time_entries_pdf(user, entries, summary_data, timeframe_label)
-    
-    filename = f"{user.display_name.replace(' ', '_')}_time_entries_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    
-    return Response(
-        pdf_buffer.getvalue(),
-        mimetype='application/pdf',
-        headers={'Content-Disposition': f'attachment; filename={filename}'}
-    )
-
-
-@app.route('/my_logs/export_pdf')
-@require_login
-def export_my_logs_pdf():
-    """Export current user's time entries as PDF (rep self-view)"""
-    user = current_user
-    
-    # Get filters from URL
-    timeframe = request.args.get('timeframe', 'current_period')
-    date_from = request.args.get('date_from')
-    date_to = request.args.get('date_to')
-    client_id = request.args.get('client_id')
-    
-    # Determine timeframe dates
-    if timeframe == 'current_period':
-        summary_start, summary_end, period_pay_date = get_pay_period_dates()
-        timeframe_label = f"Current Pay Period: {summary_start.strftime('%m/%d/%Y')} - {summary_end.strftime('%m/%d/%Y')}"
-        pay_date = period_pay_date.strftime('%m/%d/%Y') if period_pay_date else None
-    elif timeframe == 'previous_period':
-        summary_start, summary_end, period_pay_date = get_previous_pay_period_dates()
-        timeframe_label = f"Previous Pay Period: {summary_start.strftime('%m/%d/%Y')} - {summary_end.strftime('%m/%d/%Y')}"
-        pay_date = period_pay_date.strftime('%m/%d/%Y') if period_pay_date else None
-    elif timeframe == 'month_to_date':
-        summary_start, summary_end, _ = get_month_to_date_dates()
-        timeframe_label = f"Month-to-Date: {summary_start.strftime('%m/%d/%Y')} - {summary_end.strftime('%m/%d/%Y')}"
-        pay_date = None
-    else:
-        summary_start, summary_end, _ = get_last_30_days_dates()
-        timeframe_label = f"Last 30 Days: {summary_start.strftime('%m/%d/%Y')} - {summary_end.strftime('%m/%d/%Y')}"
-        pay_date = None
-    
-    # Build entries query
-    query = TimeEntry.query.filter_by(user_id=user.id)
-    
-    # Apply date filters (manual filters override timeframe)
-    if date_from:
-        try:
-            from_date = datetime.strptime(date_from, '%Y-%m-%d').date()
-            query = query.filter(TimeEntry.date >= from_date)
-        except:
-            query = query.filter(TimeEntry.date >= summary_start)
-    else:
-        query = query.filter(TimeEntry.date >= summary_start)
-    
-    if date_to:
-        try:
-            to_date = datetime.strptime(date_to, '%Y-%m-%d').date()
-            query = query.filter(TimeEntry.date <= to_date)
-        except:
-            query = query.filter(TimeEntry.date <= summary_end)
-    else:
-        query = query.filter(TimeEntry.date <= summary_end)
-    
-    if client_id:
-        query = query.filter_by(client_id=client_id)
-    
-    entries = query.order_by(TimeEntry.date.desc()).all()
-    
-    # Calculate summary stats
-    total_hours = sum(entry.duration_hours for entry in entries)
-    billable_hours = sum(entry.duration_hours for entry in entries if entry.client_id)
-    num_entries = len(entries)
-    num_clients = len(set(entry.client_id for entry in entries if entry.client_id))
-    summary_pay = total_hours * user.hourly_rate if user.hourly_rate else Decimal('0')
-    
-    summary_data = {
-        'timeframe_header': timeframe_label.split(': ')[0],
-        'pay_date': pay_date,
-        'total_hours': total_hours,
-        'billable_hours': billable_hours,
-        'num_entries': num_entries,
-        'num_clients': num_clients,
-        'summary_pay': summary_pay
-    }
-    
-    # Generate PDF
-    pdf_buffer = generate_time_entries_pdf(user, entries, summary_data, timeframe_label)
-    
-    filename = f"my_time_entries_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    
-    return Response(
-        pdf_buffer.getvalue(),
-        mimetype='application/pdf',
-        headers={'Content-Disposition': f'attachment; filename={filename}'}
-    )
-
-
 @app.route('/admin/users')
 @require_supervisor
 def manage_users():
@@ -2292,29 +1285,6 @@ def toggle_user_role(user_id):
     return redirect(url_for('manage_users'))
 
 
-@app.route('/admin/users/<user_id>/update-rate', methods=['POST'])
-@require_supervisor
-def update_user_rate(user_id):
-    user = User.query.get_or_404(user_id)
-    
-    hourly_rate = request.form.get('hourly_rate', '').strip()
-    
-    try:
-        rate = Decimal(hourly_rate)
-        if rate < 0 or rate > 999.99:
-            flash('Hourly rate must be between $0.00 and $999.99.', 'error')
-            return redirect(url_for('manage_users'))
-        
-        user.hourly_rate = rate
-        db.session.commit()
-        
-        flash(f'Hourly rate for {user.display_name} updated to ${rate:.2f}/hr.', 'success')
-    except (ValueError, TypeError):
-        flash('Invalid hourly rate value.', 'error')
-    
-    return redirect(url_for('manage_users'))
-
-
 @app.route('/admin/users/add-authorized', methods=['POST'])
 @require_supervisor
 def add_authorized_user():
@@ -2322,40 +1292,29 @@ def add_authorized_user():
     
     email = request.form.get('email', '').strip().lower()
     role = request.form.get('role', 'rep').strip()
-    hourly_rate_str = request.form.get('hourly_rate', '0').strip()
-    
+
     if not email:
         flash('Email address is required.', 'error')
         return redirect(url_for('manage_users'))
-    
+
     if role not in ['rep', 'supervisor']:
         flash('Invalid role selected.', 'error')
         return redirect(url_for('manage_users'))
-    
-    try:
-        hourly_rate = Decimal(hourly_rate_str) if hourly_rate_str else Decimal('0')
-        if hourly_rate < 0 or hourly_rate > 999.99:
-            flash('Hourly rate must be between $0.00 and $999.99.', 'error')
-            return redirect(url_for('manage_users'))
-    except (ValueError, TypeError):
-        flash('Invalid hourly rate value.', 'error')
-        return redirect(url_for('manage_users'))
-    
+
     existing = AuthorizedUser.query.filter_by(email=email).first()
     if existing:
         flash(f'{email} is already authorized.', 'error')
         return redirect(url_for('manage_users'))
-    
+
     auth_user = AuthorizedUser(
         email=email,
         role=role,
-        hourly_rate=hourly_rate,
         added_by_user_id=current_user.id
     )
     db.session.add(auth_user)
     db.session.commit()
-    
-    flash(f'Successfully authorized {email} as {role.title()} with ${hourly_rate:.2f}/hr rate.', 'success')
+
+    flash(f'Successfully authorized {email} as {role.title()}.', 'success')
     return redirect(url_for('manage_users'))
 
 
@@ -2383,35 +1342,23 @@ def edit_profile():
         email = request.form.get('email', '').strip()
         phone = request.form.get('phone', '').strip()
         address = request.form.get('address', '').strip()
-        hourly_rate_str = request.form.get('hourly_rate', '').strip() if current_user.is_supervisor else None
-        
+
         if not first_name or not last_name or not email or not phone or not address:
             flash('All fields are required.', 'error')
             return redirect(url_for('edit_profile'))
-        
+
         if email != current_user.email:
             existing_user = User.query.filter_by(email=email).first()
             if existing_user:
                 flash('This email is already in use by another user.', 'error')
                 return redirect(url_for('edit_profile'))
-        
+
         current_user.first_name = first_name
         current_user.last_name = last_name
         current_user.email = email
         current_user.phone = phone
         current_user.address = address
-        
-        if current_user.is_supervisor and hourly_rate_str:
-            try:
-                hourly_rate = Decimal(hourly_rate_str)
-                if hourly_rate < 0:
-                    flash('Hourly rate cannot be negative.', 'error')
-                    return redirect(url_for('edit_profile'))
-                current_user.hourly_rate = hourly_rate
-            except (ValueError, InvalidOperation):
-                flash('Invalid hourly rate. Please enter a valid number.', 'error')
-                return redirect(url_for('edit_profile'))
-        
+
         current_user.updated_at = datetime.utcnow()
         
         db.session.commit()
@@ -2518,42 +1465,28 @@ def edit_user_profile(user_id):
         phone = request.form.get('phone', '').strip()
         address = request.form.get('address', '').strip()
         role = request.form.get('role', '').strip()
-        hourly_rate_str = request.form.get('hourly_rate', '').strip()
-        
+
         if not first_name or not last_name or not email or not phone or not address:
-            flash('All fields (except hourly rate) are required.', 'error')
+            flash('All fields are required.', 'error')
             return redirect(url_for('edit_user_profile', user_id=user_id))
-        
+
         if email != user.email:
             existing_user = User.query.filter_by(email=email).first()
             if existing_user:
                 flash('This email is already in use by another user.', 'error')
                 return redirect(url_for('edit_user_profile', user_id=user_id))
-        
+
         if role not in ['rep', 'supervisor']:
             flash('Invalid role selected.', 'error')
             return redirect(url_for('edit_user_profile', user_id=user_id))
-        
+
         user.first_name = first_name
         user.last_name = last_name
         user.email = email
         user.phone = phone
         user.address = address
         user.role = role
-        
-        if hourly_rate_str:
-            try:
-                hourly_rate = Decimal(hourly_rate_str)
-                if hourly_rate < 0:
-                    flash('Hourly rate cannot be negative.', 'error')
-                    return redirect(url_for('edit_user_profile', user_id=user_id))
-                user.hourly_rate = hourly_rate
-            except (ValueError, InvalidOperation):
-                flash('Invalid hourly rate format.', 'error')
-                return redirect(url_for('edit_user_profile', user_id=user_id))
-        else:
-            user.hourly_rate = Decimal('0.00')
-        
+
         user.updated_at = datetime.utcnow()
         db.session.commit()
         
@@ -2593,8 +1526,6 @@ def remove_user(user_id):
         Client.query.filter_by(assigned_to_user_id=user.id).update({'assigned_to_user_id': None})
         flash_message = f'Successfully removed user {user_name}. Clients have been unassigned.'
     
-    TimeEntry.query.filter_by(user_id=user.id).delete()
-    ActiveClock.query.filter_by(user_id=user.id).delete()
     Client.query.filter_by(created_by_user_id=user.id).update({'created_by_user_id': None})
     
     from models import AuthorizedUser
@@ -2605,11 +1536,6 @@ def remove_user(user_id):
     
     flash(flash_message, 'success')
     return redirect(url_for('manage_users'))
-
-
-@app.template_filter('format_hours')
-def format_hours_filter(value):
-    return format_hours(value)
 
 
 @app.template_filter('format_date')

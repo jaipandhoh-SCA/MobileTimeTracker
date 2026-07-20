@@ -3,16 +3,6 @@
 {% block content %}
 <div class="w-full max-w-4xl mx-auto space-y-6" x-data="hubSections()">
 
-    {% if long_running %}
-    <div class="flex items-center gap-3 p-4 bg-warning-light border border-warning/30 rounded-xl text-warning" role="alert">
-        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-        <div>
-            <p class="font-semibold text-sm">Your clock has been running for more than 24 hours.</p>
-            <p class="text-xs mt-0.5 text-warning/80">Please review and stop your shift below.</p>
-        </div>
-    </div>
-    {% endif %}
-
     <!-- Lead source backfill banner -->
     {% if current_user.is_supervisor and missing_source_count %}
     <div x-data="{ dismissed: false }" x-show="!dismissed" x-transition
@@ -127,27 +117,6 @@
         </div>
         {% endif %}
 
-        <!-- HOURS LOGGED (compact, at the end) -->
-        <div class="flex items-baseline gap-2 pt-3 border-t border-edge">
-            <span class="text-lg font-display font-bold text-txt-secondary">{{ '%.1f'|format(week_hours_total) }}h</span>
-            <span class="text-xs text-txt-muted">logged{% if current_user.is_supervisor and not selected_user %} company-wide{% endif %} this week</span>
-            {% if last_week_hours_total > 0 %}
-                {% set hrs_delta = week_hours_total - last_week_hours_total %}
-                {% if hrs_delta > 0 %}
-                <span class="text-xs font-medium text-success">&#9650; {{ '%.1f'|format(hrs_delta) }}h</span>
-                {% elif hrs_delta < 0 %}
-                <span class="text-xs font-medium text-danger">&#9660; {{ '%.1f'|format(hrs_delta|abs) }}h</span>
-                {% endif %}
-            {% endif %}
-        </div>
-
-        <!-- Weekly bar chart -->
-        {% set total_week = weekly_hours | sum(attribute='hours') %}
-        {% if total_week > 0 %}
-        <div style="height: 150px;">
-            <canvas id="weeklyChart"></canvas>
-        </div>
-        {% endif %}
     </section>
 
 
@@ -339,39 +308,6 @@
     </section>
 
 
-    <!-- ============================================================
-         SECTION 5: TIME (compact, bottom)
-         ============================================================ -->
-    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge p-5">
-        <div class="flex items-center justify-between">
-            <div>
-                <h2 class="text-sm font-semibold text-txt-primary">Time</h2>
-                <p class="text-xs text-txt-muted mt-0.5">Pay period: <span class="font-medium text-txt-secondary">{{ '%.1f' | format(pay_period_hours) }}h</span></p>
-            </div>
-
-            {% if active_clock %}
-            <div class="flex items-center gap-3">
-                <div class="text-right">
-                    <p class="text-xs text-txt-muted">Active shift</p>
-                    <p class="text-lg font-display font-bold text-success tabular-nums" id="elapsed-time">00:00:00</p>
-                </div>
-                <a href="{{ url_for('stop_clock') }}"
-                   class="px-4 py-2 text-sm font-medium bg-danger text-white rounded-lg hover:bg-danger/80 transition touch-target">
-                    Stop
-                </a>
-            </div>
-            {% else %}
-            <form method="POST" action="{{ url_for('start_clock') }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-                <button type="submit"
-                        class="px-4 py-2 text-sm font-medium bg-surface-overlay text-txt-secondary border border-edge-strong rounded-lg hover:bg-surface-hover hover:text-txt-primary hover:border-primary/30 transition touch-target">
-                    Clock In
-                </button>
-            </form>
-            {% endif %}
-        </div>
-    </section>
-
 </div>
 {% endblock %}
 
@@ -464,84 +400,6 @@ function showFilteredClients(status) {
 function hideFilteredClients() {
     document.getElementById('filtered-clients-section').classList.add('hidden');
 }
-
-// --- Clock update ---
-{% if active_clock %}
-function updateClock() {
-    fetch('{{ url_for("clock_status") }}')
-        .then(r => r.json())
-        .then(data => {
-            if (!data.active) return;
-            const el = document.getElementById('elapsed-time');
-            if (el) el.textContent = data.elapsed;
-        });
-}
-updateClock();
-setInterval(updateClock, 1000);
-{% endif %}
-
-// --- Weekly chart ---
-{% set total_week_check = weekly_hours | sum(attribute='hours') %}
-{% if total_week_check > 0 %}
-document.addEventListener('DOMContentLoaded', function() {
-    const weekData = {{ weekly_hours | tojson }};
-    const labels = weekData.map(d => {
-        const dt = new Date(d.date + 'T00:00:00');
-        return dt.toLocaleDateString('en-US', { weekday: 'short' });
-    });
-    const values = weekData.map(d => d.hours);
-    const ctx = document.getElementById('weeklyChart').getContext('2d');
-
-    new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: 'Hours',
-                data: values,
-                backgroundColor: values.map(v => v > 0 ? '#34D399CC' : '#1E2A38'),
-                hoverBackgroundColor: '#34D399',
-                borderRadius: 6,
-                borderSkipped: false,
-                maxBarThickness: 40
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    callbacks: {
-                        title: function(items) {
-                            const idx = items[0].dataIndex;
-                            const dt = new Date(weekData[idx].date + 'T00:00:00');
-                            return dt.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-                        },
-                        label: function(item) {
-                            return item.parsed.y.toFixed(2) + ' hours';
-                        }
-                    }
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: { stepSize: 2, callback: v => v + 'h', color: '#64748B' },
-                    grid: { color: '#1E2A3840' },
-                    border: { display: false }
-                },
-                x: {
-                    ticks: { color: '#64748B' },
-                    grid: { display: false },
-                    border: { display: false }
-                }
-            },
-            animation: { duration: 800, easing: 'easeOutQuart' }
-        }
-    });
-});
-{% endif %}
 
 // --- Count-up animations ---
 document.addEventListener('DOMContentLoaded', function() {
