@@ -3,18 +3,18 @@
 {% block content %}
 <div class="w-full mx-auto max-w-4xl">
     <div class="mb-6 flex justify-between items-center">
-        <h1 class="text-2xl font-bold text-txt-primary font-display">Lead Sources</h1>
-        <a href="{{ url_for('edit_profile') }}" class="text-primary hover:text-primary-hover text-sm font-medium">
+        <h1 class="text-2xl font-bold text-txt-primary font-sans">Lead Sources</h1>
+        <a href="{{ url_for('edit_profile') }}" class="text-accent hover:text-accent/80 text-sm font-medium">
             &larr; Back to Settings
         </a>
     </div>
 
     {% if not sources %}
-    <div class="bg-surface-raised border border-edge rounded-2xl p-6 mb-6 text-center">
+    <div class="bg-white rounded-2xl shadow-card p-6 mb-6 text-center">
         <p class="text-txt-secondary mb-4">No lead sources configured yet.</p>
         <form method="POST" action="{{ url_for('seed_lead_sources') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <button type="submit" class="bg-primary hover:bg-primary-hover text-surface-base font-semibold py-2.5 px-6 rounded-xl transition">
+            <button type="submit" class="bg-txt-primary hover:bg-txt-primary/80 text-white font-semibold py-2.5 px-6 rounded-xl transition">
                 Seed Default Sources
             </button>
         </form>
@@ -22,18 +22,18 @@
     {% endif %}
 
     <!-- Add New Source -->
-    <div class="bg-surface-raised border border-edge rounded-2xl p-6 mb-6">
+    <div class="bg-white rounded-2xl shadow-card p-6 mb-6">
         <h2 class="text-lg font-semibold text-txt-primary mb-4">Add New Source</h2>
         <form method="POST" action="{{ url_for('add_lead_source') }}" class="flex flex-col sm:flex-row gap-3">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <input type="text" name="name" required placeholder="Source name" class="flex-1 p-3 bg-surface-overlay border border-edge rounded-xl text-txt-primary placeholder-txt-faint focus:border-primary focus:ring-1 focus:ring-primary-ring">
-            <select name="channel_type" required class="p-3 bg-surface-overlay border border-edge rounded-xl text-txt-primary focus:border-primary focus:ring-1 focus:ring-primary-ring">
+            <input type="text" name="name" required placeholder="Source name" class="flex-1 p-3 bg-pill border border-hairline rounded-xl text-txt-primary placeholder-txt-muted focus:border-txt-primary focus:ring-1 focus:ring-txt-primary/20">
+            <select name="channel_type" required class="p-3 bg-pill border border-hairline rounded-xl text-txt-primary focus:border-txt-primary focus:ring-1 focus:ring-txt-primary/20">
                 <option value="">Channel type...</option>
                 {% for ct in channel_types %}
                 <option value="{{ ct }}">{{ ct.replace('_', ' ').title() }}</option>
                 {% endfor %}
             </select>
-            <button type="submit" class="bg-primary hover:bg-primary-hover text-surface-base font-semibold py-3 px-6 rounded-xl transition whitespace-nowrap">
+            <button type="submit" class="bg-txt-primary hover:bg-txt-primary/80 text-white font-semibold py-3 px-6 rounded-xl transition whitespace-nowrap">
                 Add
             </button>
         </form>
@@ -41,26 +41,26 @@
 
     <!-- Existing Sources -->
     {% if sources %}
-    <div class="bg-surface-raised border border-edge rounded-2xl overflow-hidden">
-        <div class="px-6 py-4 border-b border-edge">
+    <div class="bg-white rounded-2xl shadow-card overflow-hidden">
+        <div class="px-6 py-4 border-b border-hairline">
             <h2 class="text-lg font-semibold text-txt-primary">Manage Sources</h2>
         </div>
-        <div class="divide-y divide-edge">
+        <div class="divide-y divide-hairline">
             {% for source in sources %}
             <form method="POST" action="{{ url_for('update_lead_source', source_id=source.id) }}" class="p-4 flex flex-col sm:flex-row items-start sm:items-center gap-3 {{ 'opacity-50' if not source.is_active }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-                <input type="text" name="name" value="{{ source.name }}" required class="flex-1 p-2.5 bg-surface-overlay border border-edge rounded-lg text-txt-primary text-sm focus:border-primary">
-                <select name="channel_type" class="p-2.5 bg-surface-overlay border border-edge rounded-lg text-txt-primary text-sm focus:border-primary">
+                <input type="text" name="name" value="{{ source.name }}" required class="flex-1 p-2.5 bg-pill border border-hairline rounded-lg text-txt-primary text-sm focus:border-txt-primary">
+                <select name="channel_type" class="p-2.5 bg-pill border border-hairline rounded-lg text-txt-primary text-sm focus:border-txt-primary">
                     {% for ct in channel_types %}
                     <option value="{{ ct }}" {{ 'selected' if source.channel_type == ct }}>{{ ct.replace('_', ' ').title() }}</option>
                     {% endfor %}
                 </select>
                 <label class="flex items-center gap-2 text-sm text-txt-secondary whitespace-nowrap">
                     <input type="hidden" name="is_active" value="0">
-                    <input type="checkbox" name="is_active" value="1" {{ 'checked' if source.is_active }} class="rounded border-edge text-primary focus:ring-primary-ring">
+                    <input type="checkbox" name="is_active" value="1" {{ 'checked' if source.is_active }} class="rounded border-hairline text-accent focus:ring-txt-primary/20">
                     Active
                 </label>
-                <button type="submit" class="text-sm font-medium text-primary hover:text-primary-hover transition whitespace-nowrap">
+                <button type="submit" class="text-sm font-medium text-accent hover:text-accent/80 transition whitespace-nowrap">
                     Save
                 </button>
                 <span class="text-xs text-txt-muted">{{ source.clients|length }} client{{ 's' if source.clients|length != 1 }}</span>
@@ -74,7 +74,7 @@
     {% set missing_count = [] %}
     {% for source in sources %}{% endfor %}
     <div class="mt-6">
-        <a href="{{ url_for('lead_source_backfill') }}" class="text-primary hover:text-primary-hover text-sm font-medium">
+        <a href="{{ url_for('lead_source_backfill') }}" class="text-accent hover:text-accent/80 text-sm font-medium">
             Backfill clients missing a lead source &rarr;
         </a>
     </div>

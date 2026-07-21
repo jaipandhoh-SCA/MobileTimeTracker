@@ -3,15 +3,15 @@
 {% block content %}
 <div class="w-full mx-auto max-w-4xl">
     <div class="mb-6 flex justify-between items-center">
-        <h1 class="text-2xl font-bold text-txt-primary font-display">Backfill Lead Sources</h1>
-        <a href="{{ url_for('lead_sources_settings') }}" class="text-primary hover:text-primary-hover text-sm font-medium">
+        <h1 class="text-2xl font-bold text-txt-primary font-sans">Backfill Lead Sources</h1>
+        <a href="{{ url_for('lead_sources_settings') }}" class="text-accent hover:text-accent/80 text-sm font-medium">
             &larr; Back to Lead Sources
         </a>
     </div>
 
     {% if not clients %}
-    <div class="bg-surface-raised border border-edge rounded-2xl p-8 text-center">
-        <svg class="w-12 h-12 mx-auto text-success mb-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+    <div class="bg-white rounded-2xl shadow-card p-8 text-center">
+        <svg class="w-12 h-12 mx-auto text-pos mb-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
         </svg>
         <p class="text-txt-secondary">All clients have a lead source assigned.</p>
@@ -22,26 +22,26 @@
     <form method="POST" action="{{ url_for('lead_source_backfill_save') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
 
-        <div class="bg-surface-raised border border-edge rounded-2xl overflow-hidden divide-y divide-edge">
+        <div class="bg-white rounded-2xl shadow-card overflow-hidden divide-y divide-hairline">
             {% for client in clients %}
             <div class="p-4 flex flex-col sm:flex-row sm:items-center gap-3">
                 <div class="flex-1 min-w-0">
                     <p class="text-sm font-medium text-txt-primary truncate">{{ client.name }}</p>
                     <p class="text-xs text-txt-muted truncate">{{ client.address }}</p>
                 </div>
-                <select name="source_{{ client.id }}" class="p-2.5 bg-surface-overlay border border-edge rounded-lg text-txt-primary text-sm focus:border-primary min-w-[180px]">
+                <select name="source_{{ client.id }}" class="p-2.5 bg-pill border border-hairline rounded-lg text-txt-primary text-sm focus:border-txt-primary min-w-[180px]">
                     <option value="">-- Select source --</option>
                     {% for source in lead_sources %}
                     <option value="{{ source.id }}">{{ source.name }}</option>
                     {% endfor %}
                 </select>
-                <input type="text" name="detail_{{ client.id }}" placeholder="Detail (optional)" class="p-2.5 bg-surface-overlay border border-edge rounded-lg text-txt-primary text-sm focus:border-primary placeholder-txt-faint w-full sm:w-48">
+                <input type="text" name="detail_{{ client.id }}" placeholder="Detail (optional)" class="p-2.5 bg-pill border border-hairline rounded-lg text-txt-primary text-sm focus:border-txt-primary placeholder-txt-muted w-full sm:w-48">
             </div>
             {% endfor %}
         </div>
 
         <div class="mt-6">
-            <button type="submit" class="bg-primary hover:bg-primary-hover text-surface-base font-semibold py-3 px-8 rounded-xl transition">
+            <button type="submit" class="bg-txt-primary hover:bg-txt-primary/80 text-white font-semibold py-3 px-8 rounded-xl transition">
                 Save All
             </button>
         </div>

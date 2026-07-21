@@ -4,15 +4,15 @@
 
 {% block content %}
 <div class="max-w-4xl mx-auto">
-    <div class="bg-white shadow-sm rounded-lg">
+    <div class="bg-white shadow-card rounded-2xl">
         <!-- Header -->
-        <div class="border-b border-gray-200 px-6 py-4 flex justify-between items-center">
-            <h1 class="text-2xl font-semibold text-gray-900">Edit User Profile</h1>
-            <a href="{{ url_for('manage_users') }}" class="text-blue-600 hover:text-blue-700 hover:underline">
+        <div class="border-b border-hairline px-6 py-4 flex justify-between items-center">
+            <h1 class="text-2xl font-semibold text-txt-primary">Edit User Profile</h1>
+            <a href="{{ url_for('manage_users') }}" class="text-txt-secondary hover:text-txt-primary hover:underline">
                 ← Back to Manage Users
             </a>
         </div>
-        
+
         <!-- Profile Content -->
         <div class="p-6">
             <div class="flex items-start space-x-6 mb-8">
@@ -20,153 +20,153 @@
                     {% if editing_user.profile_image_url %}
                     <img src="{{ editing_user.profile_image_url }}" alt="{{ editing_user.display_name }}" class="w-24 h-24 rounded-full">
                     {% else %}
-                    <div class="w-24 h-24 rounded-full bg-gray-300 flex items-center justify-center text-gray-700 font-semibold text-3xl">
+                    <div class="w-24 h-24 rounded-full bg-pill flex items-center justify-center text-txt-secondary font-semibold text-3xl">
                         {{ editing_user.first_name[0] if editing_user.first_name else editing_user.email[0] if editing_user.email else 'U' }}
                     </div>
                     {% endif %}
                 </div>
                 <div class="flex-1">
-                    <h2 class="text-xl font-semibold text-gray-900">{{ editing_user.display_name }}</h2>
-                    <p class="text-gray-600">{{ editing_user.role|title }}</p>
-                    <p class="text-sm text-gray-500 mt-1">User ID: {{ editing_user.id }}</p>
+                    <h2 class="text-xl font-semibold text-txt-primary">{{ editing_user.display_name }}</h2>
+                    <p class="text-txt-secondary">{{ editing_user.role|title }}</p>
+                    <p class="text-sm text-txt-muted mt-1">User ID: {{ editing_user.id }}</p>
                 </div>
             </div>
-            
+
             <!-- Edit Form -->
             <form method="POST">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-                
+
                 <div class="space-y-6">
-                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
-                        <p class="text-sm text-blue-700">
+                    <div class="bg-pill border-l-4 border-hairline p-4 mb-6">
+                        <p class="text-sm text-txt-secondary">
                             <strong>Supervisor Mode:</strong> You can edit all profile details including role and hourly rate.
                         </p>
                     </div>
-                    
+
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
-                            <label for="first_name" class="block text-sm font-semibold text-gray-700 mb-2">
-                                First Name <span class="text-red-600">*</span>
+                            <label for="first_name" class="block text-sm font-semibold text-txt-secondary mb-2">
+                                First Name <span class="text-neg">*</span>
                             </label>
-                            <input 
-                                type="text" 
-                                id="first_name" 
-                                name="first_name" 
-                                value="{{ editing_user.first_name or '' }}" 
+                            <input
+                                type="text"
+                                id="first_name"
+                                name="first_name"
+                                value="{{ editing_user.first_name or '' }}"
                                 required
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
                                 placeholder="Enter first name">
                         </div>
-                        
+
                         <div>
-                            <label for="last_name" class="block text-sm font-semibold text-gray-700 mb-2">
-                                Last Name <span class="text-red-600">*</span>
+                            <label for="last_name" class="block text-sm font-semibold text-txt-secondary mb-2">
+                                Last Name <span class="text-neg">*</span>
                             </label>
-                            <input 
-                                type="text" 
-                                id="last_name" 
-                                name="last_name" 
-                                value="{{ editing_user.last_name or '' }}" 
+                            <input
+                                type="text"
+                                id="last_name"
+                                name="last_name"
+                                value="{{ editing_user.last_name or '' }}"
                                 required
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
                                 placeholder="Enter last name">
                         </div>
                     </div>
-                    
+
                     <div>
-                        <label for="email" class="block text-sm font-semibold text-gray-700 mb-2">
-                            Email Address <span class="text-red-600">*</span>
+                        <label for="email" class="block text-sm font-semibold text-txt-secondary mb-2">
+                            Email Address <span class="text-neg">*</span>
                         </label>
-                        <input 
-                            type="email" 
-                            id="email" 
-                            name="email" 
-                            value="{{ editing_user.email or '' }}" 
+                        <input
+                            type="email"
+                            id="email"
+                            name="email"
+                            value="{{ editing_user.email or '' }}"
                             required
-                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
                             placeholder="your.email@example.com">
-                        <p class="mt-1 text-xs text-gray-500">This email will be used for login and communication</p>
+                        <p class="mt-1 text-xs text-txt-muted">This email will be used for login and communication</p>
                     </div>
-                    
+
                     <div>
-                        <label for="phone" class="block text-sm font-semibold text-gray-700 mb-2">
-                            Phone Number <span class="text-red-600">*</span>
+                        <label for="phone" class="block text-sm font-semibold text-txt-secondary mb-2">
+                            Phone Number <span class="text-neg">*</span>
                         </label>
-                        <input 
-                            type="tel" 
-                            id="phone" 
-                            name="phone" 
-                            value="{{ editing_user.phone or '' }}" 
+                        <input
+                            type="tel"
+                            id="phone"
+                            name="phone"
+                            value="{{ editing_user.phone or '' }}"
                             required
-                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
                             placeholder="(555) 123-4567">
-                        <p class="mt-1 text-xs text-gray-500">Format: (555) 123-4567 or 555-123-4567</p>
+                        <p class="mt-1 text-xs text-txt-muted">Format: (555) 123-4567 or 555-123-4567</p>
                     </div>
-                    
+
                     <div>
-                        <label for="address" class="block text-sm font-semibold text-gray-700 mb-2">
-                            Address <span class="text-red-600">*</span>
+                        <label for="address" class="block text-sm font-semibold text-txt-secondary mb-2">
+                            Address <span class="text-neg">*</span>
                         </label>
-                        <textarea 
-                            id="address" 
-                            name="address" 
-                            rows="3" 
+                        <textarea
+                            id="address"
+                            name="address"
+                            rows="3"
                             required
-                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
                             placeholder="123 Main Street, City, State ZIP">{{ editing_user.address or '' }}</textarea>
-                        <p class="mt-1 text-xs text-gray-500">User's full mailing address</p>
+                        <p class="mt-1 text-xs text-txt-muted">User's full mailing address</p>
                     </div>
-                    
-                    <div class="pt-4 border-t border-gray-200">
-                        <h3 class="text-lg font-semibold text-gray-900 mb-4">Supervisor Controls</h3>
-                        
+
+                    <div class="pt-4 border-t border-hairline">
+                        <h3 class="text-lg font-semibold text-txt-primary mb-4">Supervisor Controls</h3>
+
                         <div>
-                            <label for="role" class="block text-sm font-semibold text-gray-700 mb-2">
-                                Role <span class="text-red-600">*</span>
+                            <label for="role" class="block text-sm font-semibold text-txt-secondary mb-2">
+                                Role <span class="text-neg">*</span>
                             </label>
                             <select
                                 id="role"
                                 name="role"
                                 required
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
                                 <option value="rep" {% if editing_user.role == 'rep' %}selected{% endif %}>Rep</option>
                                 <option value="supervisor" {% if editing_user.role == 'supervisor' %}selected{% endif %}>Supervisor</option>
                             </select>
-                            <p class="mt-1 text-xs text-gray-500">Change user's role and permissions</p>
+                            <p class="mt-1 text-xs text-txt-muted">Change user's role and permissions</p>
                         </div>
                     </div>
-                    
-                    <div class="pt-4 border-t border-gray-200">
-                        <h3 class="text-lg font-semibold text-gray-900 mb-2">Account Information</h3>
+
+                    <div class="pt-4 border-t border-hairline">
+                        <h3 class="text-lg font-semibold text-txt-primary mb-2">Account Information</h3>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                             <div>
-                                <span class="text-gray-600">Last Login:</span>
-                                <span class="ml-2 text-gray-900">{{ editing_user.last_login|format_datetime if editing_user.last_login else 'Never' }}</span>
+                                <span class="text-txt-secondary">Last Login:</span>
+                                <span class="ml-2 text-txt-primary">{{ editing_user.last_login|format_datetime if editing_user.last_login else 'Never' }}</span>
                             </div>
                             <div>
-                                <span class="text-gray-600">Account Created:</span>
-                                <span class="ml-2 text-gray-900">{{ editing_user.created_at|format_datetime }}</span>
+                                <span class="text-txt-secondary">Account Created:</span>
+                                <span class="ml-2 text-txt-primary">{{ editing_user.created_at|format_datetime }}</span>
                             </div>
                         </div>
                     </div>
-                    
-                    <div class="flex items-center justify-between pt-6 border-t border-gray-200">
+
+                    <div class="flex items-center justify-between pt-6 border-t border-hairline">
                         <div class="flex items-center gap-3">
-                            <a href="{{ url_for('manage_users') }}" class="px-6 py-2 bg-gray-200 text-gray-700 rounded-md font-medium hover:bg-gray-300">
+                            <a href="{{ url_for('manage_users') }}" class="px-6 py-2 bg-pill text-txt-secondary rounded-md font-medium hover:bg-gray-200">
                                 Cancel
                             </a>
                             {% if editing_user.id != current_user.id %}
-                            <button 
+                            <button
                                 type="button"
                                 onclick="initiateUserRemoval()"
-                                class="px-6 py-2 bg-red-600 text-white rounded-md font-medium hover:bg-red-700">
+                                class="px-6 py-2 bg-neg text-white rounded-md font-medium hover:bg-neg/80">
                                 Remove User
                             </button>
                             {% endif %}
                         </div>
-                        <button 
-                            type="submit" 
-                            class="px-6 py-2 bg-blue-600 text-white rounded-md font-medium hover:bg-blue-700">
+                        <button
+                            type="submit"
+                            class="px-6 py-2 bg-txt-primary text-white rounded-md font-medium hover:bg-txt-primary/80">
                             Update User Profile
                         </button>
                     </div>
@@ -177,20 +177,20 @@
 </div>
 
 <!-- Client Reassignment Modal -->
-<div id="reassignModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-    <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+<div id="reassignModal" class="hidden fixed inset-0 bg-black/50 overflow-y-auto h-full w-full z-50">
+    <div class="relative top-20 mx-auto p-5 w-96 shadow-card rounded-2xl bg-white">
         <div class="mt-3">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Reassign Clients</h3>
-            <p class="text-sm text-gray-600 mb-4">
-                <span id="clientCount"></span> client(s) are currently assigned to <strong>{{ editing_user.display_name }}</strong>. 
+            <h3 class="text-lg font-semibold text-txt-primary mb-4">Reassign Clients</h3>
+            <p class="text-sm text-txt-secondary mb-4">
+                <span id="clientCount"></span> client(s) are currently assigned to <strong>{{ editing_user.display_name }}</strong>.
                 Please select a user to reassign these clients to before removing this user.
             </p>
-            
+
             <div class="mb-4">
-                <label for="reassignTo" class="block text-sm font-medium text-gray-700 mb-2">
-                    Reassign clients to: <span class="text-red-600">*</span>
+                <label for="reassignTo" class="block text-sm font-medium text-txt-secondary mb-2">
+                    Reassign clients to: <span class="text-neg">*</span>
                 </label>
-                <select id="reassignTo" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <select id="reassignTo" class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
                     <option value="">-- Select a user --</option>
                     {% for user in all_users %}
                     {% if user.id != editing_user.id %}
@@ -199,18 +199,18 @@
                     {% endfor %}
                 </select>
             </div>
-            
+
             <div class="flex items-center justify-end gap-3 mt-6">
-                <button 
+                <button
                     type="button"
                     onclick="closeReassignModal()"
-                    class="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300">
+                    class="px-4 py-2 bg-pill text-txt-secondary rounded-md hover:bg-gray-200">
                     Cancel
                 </button>
-                <button 
+                <button
                     type="button"
                     onclick="confirmUserRemoval()"
-                    class="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700">
+                    class="px-4 py-2 bg-neg text-white rounded-md hover:bg-neg/80">
                     Continue Removal
                 </button>
             </div>
@@ -238,14 +238,14 @@ function closeReassignModal() {
 
 async function confirmUserRemoval() {
     const reassignToUserId = document.getElementById('reassignTo').value;
-    
+
     if (!reassignToUserId) {
         alert('Please select a user to reassign clients to.');
         return;
     }
-    
+
     closeReassignModal();
-    
+
     if (confirm('Are you sure you want to remove {{ editing_user.display_name }}? All clients will be reassigned and all time entries will be deleted. This action cannot be undone.')) {
         removeUser(reassignToUserId);
     }
@@ -255,13 +255,13 @@ async function removeUser(reassignToUserId) {
     const form = document.createElement('form');
     form.method = 'POST';
     form.action = '{{ url_for("remove_user", user_id=editing_user.id) }}';
-    
+
     const csrfToken = document.createElement('input');
     csrfToken.type = 'hidden';
     csrfToken.name = 'csrf_token';
     csrfToken.value = '{{ csrf_token() }}';
     form.appendChild(csrfToken);
-    
+
     if (reassignToUserId) {
         const reassignInput = document.createElement('input');
         reassignInput.type = 'hidden';
@@ -269,7 +269,7 @@ async function removeUser(reassignToUserId) {
         reassignInput.value = reassignToUserId;
         form.appendChild(reassignInput);
     }
-    
+
     document.body.appendChild(form);
     form.submit();
 }

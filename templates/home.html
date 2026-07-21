@@ -1,17 +1,44 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="w-full max-w-4xl mx-auto space-y-6" x-data="hubSections()">
+<div class="w-full max-w-4xl mx-auto space-y-4" x-data="hubSections()">
+
+    <!-- Top bar: Breadcrumb -->
+    <div class="flex items-center gap-2 text-sm">
+        <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <span class="text-txt-muted">Dashboard</span>
+        <span class="text-txt-muted">/</span>
+        <span class="font-semibold text-txt-primary">Overview</span>
+    </div>
+
+    <!-- Sync status pill — reflects real connection state -->
+    {% if current_user.is_supervisor %}
+    <div class="inline-flex items-center gap-2 bg-white rounded-full px-3 py-1.5 shadow-card text-[11px] text-txt-secondary">
+        {% if integrations and integrations.any_connected %}
+        <span class="w-2 h-2 rounded-full bg-pos flex-shrink-0"></span>
+        <span>Synced &middot; {{ integrations.connected_names | join(', ') }} &middot;
+            {% if integrations.meta_last_sync or integrations.ghl_last_sync %}
+                {{ integrations.meta_last_sync or integrations.ghl_last_sync }}
+            {% else %}
+                awaiting first sync
+            {% endif %}
+        </span>
+        {% else %}
+        <span class="w-2 h-2 rounded-full bg-txt-muted flex-shrink-0"></span>
+        <span>Not connected &middot; <a href="{{ url_for('integrations_settings') }}" class="text-accent hover:underline">Set up integrations</a></span>
+        {% endif %}
+    </div>
+    {% endif %}
 
     <!-- Lead source backfill banner -->
     {% if current_user.is_supervisor and missing_source_count %}
     <div x-data="{ dismissed: false }" x-show="!dismissed" x-transition
-         class="flex items-center justify-between gap-3 p-4 bg-accent-light border border-accent/30 rounded-xl">
+         class="flex items-center justify-between gap-3 p-4 bg-amber-50 rounded-2xl">
         <div class="flex items-center gap-3">
-            <svg class="w-5 h-5 flex-shrink-0 text-accent" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
+            <svg class="w-5 h-5 flex-shrink-0 text-amber-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
             <p class="text-sm text-txt-secondary">
                 <span class="font-semibold text-txt-primary">{{ missing_source_count }} client{{ 's' if missing_source_count != 1 }}</span> missing a lead source.
-                <a href="{{ url_for('lead_source_backfill') }}" class="text-primary hover:text-primary-hover font-medium ml-1">Backfill now &rarr;</a>
+                <a href="{{ url_for('lead_source_backfill') }}" class="text-accent hover:underline font-medium ml-1">Backfill now &rarr;</a>
             </p>
         </div>
         <button @click="dismissed = true" class="text-txt-muted hover:text-txt-secondary p-1">
@@ -23,204 +50,311 @@
     <!-- Supervisor filter -->
     {% if current_user.is_supervisor %}
     <div class="flex items-center justify-between">
-        <h1 class="text-2xl font-display font-bold text-txt-primary">
-            {% if selected_user %}{{ selected_user.display_name }}'s Hub{% else %}Company Hub{% endif %}
-        </h1>
         <select onchange="window.location.href='{{ url_for('home') }}?filter_user=' + this.value"
-                class="text-sm border border-edge-strong rounded-lg px-3 py-1.5 bg-surface-raised text-txt-secondary focus:outline-none focus:ring-2 focus:ring-primary/50">
+                class="text-sm rounded-lg px-3 py-1.5 bg-white text-txt-secondary shadow-card focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
             <option value="">All Company</option>
             {% for user in all_users %}
             <option value="{{ user.id }}" {% if selected_user and selected_user.id == user.id %}selected{% endif %}>{{ user.display_name }}</option>
             {% endfor %}
         </select>
     </div>
-    {% else %}
-    <h1 class="text-2xl font-display font-bold text-txt-primary">Your Weekly Hub</h1>
     {% endif %}
 
 
     <!-- ============================================================
-         SECTION 1: THIS WEEK — Weekly Brief (Hero)
+         SUMMARY CARD: Overall ROI
          ============================================================ -->
-    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge p-6 space-y-5">
-        <h2 class="text-lg font-display font-bold text-txt-primary">This Week</h2>
+    {% if current_user.is_supervisor %}
+    {% set has_any_connected = integrations and integrations.any_connected %}
+    {% set has_any_spend = channel_cards | selectattr('spend', 'gt', 0) | list | length > 0 %}
+    {% set has_any_revenue = channel_cards | selectattr('revenue', 'gt', 0) | list | length > 0 %}
+    {% set total_spend_val = channel_cards | sum(attribute='spend') %}
+    {% set total_revenue_val = channel_cards | sum(attribute='revenue') %}
+    {% set total_leads_val = channel_cards | sum(attribute='leads') %}
+    {% set has_paid_connected = integrations and (integrations.meta or integrations.google_ads) %}
 
-        <!-- NEW LEADS -->
-        <div class="space-y-1">
-            <div class="flex items-baseline gap-2 flex-wrap">
-                <span class="text-3xl font-display font-bold text-primary">{{ new_leads_this_week }}</span>
-                <span class="text-sm text-txt-secondary">new lead{{ 's' if new_leads_this_week != 1 else '' }}</span>
-                {% if last_week_leads_count > 0 %}
-                    {% set lead_delta = new_leads_this_week - last_week_leads_count %}
-                    {% if lead_delta > 0 %}
-                    <span class="text-xs font-medium text-success">&#9650; {{ lead_delta }} vs last week</span>
-                    {% elif lead_delta < 0 %}
-                    <span class="text-xs font-medium text-danger">&#9660; {{ lead_delta|abs }} vs last week</span>
-                    {% else %}
-                    <span class="text-xs text-txt-muted">same as last week</span>
-                    {% endif %}
+    <section class="bg-white rounded-2xl shadow-card p-6">
+        <div class="flex flex-col sm:flex-row sm:items-start sm:gap-8">
+            <!-- Left: ROI hero -->
+            <div class="mb-4 sm:mb-0">
+                <p class="text-sm text-txt-muted mb-1">Overall ROI</p>
+                {% if has_paid_connected and has_any_spend and has_any_revenue %}
+                    {% set computed_roi = total_revenue_val / total_spend_val if total_spend_val > 0 else 0 %}
+                    <p class="text-[42px] font-semibold text-txt-primary leading-none">{{ '{:.1f}'.format(computed_roi) }}<span class="text-[26px]">x</span></p>
+                {% elif not has_any_connected %}
+                    <p class="text-xl text-txt-muted leading-snug mt-2">
+                        <a href="{{ url_for('integrations_settings') }}" class="text-accent hover:underline">Connect your data sources</a> to see ROI
+                    </p>
+                {% else %}
+                    <p class="text-[42px] font-semibold text-txt-muted leading-none">&mdash;</p>
+                    <p class="text-xs text-txt-muted mt-1">Awaiting spend data</p>
                 {% endif %}
             </div>
-            {% if lead_source_breakdown %}
-            <p class="text-sm text-txt-muted">
-                {% for source, count in lead_source_breakdown %}{{ count }} {{ source }}{% if not loop.last %}, {% endif %}{% endfor %}
-            </p>
-            {% endif %}
-        </div>
 
-        <!-- PIPELINE MOVEMENT -->
-        {% if pipeline_moves %}
-        <div class="space-y-1.5">
-            <div class="flex items-baseline gap-2">
-                <span class="text-2xl font-display font-bold text-txt-primary">{{ pipeline_moves|length }}</span>
-                <span class="text-sm text-txt-secondary">pipeline move{{ 's' if pipeline_moves|length != 1 else '' }}</span>
+            <!-- Right: Headline stats -->
+            <div class="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-4 sm:border-l sm:border-hairline sm:pl-8">
+                <div>
+                    <p class="text-xs text-txt-muted mb-1">Revenue</p>
+                    <p class="text-xl font-semibold text-txt-primary">
+                        {% if has_any_revenue %}${{ '{:,.0f}'.format(total_revenue_val) }}{% else %}&mdash;{% endif %}
+                    </p>
+                </div>
+                <div>
+                    <p class="text-xs text-txt-muted mb-1">Ad spend</p>
+                    <p class="text-xl font-semibold text-txt-primary">
+                        {% if has_paid_connected and has_any_spend %}${{ '{:,.0f}'.format(total_spend_val) }}{% else %}&mdash;{% endif %}
+                    </p>
+                </div>
+                <div>
+                    <p class="text-xs text-txt-muted mb-1">Leads</p>
+                    <p class="text-xl font-semibold text-txt-primary">
+                        {% if total_leads_val > 0 %}{{ total_leads_val }}{% else %}&mdash;{% endif %}
+                    </p>
+                </div>
+                <div>
+                    <p class="text-xs text-txt-muted mb-1">Conversion</p>
+                    <p class="text-xl font-semibold text-txt-primary">
+                        {% if total_leads_val > 0 %}
+                            {% set total_won = channel_cards | sum(attribute='won') %}
+                            {{ '{:.0f}'.format(total_won / total_leads_val * 100) }}%
+                        {% else %}&mdash;{% endif %}
+                    </p>
+                </div>
             </div>
-            <div class="flex flex-wrap gap-2">
-                {% for desc, names in pipeline_move_summary.items() %}
-                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-surface-overlay border border-edge text-xs text-txt-secondary cursor-default"
-                      title="{{ names|join(', ') }}">
-                    {{ names|length }}x {{ desc|truncate(35) }}
-                </span>
-                {% endfor %}
-            </div>
         </div>
-        {% endif %}
-
-        <!-- DEALS CLOSED -->
-        <div class="flex items-baseline gap-2 flex-wrap">
-            <span class="text-3xl font-display font-bold text-success">{{ completed_count }}</span>
-            <span class="text-sm text-txt-secondary">deal{{ 's' if completed_count != 1 else '' }} closed</span>
-            {% if completed_revenue > 0 %}
-            <span class="text-sm font-semibold text-accent">${{ '{:,.0f}'.format(completed_revenue) }}</span>
-            {% endif %}
-            {% if last_week_completed_count > 0 %}
-                {% set deal_delta = completed_count - last_week_completed_count %}
-                {% if deal_delta > 0 %}
-                <span class="text-xs font-medium text-success">&#9650; {{ deal_delta }} vs last week</span>
-                {% elif deal_delta < 0 %}
-                <span class="text-xs font-medium text-danger">&#9660; {{ deal_delta|abs }} vs last week</span>
-                {% endif %}
-            {% endif %}
-        </div>
-
-        <!-- FOLLOW-UP DEBT -->
-        {% set total_debt = (overdue_steps|length) + (clients_no_next_step|length) %}
-        {% if total_debt > 0 %}
-        <div class="space-y-1">
-            <div class="flex items-baseline gap-2">
-                <span class="text-2xl font-display font-bold text-warning">{{ total_debt }}</span>
-                <span class="text-sm text-txt-secondary">follow-up debt</span>
-            </div>
-            <p class="text-sm text-txt-muted">
-                {% if overdue_steps %}{{ overdue_steps|length }} overdue next step{{ 's' if overdue_steps|length != 1 else '' }}{% endif %}{% if overdue_steps and clients_no_next_step %}, {% endif %}{% if clients_no_next_step %}{{ clients_no_next_step|length }} client{{ 's' if clients_no_next_step|length != 1 else '' }} with no next step{% endif %}
-            </p>
-        </div>
-        {% endif %}
-
     </section>
+    {% endif %}
+
+    <!-- Info line -->
+    {% if current_user.is_supervisor %}
+    <p class="text-sm text-txt-muted px-1">Each card shows that channel's own pipeline.</p>
+    {% endif %}
+
+    <!-- ============================================================
+         CHANNEL CARDS — always rendered for supervisors
+         ============================================================ -->
+    {% if current_user.is_supervisor %}
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {% for card in channel_cards %}
+        <section class="bg-white rounded-2xl shadow-card p-5 flex flex-col">
+            <!-- Header: icon + name + badge -->
+            <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2">
+                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                    <h3 class="font-semibold text-txt-primary text-sm">{{ card.source_name }}</h3>
+                </div>
+
+                {% if not card.connected %}
+                {# Not connected badge #}
+                {% elif card.channel_type == 'paid_ads' %}
+                <span class="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-pill text-txt-secondary">Paid</span>
+                {% elif card.channel_type == 'phone' %}
+                <span class="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-pill text-txt-secondary">Inbound</span>
+                {% elif card.spend == 0 %}
+                <span class="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-emerald-50 text-pos">No spend</span>
+                {% else %}
+                <span class="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-pill text-txt-secondary">{{ card.channel_type|replace('_', ' ')|title }}</span>
+                {% endif %}
+            </div>
+
+            {% if not card.connected %}
+            <!-- ========= NOT CONNECTED STATE ========= -->
+            <div class="flex-1 flex flex-col justify-center items-center py-4">
+                <p class="text-sm text-txt-muted mb-1">Not connected</p>
+                <a href="{{ url_for('integrations_settings') }}" class="text-xs text-accent hover:underline">Connect &rarr;</a>
+            </div>
+            <!-- Flat placeholder line -->
+            <div class="my-3 h-16 flex items-end">
+                <div class="w-full h-px bg-gray-200"></div>
+            </div>
+            <div class="border-t border-hairline my-2"></div>
+            <div class="flex items-end justify-between">
+                <div>
+                    <p class="text-xs text-txt-muted">{% if card.channel_type == 'paid_ads' %}Spend{% elif card.channel_type == 'phone' %}Calls{% else %}Leads{% endif %}</p>
+                    <p class="text-sm font-semibold text-txt-muted">&mdash;</p>
+                </div>
+                <div class="text-right">
+                    <p class="text-xs text-txt-muted">{% if card.channel_type == 'paid_ads' %}Value{% else %}Conv.{% endif %}</p>
+                    <p class="text-sm font-semibold text-txt-muted">&mdash;</p>
+                </div>
+            </div>
+
+            {% elif not card.has_data %}
+            <!-- ========= CONNECTED BUT NO DATA ========= -->
+            <div class="mb-1">
+                <p class="text-[28px] font-semibold text-txt-muted leading-none">&mdash;</p>
+                <p class="text-xs text-txt-muted mt-0.5">No data yet</p>
+            </div>
+            <!-- Flat placeholder line -->
+            <div class="my-3 h-16 flex items-end">
+                <div class="w-full h-px bg-gray-200"></div>
+            </div>
+            <div class="border-t border-hairline my-2"></div>
+            <div class="flex items-end justify-between">
+                <div>
+                    <p class="text-xs text-txt-muted">{% if card.channel_type == 'paid_ads' %}Spend{% elif card.channel_type == 'phone' %}Calls{% else %}Leads{% endif %}</p>
+                    <p class="text-sm font-semibold text-txt-muted">&mdash;</p>
+                </div>
+                <div class="text-right">
+                    <p class="text-xs text-txt-muted">{% if card.channel_type == 'paid_ads' %}Value{% else %}Conv.{% endif %}</p>
+                    <p class="text-sm font-semibold text-txt-muted">&mdash;</p>
+                </div>
+            </div>
+
+            {% else %}
+            <!-- ========= CONNECTED WITH DATA ========= -->
+            <!-- Hero metric -->
+            <div class="mb-1">
+                {% if card.channel_type == 'paid_ads' and card.roi %}
+                <p class="text-[28px] font-semibold text-txt-primary leading-none">{{ '{:.1f}'.format(card.roi) }}x</p>
+                <p class="text-xs text-txt-muted mt-0.5">ROI</p>
+                {% elif card.channel_type == 'phone' %}
+                <p class="text-[28px] font-semibold text-txt-primary leading-none">{{ card.leads }}</p>
+                <p class="text-xs text-txt-muted mt-0.5">Booked appts</p>
+                {% else %}
+                <p class="text-[28px] font-semibold text-txt-primary leading-none">${{ '{:,.0f}'.format(card.revenue) }}</p>
+                <p class="text-xs text-txt-muted mt-0.5">Attributed value</p>
+                {% endif %}
+            </div>
+
+            <!-- Sparkline area -->
+            <div class="my-3 h-16 relative">
+                <canvas id="spark-{{ loop.index }}" class="w-full h-full"></canvas>
+            </div>
+
+            <!-- Hairline divider -->
+            <div class="border-t border-hairline my-2"></div>
+
+            <!-- Footer stats -->
+            <div class="flex items-end justify-between">
+                <div>
+                    <p class="text-xs text-txt-muted">
+                        {% if card.channel_type == 'paid_ads' %}Spend{% elif card.channel_type == 'phone' %}Calls{% else %}Leads{% endif %}
+                    </p>
+                    <p class="text-sm font-semibold text-txt-primary">
+                        {% if card.channel_type == 'paid_ads' %}${{ '{:,.0f}'.format(card.spend) }}{% else %}{{ card.leads }}{% endif %}
+                    </p>
+                </div>
+                <div class="text-right">
+                    <p class="text-xs text-txt-muted">
+                        {% if card.channel_type == 'paid_ads' %}Value{% elif card.channel_type == 'phone' %}Value{% else %}Conv.{% endif %}
+                    </p>
+                    <p class="text-sm font-semibold text-txt-primary">
+                        {% if card.channel_type == 'paid_ads' or card.channel_type == 'phone' %}${{ '{:,.0f}'.format(card.revenue) }}
+                        {% elif card.close_rate %}{{ '{:.0f}'.format(card.close_rate) }}%
+                        {% else %}&mdash;{% endif %}
+                    </p>
+                </div>
+            </div>
+            {% endif %}
+        </section>
+        {% endfor %}
+    </div>
+    {% endif %}
 
 
     <!-- ============================================================
-         SECTION 2: CHANNEL PERFORMANCE (supervisors only)
+         THIS WEEK — Weekly Brief (collapsible)
          ============================================================ -->
-    {% if current_user.is_supervisor and channel_cards %}
-    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge overflow-hidden">
-        <button @click="toggle('channels')"
-                class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-surface-hover transition">
-            <div class="flex items-center gap-3">
-                <h2 class="text-lg font-display font-bold text-txt-primary">Channel Performance</h2>
-                <span class="text-xs text-txt-muted font-medium px-2 py-0.5 rounded-md bg-surface-overlay border border-edge">This Month</span>
-            </div>
-            <svg :class="{ 'rotate-180': sections.channels }" class="w-5 h-5 text-txt-muted transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+    <section class="bg-white rounded-2xl shadow-card overflow-hidden">
+        <button @click="toggle('thisweek')"
+                class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-pill/50 transition-colors duration-150">
+            <h2 class="text-base font-semibold text-txt-primary">This Week</h2>
+            <svg :class="{ 'rotate-180': sections.thisweek }" class="w-5 h-5 text-txt-muted transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
         </button>
-        <div x-show="sections.channels" x-collapse x-cloak>
-            <div class="px-6 pb-6">
-                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {% for card in channel_cards %}
-                    <div class="rounded-xl border border-edge bg-surface-overlay p-5 hover:border-primary/30 hover:shadow-glow-sm transition space-y-4">
-                        <!-- Header: source name + channel type badge -->
-                        <div class="flex items-start justify-between gap-2">
-                            <h3 class="font-semibold text-txt-primary text-sm leading-tight">{{ card.source_name }}</h3>
-                            <span class="flex-shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-md border
-                                {% if card.channel_type == 'paid_ads' %}bg-accent-light border-accent/20 text-accent
-                                {% elif card.channel_type == 'organic_social' %}bg-success-light border-success/20 text-success
-                                {% elif card.channel_type == 'referral' %}bg-[#0C1B2E] border-blue-500/20 text-blue-400
-                                {% else %}bg-surface-active border-edge-strong text-txt-muted{% endif %}">
-                                {{ card.channel_type|replace('_', ' ')|title }}
-                            </span>
-                        </div>
+        <div x-show="sections.thisweek" x-collapse x-cloak>
+            <div class="px-6 pb-6 space-y-5">
 
-                        <!-- Key metrics row -->
-                        <div class="grid grid-cols-3 gap-3">
-                            <div>
-                                <p class="text-[11px] text-txt-muted uppercase tracking-wider">Spend</p>
-                                <p class="text-lg font-display font-bold text-txt-primary">${{ '{:,.0f}'.format(card.spend) }}</p>
-                            </div>
-                            <div>
-                                <p class="text-[11px] text-txt-muted uppercase tracking-wider">Leads</p>
-                                <p class="text-lg font-display font-bold text-primary">{{ card.leads }}</p>
-                                {% if card.lead_delta is not none %}
-                                <p class="text-[10px] font-medium {{ 'text-success' if card.lead_delta > 0 else 'text-danger' if card.lead_delta < 0 else 'text-txt-muted' }}">
-                                    {% if card.lead_delta > 0 %}&#9650; {{ card.lead_delta }}{% elif card.lead_delta < 0 %}&#9660; {{ card.lead_delta|abs }}{% else %}&#8212;{% endif %} vs last mo
-                                </p>
-                                {% endif %}
-                            </div>
-                            <div>
-                                <p class="text-[11px] text-txt-muted uppercase tracking-wider">CPL</p>
-                                <p class="text-lg font-display font-bold {{ 'text-txt-primary' if card.cpl else 'text-txt-faint' }}">
-                                    {% if card.cpl %}${{ '{:,.0f}'.format(card.cpl) }}{% else %}---{% endif %}
-                                </p>
-                            </div>
-                        </div>
-
-                        <!-- Revenue + ROI bar -->
-                        <div class="flex items-center justify-between pt-3 border-t border-edge">
-                            <div>
-                                <p class="text-[11px] text-txt-muted">Revenue</p>
-                                <p class="text-sm font-semibold {{ 'text-accent' if card.revenue > 0 else 'text-txt-faint' }}">
-                                    {% if card.revenue > 0 %}${{ '{:,.0f}'.format(card.revenue) }}{% else %}$0{% endif %}
-                                </p>
-                            </div>
-                            <div class="text-right">
-                                <p class="text-[11px] text-txt-muted">ROI</p>
-                                <p class="text-sm font-bold {{ 'text-success' if card.roi and card.roi >= 1 else 'text-warning' if card.roi and card.roi > 0 else 'text-txt-faint' }}">
-                                    {% if card.roi %}{{ '{:.1f}'.format(card.roi) }}x{% else %}---{% endif %}
-                                </p>
-                            </div>
-                            <div class="text-right">
-                                <p class="text-[11px] text-txt-muted">Won</p>
-                                <p class="text-sm font-semibold text-txt-secondary">{{ card.won }}{% if card.close_rate %} <span class="text-xs text-txt-muted">({{ '{:.0f}'.format(card.close_rate) }}%)</span>{% endif %}</p>
-                            </div>
-                        </div>
+                <!-- NEW LEADS -->
+                <div class="space-y-1">
+                    <div class="flex items-baseline gap-2 flex-wrap">
+                        <span class="text-3xl font-semibold text-txt-primary">{{ new_leads_this_week }}</span>
+                        <span class="text-sm text-txt-secondary">new lead{{ 's' if new_leads_this_week != 1 else '' }}</span>
+                        {% if last_week_leads_count > 0 %}
+                            {% set lead_delta = new_leads_this_week - last_week_leads_count %}
+                            {% if lead_delta > 0 %}
+                            <span class="text-xs font-medium text-pos">&#9650; {{ lead_delta }} vs last week</span>
+                            {% elif lead_delta < 0 %}
+                            <span class="text-xs font-medium text-neg">&#9660; {{ lead_delta|abs }} vs last week</span>
+                            {% else %}
+                            <span class="text-xs text-txt-muted">same as last week</span>
+                            {% endif %}
+                        {% endif %}
                     </div>
-                    {% endfor %}
+                    {% if lead_source_breakdown %}
+                    <p class="text-sm text-txt-muted">
+                        {% for source, count in lead_source_breakdown %}{{ count }} {{ source }}{% if not loop.last %}, {% endif %}{% endfor %}
+                    </p>
+                    {% endif %}
                 </div>
 
-                <div class="mt-4 text-center">
-                    <a href="{{ url_for('roi_report') }}" class="text-sm text-primary hover:text-primary-hover font-medium transition">
-                        View full ROI report &rarr;
-                    </a>
+                <!-- PIPELINE MOVEMENT -->
+                {% if pipeline_moves %}
+                <div class="space-y-1.5">
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-2xl font-semibold text-txt-primary">{{ pipeline_moves|length }}</span>
+                        <span class="text-sm text-txt-secondary">pipeline move{{ 's' if pipeline_moves|length != 1 else '' }}</span>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        {% for desc, names in pipeline_move_summary.items() %}
+                        <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-pill text-xs text-txt-secondary cursor-default"
+                              title="{{ names|join(', ') }}">
+                            {{ names|length }}x {{ desc|truncate(35) }}
+                        </span>
+                        {% endfor %}
+                    </div>
                 </div>
+                {% endif %}
+
+                <!-- DEALS CLOSED -->
+                <div class="flex items-baseline gap-2 flex-wrap">
+                    <span class="text-3xl font-semibold text-pos">{{ completed_count }}</span>
+                    <span class="text-sm text-txt-secondary">deal{{ 's' if completed_count != 1 else '' }} closed</span>
+                    {% if completed_revenue > 0 %}
+                    <span class="text-sm font-semibold text-txt-primary">${{ '{:,.0f}'.format(completed_revenue) }}</span>
+                    {% endif %}
+                    {% if last_week_completed_count > 0 %}
+                        {% set deal_delta = completed_count - last_week_completed_count %}
+                        {% if deal_delta > 0 %}
+                        <span class="text-xs font-medium text-pos">&#9650; {{ deal_delta }} vs last week</span>
+                        {% elif deal_delta < 0 %}
+                        <span class="text-xs font-medium text-neg">&#9660; {{ deal_delta|abs }} vs last week</span>
+                        {% endif %}
+                    {% endif %}
+                </div>
+
+                <!-- FOLLOW-UP DEBT -->
+                {% set total_debt = (overdue_steps|length) + (clients_no_next_step|length) %}
+                {% if total_debt > 0 %}
+                <div class="space-y-1">
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-2xl font-semibold text-amber-500">{{ total_debt }}</span>
+                        <span class="text-sm text-txt-secondary">follow-up debt</span>
+                    </div>
+                    <p class="text-sm text-txt-muted">
+                        {% if overdue_steps %}{{ overdue_steps|length }} overdue next step{{ 's' if overdue_steps|length != 1 else '' }}{% endif %}{% if overdue_steps and clients_no_next_step %}, {% endif %}{% if clients_no_next_step %}{{ clients_no_next_step|length }} client{{ 's' if clients_no_next_step|length != 1 else '' }} with no next step{% endif %}
+                    </p>
+                </div>
+                {% endif %}
+
             </div>
         </div>
     </section>
-    {% endif %}
 
 
     <!-- ============================================================
-         SECTION 3: NEEDS ATTENTION
+         NEEDS ATTENTION
          ============================================================ -->
-    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge p-6">
-        <h2 class="text-lg font-display font-bold text-txt-primary mb-4">Needs Attention</h2>
+    <section class="bg-white rounded-2xl shadow-card p-6">
+        <h2 class="text-base font-semibold text-txt-primary mb-4">Needs Attention</h2>
 
         {% if not attention_items %}
         <div class="flex items-center gap-3 py-6 justify-center">
-            <svg class="w-5 h-5 text-success" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <svg class="w-5 h-5 text-pos" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
             <p class="text-sm text-txt-secondary">All caught up — every active client has a next step.</p>
         </div>
         {% else %}
 
-        {# Supervisor per-rep summary #}
         {% if attention_rep_summary %}
         <p class="text-xs text-txt-muted mb-4">
             {% for name, count in attention_rep_summary %}{{ name }}: {{ count }}{% if not loop.last %} &middot; {% endif %}{% endfor %}
@@ -232,26 +366,24 @@
             {% set client = item.client %}
             {% set is_red = item.severity == 'red' %}
             <div x-data="{ showForm: false }"
-                 class="p-3 rounded-xl border {{ 'border-danger/30 bg-danger/5' if is_red else 'border-warning/20 bg-warning-light' }}">
+                 class="p-3 rounded-2xl {{ 'bg-red-50' if is_red else 'bg-amber-50' }}">
                 <div class="flex items-start justify-between gap-2">
                     <div class="min-w-0 flex-1">
-                        <a href="{{ url_for('edit_client', client_id=client.id) }}" class="text-sm font-semibold text-txt-primary hover:text-primary transition truncate block">
+                        <a href="{{ url_for('edit_client', client_id=client.id) }}" class="text-sm font-semibold text-txt-primary hover:text-accent transition-colors duration-150 truncate block">
                             {{ client.name }}
                             {% if current_user.is_supervisor and client.assigned_to %}
                             <span class="text-xs font-normal text-txt-muted ml-1">{{ client.assigned_to.first_name }}</span>
                             {% endif %}
                         </a>
                         <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
-                            {# Primary issue #}
-                            <span class="text-xs {{ 'text-danger' if is_red else 'text-warning' }}">
+                            <span class="text-xs {{ 'text-neg' if is_red else 'text-amber-600' }}">
                                 {{ item.label }}{% if item.days %} &middot; {{ item.days }}d{% endif %}
                             </span>
                             {% if item.detail %}
                             <span class="text-xs text-txt-muted truncate max-w-[180px]">{{ item.detail }}</span>
                             {% endif %}
-                            {# Extra issues #}
                             {% for extra in item.extra_issues %}
-                            <span class="text-xs {{ 'text-danger' if extra.severity == 'red' else 'text-txt-muted' }}">
+                            <span class="text-xs {{ 'text-neg' if extra.severity == 'red' else 'text-txt-muted' }}">
                                 {{ extra.label }}
                             </span>
                             {% endfor %}
@@ -259,24 +391,23 @@
                     </div>
                     <div class="flex items-center gap-1.5 flex-shrink-0">
                         <button @click="showForm = !showForm"
-                                class="px-2.5 py-1.5 text-xs font-medium bg-primary text-surface-base rounded-lg hover:bg-primary-hover transition whitespace-nowrap">
+                                class="px-2.5 py-1.5 text-xs font-medium bg-txt-primary text-white rounded-xl hover:bg-txt-primary/80 transition-colors duration-150 whitespace-nowrap">
                             Add next step
                         </button>
                         <a href="{{ url_for('edit_client', client_id=client.id) }}#activity-form"
-                           class="px-2.5 py-1.5 text-xs font-medium bg-surface-overlay text-txt-secondary border border-edge-strong rounded-lg hover:bg-surface-hover hover:text-txt-primary transition whitespace-nowrap">
+                           class="px-2.5 py-1.5 text-xs font-medium bg-white text-txt-secondary rounded-xl hover:bg-pill transition-colors duration-150 whitespace-nowrap">
                             Log activity
                         </a>
                     </div>
                 </div>
 
-                {# Inline "Add next step" form #}
-                <div x-show="showForm" x-collapse x-cloak class="mt-3 pt-3 border-t border-edge">
+                <div x-show="showForm" x-collapse x-cloak class="mt-3 pt-3 border-t border-hairline">
                     <form method="POST" action="{{ url_for('quick_add_next_step', client_id=client.id) }}" class="flex flex-wrap items-end gap-2">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                         <div class="flex-1 min-w-[140px]">
                             <label class="text-[11px] text-txt-muted block mb-1">Type</label>
                             <select name="step_type" required
-                                    class="w-full text-xs border border-edge-strong rounded-lg px-2.5 py-1.5 bg-surface-base text-txt-primary focus:outline-none focus:ring-2 focus:ring-primary/50">
+                                    class="w-full text-xs rounded-lg px-2.5 py-1.5 bg-white border border-gray-200 text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
                                 <option value="">Select...</option>
                                 <option value="Phone call">Phone call</option>
                                 <option value="Email follow-up">Email follow-up</option>
@@ -290,14 +421,14 @@
                         <div class="min-w-[130px]">
                             <label class="text-[11px] text-txt-muted block mb-1">Date</label>
                             <input type="date" name="step_date" required
-                                   class="w-full text-xs border border-edge-strong rounded-lg px-2.5 py-1.5 bg-surface-base text-txt-primary focus:outline-none focus:ring-2 focus:ring-primary/50"/>
+                                   class="w-full text-xs rounded-lg px-2.5 py-1.5 bg-white border border-gray-200 text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20"/>
                         </div>
                         <button type="submit"
-                                class="px-3 py-1.5 text-xs font-medium bg-success text-white rounded-lg hover:bg-success/80 transition">
+                                class="px-3 py-1.5 text-xs font-medium bg-pos text-white rounded-xl hover:bg-pos/80 transition-colors duration-150">
                             Save
                         </button>
                         <button type="button" @click="showForm = false"
-                                class="px-3 py-1.5 text-xs font-medium text-txt-muted hover:text-txt-primary transition">
+                                class="px-3 py-1.5 text-xs font-medium text-txt-muted hover:text-txt-primary transition-colors duration-150">
                             Cancel
                         </button>
                     </form>
@@ -310,41 +441,39 @@
 
 
     <!-- ============================================================
-         SECTION 4: PIPELINE (collapsible)
+         PIPELINE (collapsible)
          ============================================================ -->
-    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge overflow-hidden">
+    <section class="bg-white rounded-2xl shadow-card overflow-hidden">
         <button @click="toggle('pipeline')"
-                class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-surface-hover transition">
-            <h2 class="text-lg font-display font-bold text-txt-primary">Pipeline</h2>
+                class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-pill/50 transition-colors duration-150">
+            <h2 class="text-base font-semibold text-txt-primary">Pipeline</h2>
             <svg :class="{ 'rotate-180': sections.pipeline }" class="w-5 h-5 text-txt-muted transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
         </button>
         <div x-show="sections.pipeline" x-collapse x-cloak>
             <div class="px-6 pb-6">
-                <!-- Opportunity status grid -->
                 <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
                     {% set opp_cards = [
-                        ('Lead', status_counts['Lead'], status_values['Lead'], 'bg-success-light border-success/20 text-success'),
-                        ('Prospect', status_counts['Prospect'], status_values['Prospect'], 'bg-[#0C1B2E] border-blue-500/20 text-blue-400'),
-                        ('Active', status_counts['Active'], status_values['Active'], 'bg-primary-light border-primary/20 text-primary'),
-                        ('On Hold', status_counts['On Hold'], status_values['On Hold'], 'bg-warning-light border-warning/20 text-warning'),
-                        ('Completed', status_counts['Completed'], status_values['Completed'], 'bg-surface-overlay border-edge-strong text-txt-secondary'),
-                        ('All', my_clients|length, total_value, 'bg-surface-overlay border-edge-strong text-txt-primary')
+                        ('Lead', status_counts['Lead'], status_values['Lead'], 'bg-emerald-50 text-pos'),
+                        ('Prospect', status_counts['Prospect'], status_values['Prospect'], 'bg-blue-50 text-blue-600'),
+                        ('Active', status_counts['Active'], status_values['Active'], 'bg-pill text-txt-primary'),
+                        ('On Hold', status_counts['On Hold'], status_values['On Hold'], 'bg-amber-50 text-amber-600'),
+                        ('Completed', status_counts['Completed'], status_values['Completed'], 'bg-pill text-txt-secondary'),
+                        ('All', my_clients|length, total_value, 'bg-white text-txt-primary shadow-card')
                     ] %}
                     {% for label, count, value, classes in opp_cards %}
                     <button onclick="showFilteredClients('{{ label }}')"
-                            class="text-left rounded-xl p-4 border hover:shadow-glow-sm hover:border-primary/30 transition cursor-pointer {{ classes }}">
-                        <p class="text-2xl font-display font-bold">{{ count }}</p>
+                            class="text-left rounded-2xl p-4 hover:shadow-card transition-all duration-150 cursor-pointer {{ classes }}">
+                        <p class="text-2xl font-semibold">{{ count }}</p>
                         <p class="text-xs font-medium mt-0.5 text-txt-muted">{{ 'Total' if label == 'All' else label }}{{ 's' if label != 'All' and label != 'On Hold' else '' }}</p>
                         <p class="text-sm font-semibold mt-1">${{ '{:,.0f}'.format(value) }}</p>
                     </button>
                     {% endfor %}
                 </div>
 
-                <!-- Filtered clients (hidden by default) -->
-                <div id="filtered-clients-section" class="bg-surface-overlay rounded-xl border border-edge hidden">
-                    <div class="px-4 py-3 flex justify-between items-center border-b border-edge">
+                <div id="filtered-clients-section" class="bg-pill rounded-2xl hidden">
+                    <div class="px-4 py-3 flex justify-between items-center border-b border-hairline">
                         <h3 id="filtered-clients-title" class="text-sm font-semibold text-txt-primary">All Clients</h3>
-                        <button onclick="hideFilteredClients()" class="p-1 rounded text-txt-muted hover:text-txt-primary transition" aria-label="Close">
+                        <button onclick="hideFilteredClients()" class="p-1 rounded text-txt-muted hover:text-txt-primary transition-colors duration-150" aria-label="Close">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
                         </button>
                     </div>
@@ -356,12 +485,12 @@
 
 
     <!-- ============================================================
-         SECTION 5: RECENT ACTIVITY (collapsible)
+         RECENT ACTIVITY (collapsible)
          ============================================================ -->
-    <section class="bg-surface-raised rounded-2xl shadow-card border border-edge overflow-hidden">
+    <section class="bg-white rounded-2xl shadow-card overflow-hidden">
         <button @click="toggle('activity')"
-                class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-surface-hover transition">
-            <h2 class="text-lg font-display font-bold text-txt-primary">Recent Activity</h2>
+                class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-pill/50 transition-colors duration-150">
+            <h2 class="text-base font-semibold text-txt-primary">Recent Activity</h2>
             <svg :class="{ 'rotate-180': sections.activity }" class="w-5 h-5 text-txt-muted transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
         </button>
         <div x-show="sections.activity" x-collapse x-cloak>
@@ -369,15 +498,15 @@
                 {% if recent_activities %}
                 <div class="space-y-3">
                     {% for activity in recent_activities[:8] %}
-                    <div class="pb-3 border-b border-edge last:border-0 last:pb-0">
-                        <a href="{{ url_for('edit_client', client_id=activity.client.id) }}" class="font-semibold text-txt-primary hover:text-primary text-sm transition">
+                    <div class="pb-3 border-b border-hairline last:border-0 last:pb-0">
+                        <a href="{{ url_for('edit_client', client_id=activity.client.id) }}" class="font-semibold text-txt-primary hover:text-accent text-sm transition-colors duration-150">
                             {{ activity.client.name }}
                         </a>
                         <p class="text-sm text-txt-secondary mt-0.5">{{ activity.activity_type }}</p>
                         <div class="flex items-center gap-2 mt-0.5">
                             <p class="text-xs text-txt-muted">{{ activity.activity_date|format_datetime }}</p>
                             {% if activity.user and current_user.is_supervisor %}
-                            <span class="text-txt-faint">&middot;</span>
+                            <span class="text-txt-muted">&middot;</span>
                             <p class="text-xs text-txt-muted">{{ activity.user.display_name }}</p>
                             {% endif %}
                         </div>
@@ -400,11 +529,11 @@
 
 {% block scripts %}
 <script>
-// --- Collapsible section state (localStorage) ---
 function hubSections() {
     const stored = JSON.parse(localStorage.getItem('hub_sections') || '{}');
     return {
         sections: {
+            thisweek: stored.thisweek !== undefined ? stored.thisweek : false,
             channels: stored.channels !== undefined ? stored.channels : true,
             pipeline: stored.pipeline !== undefined ? stored.pipeline : true,
             activity: stored.activity !== undefined ? stored.activity : false,
@@ -416,7 +545,6 @@ function hubSections() {
     };
 }
 
-// --- Client filtering ---
 const allClients = [
     {% for client in my_clients %}
     {
@@ -435,14 +563,14 @@ const isSupervisor = {{ 'true' if current_user.is_supervisor else 'false' }};
 
 function getStatusBadge(status) {
     const map = {
-        'Lead':      'bg-success-light text-success border-success/20',
-        'Prospect':  'bg-[#0C1B2E] text-blue-400 border-blue-500/20',
-        'Active':    'bg-primary-light text-primary border-primary/20',
-        'Completed': 'bg-surface-overlay text-txt-secondary border-edge-strong',
-        'On Hold':   'bg-warning-light text-warning border-warning/20'
+        'Lead':      'bg-emerald-50 text-emerald-600',
+        'Prospect':  'bg-blue-50 text-blue-600',
+        'Active':    'bg-pill text-txt-primary',
+        'Completed': 'bg-pill text-txt-secondary',
+        'On Hold':   'bg-amber-50 text-amber-600'
     };
-    const cls = map[status] || 'bg-surface-overlay text-txt-secondary border-edge-strong';
-    return `<span class="inline-block px-2 py-0.5 text-[11px] font-medium rounded-md border ${cls}">${status}</span>`;
+    const cls = map[status] || 'bg-pill text-txt-secondary';
+    return `<span class="inline-block px-2 py-0.5 text-[11px] font-medium rounded-full ${cls}">${status}</span>`;
 }
 
 function formatCurrency(v) {
@@ -463,7 +591,7 @@ function showFilteredClients(status) {
         let html = '<div class="space-y-2">';
         filtered.forEach(c => {
             html += `
-                <a href="${c.edit_url}" class="block p-3 rounded-xl border border-edge hover:border-primary/30 bg-surface-raised hover:bg-surface-hover transition hover:shadow-glow-sm">
+                <a href="${c.edit_url}" class="block p-3 rounded-2xl bg-white hover:shadow-card transition-all duration-150">
                     <div class="flex justify-between items-start">
                         <div class="flex-1 min-w-0">
                             <h4 class="font-semibold text-txt-primary text-sm truncate">${c.name}</h4>
@@ -489,11 +617,79 @@ function hideFilteredClients() {
     document.getElementById('filtered-clients-section').classList.add('hidden');
 }
 
-// --- Count-up animations ---
+// --- Sparkline charts for channel cards (only for connected cards with data) ---
 document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('[data-countup]').forEach(function(el) {
         const target = el.getAttribute('data-countup');
         animateCountUp(el, target, 900);
+    });
+
+    const channelCards = [
+        {% for card in channel_cards %}
+        {% if card.connected and card.has_data %}
+        {
+            index: {{ loop.index }},
+            type: {{ card.channel_type | tojson }},
+            name: {{ card.source_name | tojson }},
+            spend: {{ card.spend }},
+            connected: true,
+            hasData: true
+        },
+        {% endif %}
+        {% endfor %}
+    ];
+
+    const colorMap = {
+        'organic_social': { line: '#10b981', fill: 'rgba(16, 185, 129, 0.08)' },
+        'referral':       { line: '#10b981', fill: 'rgba(16, 185, 129, 0.08)' },
+        'paid_ads_meta':  { line: '#D6246E', fill: 'rgba(214, 36, 110, 0.08)' },
+        'paid_ads':       { line: '#0f172a', fill: 'rgba(15, 23, 42, 0.08)' },
+        'phone':          { line: '#94a3b8', fill: 'rgba(148, 163, 184, 0.08)' },
+        'other':          { line: '#0f172a', fill: 'rgba(15, 23, 42, 0.08)' },
+    };
+
+    function getSparkColor(card) {
+        if (card.name.toLowerCase().includes('meta')) return colorMap['paid_ads_meta'];
+        if (card.spend === 0 && card.type !== 'paid_ads') return colorMap['organic_social'];
+        return colorMap[card.type] || colorMap['paid_ads'];
+    }
+
+    channelCards.forEach(card => {
+        const el = document.getElementById('spark-' + card.index);
+        if (!el) return;
+        const colors = getSparkColor(card);
+        // Placeholder sparkline shape — will be replaced when real time-series data is available
+        const data = [0, 1, 1, 2, 2, 3, 4];
+
+        new Chart(el, {
+            type: 'line',
+            data: {
+                labels: data.map((_, i) => i),
+                datasets: [{
+                    data: data,
+                    borderColor: colors.line,
+                    backgroundColor: colors.fill,
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 0,
+                    pointHitRadius: 0,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                scales: {
+                    x: { display: false },
+                    y: { display: false, beginAtZero: true }
+                },
+                animation: {
+                    duration: 800,
+                    easing: 'easeOutQuart'
+                }
+            }
+        });
     });
 });
 </script>

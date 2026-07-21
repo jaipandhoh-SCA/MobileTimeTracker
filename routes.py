@@ -167,13 +167,57 @@ def fresh_login():
     return redirect(url_for('google_auth.login'))
 
 
+def _get_integration_status():
+    """Return which integrations are actually connected (env vars set)."""
+    import os
+    ghl = bool(os.environ.get('GHL_API_KEY')) and bool(os.environ.get('GHL_LOCATION_ID'))
+    meta = bool(os.environ.get('META_ADS_ACCESS_TOKEN')) and bool(os.environ.get('META_ADS_ACCOUNT_ID'))
+    google_ads = bool(os.environ.get('GOOGLE_ADS_API_KEY'))  # future
+    return {
+        'ghl': ghl,
+        'meta': meta,
+        'google_ads': google_ads,
+        'any_connected': ghl or meta or google_ads,
+        'connected_names': [n for n, v in [('GoHighLevel', ghl), ('Meta', meta), ('Google', google_ads)] if v],
+        'ghl_last_sync': session.get('ghl_last_sync'),
+        'meta_last_sync': session.get('meta_last_sync'),
+    }
+
+
+# Canonical channels — always shown, in this order
+CANONICAL_CHANNELS = [
+    {'key': 'organic',    'name': 'Organic',       'channel_type': 'organic_social', 'requires': None},
+    {'key': 'meta_ads',   'name': 'Meta Ads',      'channel_type': 'paid_ads',       'requires': 'meta'},
+    {'key': 'google_ads', 'name': 'Google Ads',     'channel_type': 'paid_ads',       'requires': 'google_ads'},
+    {'key': 'calls',      'name': 'Calls',          'channel_type': 'phone',          'requires': 'ghl'},
+    {'key': 'crm',        'name': 'CRM pipeline',   'channel_type': 'other',          'requires': 'ghl'},
+    {'key': 'referral',   'name': 'Referral',        'channel_type': 'referral',       'requires': None},
+]
+
+# Map canonical channel keys to lead source name patterns
+_CHANNEL_SOURCE_PATTERNS = {
+    'organic':    ['instagram organic', 'facebook organic', 'website', 'seo'],
+    'meta_ads':   ['meta ads'],
+    'google_ads': ['google ads'],
+    'calls':      ['phone call', 'phone'],
+    'crm':        ['repeat client', 'other'],
+    'referral':   ['referral'],
+}
+
+
 def _build_channel_cards():
-    """Build per-channel performance cards for the current month."""
+    """Build per-channel performance cards for the current month.
+
+    Always returns one card per canonical channel. Each card has:
+    - connected: whether the required integration is configured
+    - has_data: whether there's any spend or leads this month
+    """
     import pytz
     from utils import PACIFIC_TZ
 
+    integrations = _get_integration_status()
+
     now_pacific = datetime.now(PACIFIC_TZ)
-    # Current month boundaries
     month_start = now_pacific.replace(day=1).date()
     if now_pacific.month == 12:
         month_end = month_start.replace(year=month_start.year + 1, month=1)
@@ -190,70 +234,92 @@ def _build_channel_cards():
     prev_month_start_utc = PACIFIC_TZ.localize(datetime.combine(prev_month_start, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
     prev_month_end_utc = month_start_utc
 
-    # Get all active lead sources
+    # Get all active lead sources and build lookup
     sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
-    if not sources:
-        return []
-
-    source_ids = [s.id for s in sources]
     source_map = {s.id: s for s in sources}
+    source_ids = [s.id for s in sources]
 
-    # Spend for current month (period_month = first of month)
-    spend_entries = ChannelSpend.query.filter(
-        ChannelSpend.lead_source_id.in_(source_ids),
-        ChannelSpend.period_month == month_start
-    ).all()
-    spend_by_source = {e.lead_source_id: float(e.amount) for e in spend_entries}
+    # Map each source to a canonical channel key
+    source_to_channel = {}
+    for s in sources:
+        name_lower = s.name.lower()
+        for chan_key, patterns in _CHANNEL_SOURCE_PATTERNS.items():
+            if any(p in name_lower for p in patterns):
+                source_to_channel[s.id] = chan_key
+                break
 
-    # Leads created this month per source
-    clients_this_month = Client.query.filter(
-        Client.is_active == True,
-        Client.created_at >= month_start_utc,
-        Client.created_at < month_end_utc,
-        Client.lead_source_id.in_(source_ids)
-    ).all()
+    # Query spend and clients only if we have sources
+    spend_by_channel = defaultdict(float)
+    leads_by_channel = defaultdict(int)
+    revenue_by_channel = defaultdict(float)
+    won_by_channel = defaultdict(int)
+    leads_last_by_channel = defaultdict(int)
 
-    # Leads last month per source (for delta)
-    clients_last_month = Client.query.filter(
-        Client.is_active == True,
-        Client.created_at >= prev_month_start_utc,
-        Client.created_at < prev_month_end_utc,
-        Client.lead_source_id.in_(source_ids)
-    ).all()
+    if source_ids:
+        spend_entries = ChannelSpend.query.filter(
+            ChannelSpend.lead_source_id.in_(source_ids),
+            ChannelSpend.period_month == month_start
+        ).all()
+        for e in spend_entries:
+            chan = source_to_channel.get(e.lead_source_id)
+            if chan:
+                spend_by_channel[chan] += float(e.amount)
 
-    leads_this = defaultdict(int)
-    revenue_this = defaultdict(float)
-    won_this = defaultdict(int)
-    for c in clients_this_month:
-        leads_this[c.lead_source_id] += 1
-        if c.status in ('Active', 'Completed'):
-            won_this[c.lead_source_id] += 1
-            revenue_this[c.lead_source_id] += float(c.final_contract_value or c.opportunity_value or 0)
+        clients_this_month = Client.query.filter(
+            Client.is_active == True,
+            Client.created_at >= month_start_utc,
+            Client.created_at < month_end_utc,
+            Client.lead_source_id.in_(source_ids)
+        ).all()
+        for c in clients_this_month:
+            chan = source_to_channel.get(c.lead_source_id)
+            if chan:
+                leads_by_channel[chan] += 1
+                if c.status in ('Active', 'Completed'):
+                    won_by_channel[chan] += 1
+                    revenue_by_channel[chan] += float(c.final_contract_value or c.opportunity_value or 0)
 
-    leads_last = defaultdict(int)
-    for c in clients_last_month:
-        leads_last[c.lead_source_id] += 1
+        clients_last_month = Client.query.filter(
+            Client.is_active == True,
+            Client.created_at >= prev_month_start_utc,
+            Client.created_at < prev_month_end_utc,
+            Client.lead_source_id.in_(source_ids)
+        ).all()
+        for c in clients_last_month:
+            chan = source_to_channel.get(c.lead_source_id)
+            if chan:
+                leads_last_by_channel[chan] += 1
 
-    # Build cards — only include sources that have spend OR leads this month
+    # Build one card per canonical channel
     cards = []
-    for sid in source_ids:
-        spend = spend_by_source.get(sid, 0)
-        leads = leads_this.get(sid, 0)
-        if spend == 0 and leads == 0:
-            continue
+    for ch in CANONICAL_CHANNELS:
+        key = ch['key']
+        requires = ch['requires']
+
+        # Channels with no integration requirement are always "connected"
+        if requires is None:
+            connected = True
+        else:
+            connected = integrations.get(requires, False)
+
+        spend = spend_by_channel.get(key, 0)
+        leads = leads_by_channel.get(key, 0)
+        rev = revenue_by_channel.get(key, 0)
+        won = won_by_channel.get(key, 0)
+        leads_prev = leads_last_by_channel.get(key, 0)
+
+        has_data = spend > 0 or leads > 0 or rev > 0
 
         cpl = spend / leads if leads and spend else None
-        rev = revenue_this.get(sid, 0)
         roi = rev / spend if spend else None
-        won = won_this.get(sid, 0)
         close_rate = (won / leads * 100) if leads else None
-        leads_prev = leads_last.get(sid, 0)
         lead_delta = leads - leads_prev if leads_prev > 0 else None
 
-        source = source_map[sid]
         cards.append({
-            'source_name': source.name,
-            'channel_type': source.channel_type,
+            'source_name': ch['name'],
+            'channel_type': ch['channel_type'],
+            'connected': connected,
+            'has_data': has_data,
             'spend': spend,
             'leads': leads,
             'cpl': cpl,
@@ -264,8 +330,6 @@ def _build_channel_cards():
             'lead_delta': lead_delta,
         })
 
-    # Sort: highest spend first, then by leads
-    cards.sort(key=lambda x: (-x['spend'], -x['leads']))
     return cards
 
 
@@ -602,7 +666,8 @@ def home():
                          stale_amber_days=stale_amber_days,
                          stale_red_days=stale_red_days,
                          missing_source_count=Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count() if current_user.is_supervisor else 0,
-                         channel_cards=_build_channel_cards() if current_user.is_supervisor else [])
+                         channel_cards=_build_channel_cards() if current_user.is_supervisor else [],
+                         integrations=_get_integration_status() if current_user.is_supervisor else {})
 
 
 @app.route('/clients/<int:client_id>/quick_next_step', methods=['POST'])

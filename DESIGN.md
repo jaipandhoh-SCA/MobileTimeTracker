@@ -1,83 +1,111 @@
 # Design System — All Inclusive ADU Portal
 
-## Theme: Dark Modern Futuristic
+## Theme: Light Soft UI
 
-### Surface Layers (elevation system)
+### Page Canvas & Cards
 | Token | Value | Usage |
 |-------|-------|-------|
-| `surface-base` | `#0B0F14` | Deepest page background |
-| `surface-raised` | `#131820` | Card backgrounds (12% lighter) |
-| `surface-overlay` | `#1A2230` | Dropdowns, modals, nested cards |
-| `surface-hover` | `#1F2A3A` | Hover state on raised surfaces |
-| `surface-active` | `#253344` | Active/pressed states |
-
-### Borders & Edges
-| Token | Value | Usage |
-|-------|-------|-------|
-| `edge` | `#1E2A38` | Default card/divider borders |
-| `edge-strong` | `#2A3A4E` | Emphasized borders, inputs |
-| `edge-glow` | `#2D6A4F33` | Green glow accents on key cards |
+| `canvas` | `#f3f4f6` | Page background (gray-100) |
+| `card` | `#ffffff` | Card backgrounds |
+| `card-radius` | `16px` | `rounded-2xl` on all cards |
+| `card-shadow` | `0 1px 3px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.04)` | Soft diffuse elevation — NO borders, NO glows, NO gradients |
 
 ### Text Hierarchy
-| Token | Value | Contrast | Usage |
-|-------|-------|----------|-------|
-| `txt-primary` | `#F1F5F9` | 15.4:1 | Headlines, key content |
-| `txt-secondary` | `#94A3B8` | 7.2:1 | Body text, descriptions |
-| `txt-muted` | `#64748B` | 4.6:1 | Labels, timestamps |
-| `txt-faint` | `#475569` | 3.1:1 | Disabled, placeholders |
-
-### Primary — Forest Green (bright for dark mode)
 | Token | Value | Usage |
 |-------|-------|-------|
-| `primary` | `#34D399` | Buttons, links, active states |
-| `primary-hover` | `#2BB584` | Button hover |
-| `primary-light` | `#0F2A1F` | Dark-tinted bg for green contexts |
-| `primary-ring` | `rgba(52,211,153,0.25)` | Focus rings |
-| `primary-muted` | `#2D6A4F` | Subdued fills |
+| `txt-primary` | `#0f172a` | Headlines, hero numbers (slate-900) |
+| `txt-secondary` | `#475569` | Body text, descriptions (slate-600) |
+| `txt-muted` | `#94a3b8` | Labels, timestamps, breadcrumb parents (slate-400) |
 
-### Accent — Warm Amber
+### Accent Discipline
+| Color | Value | Usage |
+|-------|-------|-------|
+| Near-black | `#0f172a` | Default chart/line color, primary text |
+| Magenta | `#D6246E` | ONLY brand accent: Meta Ads sparkline, hover states, notification badge |
+| Green | `#10b981` | Positive deltas, "No spend" badges |
+| Red | `#ef4444` | Negative deltas |
+| **No other colors anywhere.** |||
+
+### Badges & Pills
+- Background: `#f1f5f9` (slate-100)
+- Border-radius: `20px` (fully rounded)
+- Text size: `11px`
+- Text color: muted by default; green for semantic "No spend", etc.
+
+### Dividers
 | Token | Value | Usage |
 |-------|-------|-------|
-| `accent` | `#F59E0B` | Revenue numbers, highlights |
-| `accent-light` | `#1F1A0F` | Dark amber tint bg |
+| `hairline` | `#eef2f6` | Card-internal dividers between sections |
 
-### Semantic (dark mode variants)
-| Token | Light BG | Text | Usage |
-|-------|----------|------|-------|
-| `success` | `#052E16` | `#4ADE80` | Positive states |
-| `warning` | `#1C1A05` | `#FBBF24` | Caution states |
-| `danger` | `#1F0A0A` | `#F87171` | Destructive actions |
+### Typography
+| Role | Family | Weight | Size |
+|------|--------|--------|------|
+| Hero numbers | System font stack (`font-sans`) | 600 | 26-30px |
+| Card labels | System font stack | 400-500 | 12-14px |
+| Body | System font stack | 400 | 14px |
+
+System font stack: `ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`
+
+**No Fraunces. No Google Fonts dependency.**
+
+### Spacing & Radius
+- Card border-radius: `16px` (`rounded-2xl`)
+- Badge border-radius: `20px` (`rounded-full` or `rounded-[20px]`)
+- Button border-radius: `12px` (`rounded-xl`)
+- Section gap: `16-24px`
+- Card padding: `20-24px`
 
 ### Shadows
 | Token | Value | Usage |
 |-------|-------|-------|
-| `shadow-card` | `0 4px 24px -4px rgba(0,0,0,0.5), inset border` | Card elevation |
-| `shadow-glow-sm` | `0 0 15px -3px rgba(52,211,153,0.15)` | Subtle green glow |
-| `shadow-glow-md` | `0 0 25px -5px rgba(52,211,153,0.2)` | Emphasized glow |
+| `card` | `0 1px 3px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.04)` | All cards |
+| No glow shadows. No colored shadows. |||
 
-## Typography
+### Motion
+- All transitions: `150ms ease`
+- Chart/sparkline entrance: `800ms easeOutQuart`
+- Respect `prefers-reduced-motion: reduce`
 
-| Role | Family | Weight | Source |
-|------|--------|--------|--------|
-| Display (numbers, section titles) | Fraunces | 600-700 | Google Fonts |
-| Body (everything else) | Inter | 400-600 | Google Fonts |
+### Focus States
+- Outline: `2px solid #0f172a`
+- Outline offset: `2px`
+- No glow shadow on focus
 
-## Spacing & Radius
+## Layout Structure (Mobile-First)
 
-- Card border-radius: `1rem` (16px)
-- Button border-radius: `0.75rem` (12px)
-- Section gap: `1.5rem` (24px)
-- Card border: `1px solid edge`
+### Top Bar
+- Breadcrumb: muted parent ("Dashboard") + dark current page ("Overview")
+- Sync-status pill: white bg, rounded, green dot + service names + time ago
 
-## Motion
+### Summary Card
+- Full-width white card
+- Left: "Overall ROI" label, hero number (e.g. 3.4x), green delta below
+- Right: label-over-value pairs (Revenue, Ad spend, Leads, Conversion)
+- Divided by hairline `#eef2f6`
 
-All transitions: `150ms ease`. Chart animations: `800ms easeOutQuart`.
-Respect `prefers-reduced-motion: reduce`.
+### Channel Cards Grid
+- Mobile: single column stack
+- Tablet (>=768px): 2-across grid
+- Desktop (>=1024px): 3-across grid
+- Each card: header (icon + name + badge) -> hero metric + sub-label -> sparkline -> hairline -> footer stats
+
+### Channel Card Sparkline Colors
+| Channel | Line Color | Fill |
+|---------|-----------|------|
+| Organic / No-spend | `#10b981` (green) | 8% opacity green |
+| Meta Ads | `#D6246E` (magenta) | 8% opacity magenta |
+| Google Ads / CRM | `#0f172a` (near-black) | 8% opacity black |
+| Calls | `#94a3b8` (slate) | 8% opacity slate |
+
+### States
+- Empty/zero: "No data yet" in muted text — never a blank box
+- Not connected: "Not connected" state for channels without live integration
+- Supervisor-only visibility for channel cards (existing logic preserved)
 
 ## Key Principles
 
-1. **Layer separation**: Each surface layer is 12-15% brighter than the one below
-2. **Border over shadow**: Borders define edges; shadows add depth/glow
-3. **Bright accent on dark**: Primary is #34D399 (bright mint) not the muted forest — it pops
-4. **Cool neutrals**: Blue-tinted grays (slate family) not warm browns
-5. **Glow for emphasis**: Green glow shadow on important interactive elements
+1. **No dark theme remnants**: Every surface is light. No near-black backgrounds, no glow shadows, no scan-line textures.
+2. **Elevation via shadow only**: Cards float above canvas with soft shadows, no borders.
+3. **Accent discipline**: Near-black default, magenta is the ONE brand color, green/red are semantic only.
+4. **System fonts only**: No external font dependencies. Fast, native feel.
+5. **Whitespace over decoration**: Let spacing and shadow do the work. No gradients, no textures.

@@ -5,12 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Access Denied</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :focus-visible { outline: 2px solid #0f172a; outline-offset: 2px; }
+    </style>
 </head>
-<body class="bg-gray-50 min-h-screen flex items-center justify-center">
-    <div class="max-w-md w-full bg-white rounded-lg shadow-xl p-8 text-center">
-        <h1 class="text-4xl font-bold text-red-600 mb-4">Access Denied</h1>
-        <p class="text-gray-600 mb-8">You don't have permission to access this page.</p>
-        <a href="{{ url_for('index') }}" class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg">
+<body class="bg-[#f3f4f6] min-h-screen flex items-center justify-center px-4" style="font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+    <div class="max-w-md w-full bg-white rounded-2xl p-8 text-center" style="box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.04);">
+        <div class="mx-auto w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-[#ef4444]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+            </svg>
+        </div>
+        <h1 class="text-2xl font-bold text-[#ef4444] mb-2">403</h1>
+        <p class="text-[#0f172a] font-semibold mb-1">Access Denied</p>
+        <p class="text-[#475569] text-sm mb-6">You don't have permission to access this page.</p>
+        <a href="{{ url_for('index') }}" class="inline-block bg-[#0f172a] hover:bg-[#1e293b] text-white font-semibold py-2.5 px-6 rounded-xl transition">
             Go to Home
         </a>
     </div>

@@ -3,7 +3,7 @@
 
 > My living plan + changelog. Planning happens here; approved items get handed to Claude Code to build. Updated every time a change ships.
 
-**Last updated:** 2026-07-20 (Phase A/B/C shipped — time tracking removed, channel cards on hub, GHL + Meta Ads integrations)
+**Last updated:** 2026-07-21 (Light Soft UI redesign shipped)
 
 ---
 
@@ -49,6 +49,36 @@ _No items currently active. See Backlog for next candidates._
 ---
 
 ## 4. Changelog
+
+### 2026-07-21 — Honest Empty States for Dashboard
+
+**Channel cards always render.** Replaced the old behavior (cards hidden when no data) with 6 canonical channels that always appear: Organic, Meta Ads, Google Ads, Calls, CRM pipeline, Referral. Each card shows one of three states based on real integration status.
+
+**"Not connected" state:** Cards whose integration isn't configured (env vars missing) show "Not connected" with a muted label, flat placeholder line instead of sparkline, em-dashes for stats, and a "Connect" link to `/settings/integrations`.
+
+**"No data yet" state:** Cards whose integration IS connected but has no spend/leads for the current period show em-dashes and "No data yet" — visually distinct from "Not connected."
+
+**Summary card:** When no ad platforms are connected, ROI hero shows "Connect your data sources to see ROI" linking to integrations. Revenue/Ad spend/Leads/Conversion show em-dashes when no real data. ROI is never computed from incomplete spend data.
+
+**Sync pill:** Reflects real connection state. Shows "Not connected" with link when nothing is configured. When connected, lists only actually-connected service names with real last-sync time.
+
+**Backend:** New `_get_integration_status()` helper checks env vars. `_build_channel_cards()` rewritten: uses `CANONICAL_CHANNELS` list with `requires` field mapping to integrations, maps lead sources to channels via name patterns, returns `connected` and `has_data` flags per card.
+
+**Verified:** Full integration test with empty database — all 6 cards render in "Not connected" state, no fake numbers, no errors. Seed route (`/settings/lead-sources/seed`) left intact (guarded, intentional for initial setup).
+
+### 2026-07-21 — Light Soft UI Redesign
+
+**Full frontend theme replacement.** Replaced the dark futuristic theme (near-black surfaces, mint green primary, glow shadows, scan-line textures) with a light "soft UI" design system.
+
+**DESIGN.md rewritten** as single source of truth. New spec: light gray canvas (#f3f4f6), white cards with soft diffuse shadows (no borders, no glows), system font stack (Fraunces removed), strict 4-color accent discipline (near-black default, magenta #D6246E brand accent, green #10b981 positive, red #ef4444 negative).
+
+**Hub page restructured** to match target mobile design: breadcrumb top bar, sync-status pill, summary card with Overall ROI hero number + headline stats (Revenue/Ad spend/Leads/Conversion), channel cards grid with per-channel sparkline charts (color-coded: green for no-spend, magenta for Meta, near-black for Google/CRM, slate for Calls), empty/zero states. Responsive: single-column mobile, 2-across tablet, 3-across desktop.
+
+**Tailwind config overhauled** in base.html: removed 5-level surface system, edge borders, glow shadows, Fraunces font import. New tokens: canvas, card, hairline, pill, txt (primary/secondary/muted), accent, pos, neg.
+
+**Templates restyled (15):** base.html, home.html, landing.html, clients.html, client_form.html, edit_profile.html, edit_user_profile.html, manage_users.html, integrations_settings.html, lead_sources_settings.html, lead_source_backfill.html, channel_spend.html, roi_report.html, 403.html, access_denied.html. Every dark-theme class removed; no page retains old styling.
+
+**No backend changes.** Templates, CSS tokens, and Chart.js config only.
 
 ### 2026-07-20 — Phase C: GoHighLevel + Meta Ads Integrations
 
