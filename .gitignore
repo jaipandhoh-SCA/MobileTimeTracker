@@ -52,6 +52,9 @@ Thumbs.db
 # Uploads
 uploads/
 profile_images/
+
+# Database backups
+backups/
 .venv/
 .neon
 __pycache__/

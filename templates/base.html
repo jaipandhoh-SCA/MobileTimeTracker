@@ -95,6 +95,11 @@
                                   {{ 'bg-pill text-txt-primary' if current_endpoint == 'home' else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
                             Hub
                         </a>
+                        <a href="{{ url_for('my_logs') }}"
+                           class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
+                                  {{ 'bg-pill text-txt-primary' if current_endpoint in ['my_logs', 'quick_log', 'stop_clock'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
+                            Time
+                        </a>
                         <a href="{{ url_for('clients') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
                                   {{ 'bg-pill text-txt-primary' if current_endpoint in ['clients', 'create_client', 'edit_client'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
@@ -246,6 +251,10 @@
                                     Edit Profile
                                 </a>
                                 {% if current_user.is_supervisor %}
+                                <a href="{{ url_for('admin_dashboard') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-txt-secondary hover:bg-pill transition-colors duration-150">
+                                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                    Payroll
+                                </a>
                                 <a href="{{ url_for('manage_users') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-txt-secondary hover:bg-pill transition-colors duration-150">
                                     <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
                                     Manage Users
@@ -309,6 +318,11 @@
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
                           {{ 'bg-pill text-txt-primary' if current_endpoint == 'home' else 'text-txt-muted hover:bg-pill' }}">
                     Hub
+                </a>
+                <a href="{{ url_for('my_logs') }}"
+                   class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
+                          {{ 'bg-pill text-txt-primary' if current_endpoint in ['my_logs', 'quick_log', 'stop_clock'] else 'text-txt-muted hover:bg-pill' }}">
+                    Time
                 </a>
                 <a href="{{ url_for('clients') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150

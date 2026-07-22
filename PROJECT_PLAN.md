@@ -50,6 +50,31 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-07-22 — Resurrect Time Tracking & Payroll
+
+**Scope:** Brought back clock in/out, manual time entry, My Logs, and payroll — all removed in Phase A (commit `218e3ab`). No PDF/CSV exports restored (intentionally dead). Old data unrecoverable (Neon PITR window passed); tables recreated empty.
+
+**Models:** Added `TimeEntry` and `ActiveClock` to `models.py`. Added `hourly_rate` column to `User` and `AuthorizedUser` (with auto-migration in `app.py`). Added relationships on `User` and `Client`.
+
+**Routes (routes.py):**
+- Clock: `/clock/start`, `/clock/status` (JSON polling), `/clock/break15`, `/clock/lunch`, `/clock/stop`
+- Time entry: `/quick-log` (manual entry), `/my-logs` (personal log viewer)
+- Payroll (supervisor): `/admin` (payroll dashboard), `/admin/rep/<id>/entries`, `/admin/entry/<id>/edit`
+- Updated `/edit-user-profile` and `/add-authorized-user` to handle `hourly_rate`
+- Added `format_hours` Jinja filter
+
+**Helpers (utils.py):** `round_to_quarter_hour`, `calculate_duration`, `format_hours`, `get_pay_period_dates`, `get_next_pay_period_dates`, `get_previous_pay_period_dates`, `get_last_30_days_dates`, `get_month_to_date_dates`.
+
+**Templates (all new, styled to DESIGN.md):** `stop_clock.html`, `quick_log.html`, `my_logs.html`, `admin_dashboard.html`, `rep_time_entries.html`, `edit_entry.html`. Updated: `base.html` (nav links), `home.html` (Alpine.js clock card), `edit_profile.html`, `edit_user_profile.html`, `manage_users.html`.
+
+**Auth:** `google_auth.py` copies `hourly_rate` from `AuthorizedUser` on first login.
+
+**Migration:** `migration_resurrect_time_tracking.sql` — additive only (CREATE TABLE IF NOT EXISTS, ADD COLUMN with existence checks). Run manually via Neon console.
+
+**Infrastructure:** Added `scripts/backup_db.sh`, added `backups/` to `.gitignore`, removed dead `reportlab` dependency from `pyproject.toml`.
+
+**Tested:** Full clock flow (clock in → break → lunch → stop → entry created), manual quick-log, My Logs view, payroll dashboard, rep entries, entry edit, hub clock card, empty states, Pacific time display, quarter-hour rounding. All 7 test groups passed.
+
 ### 2026-07-21 — Honest Empty States for Dashboard
 
 **Channel cards always render.** Replaced the old behavior (cards hidden when no data) with 6 canonical channels that always appear: Organic, Meta Ads, Google Ads, Calls, CRM pipeline, Referral. Each card shows one of three states based on real integration status.

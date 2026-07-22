@@ -66,4 +66,16 @@ with app.app_context():
     if 'ghl_contact_id' not in client_cols:
         db.session.execute(text('ALTER TABLE clients ADD COLUMN ghl_contact_id VARCHAR(100) UNIQUE'))
         logging.info("Added ghl_contact_id column to clients")
+
+    # Auto-migrate: add hourly_rate to users and authorized_users if missing
+    user_cols = [c['name'] for c in inspector.get_columns('users')]
+    if 'hourly_rate' not in user_cols:
+        db.session.execute(text('ALTER TABLE users ADD COLUMN hourly_rate NUMERIC(8, 2) DEFAULT 0'))
+        logging.info("Added hourly_rate column to users")
+
+    auth_user_cols = [c['name'] for c in inspector.get_columns('authorized_users')]
+    if 'hourly_rate' not in auth_user_cols:
+        db.session.execute(text('ALTER TABLE authorized_users ADD COLUMN hourly_rate NUMERIC(8, 2) DEFAULT 0'))
+        logging.info("Added hourly_rate column to authorized_users")
+
     db.session.commit()
