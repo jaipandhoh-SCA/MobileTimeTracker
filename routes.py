@@ -2041,6 +2041,10 @@ def ghl_sync_contacts():
         return redirect(url_for('integrations_settings'))
 
     contacts = ghl_helper.fetch_all_contacts()
+    if not contacts:
+        flash(f'GHL returned 0 contacts. Check that your sub-account has contacts and that your API key has contacts read permission.', 'warning')
+        return redirect(url_for('integrations_settings'))
+
     created = 0
     skipped = 0
 

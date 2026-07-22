@@ -62,10 +62,13 @@ def fetch_contacts(limit=100, after=None, query=None):
             params=params,
             timeout=15,
         )
+        logger.info(f'GHL contacts response status: {r.status_code}')
+        logger.info(f'GHL contacts response keys: {list(r.json().keys()) if r.ok else r.text[:300]}')
         r.raise_for_status()
         data = r.json()
         contacts = data.get('contacts', [])
         meta = data.get('meta', {})
+        logger.info(f'GHL returned {len(contacts)} contacts, meta: {meta}')
         next_cursor = meta.get('startAfterId') or meta.get('nextPageUrl')
         return contacts, next_cursor
     except Exception as e:
