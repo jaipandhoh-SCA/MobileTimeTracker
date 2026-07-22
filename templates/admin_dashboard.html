@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+{% block title %}Payroll Dashboard - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto">
+    <!-- Header -->
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-6">
+        <div>
+            <h1 class="text-2xl font-semibold text-txt-primary">Payroll Dashboard</h1>
+            <p class="text-sm text-txt-secondary mt-1">Pay period: {{ current_period_start|format_date }} &ndash; {{ current_period_end|format_date }}</p>
+        </div>
+        <a href="{{ url_for('home') }}" class="px-4 py-2 bg-pill text-txt-secondary rounded-xl text-sm font-medium hover:bg-gray-200 transition-colors duration-150">
+            ← Hub
+        </a>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white shadow-card rounded-2xl p-5">
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Total Hours</p>
+            <p class="text-2xl font-semibold text-txt-primary mt-1">{{ "%.2f"|format(total_hours|float) }}</p>
+        </div>
+        <div class="bg-white shadow-card rounded-2xl p-5">
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Billable</p>
+            <p class="text-2xl font-semibold text-txt-primary mt-1">{{ "%.2f"|format(total_billable|float) }}</p>
+        </div>
+        <div class="bg-white shadow-card rounded-2xl p-5">
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Entries</p>
+            <p class="text-2xl font-semibold text-txt-primary mt-1">{{ entry_count }}</p>
+        </div>
+        <div class="bg-white shadow-card rounded-2xl p-5">
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Unique Clients</p>
+            <p class="text-2xl font-semibold text-txt-primary mt-1">{{ unique_clients }}</p>
+        </div>
+    </div>
+
+    <!-- Daily Totals Chart -->
+    <div class="bg-white shadow-card rounded-2xl p-6 mb-6">
+        <h2 class="text-sm font-semibold text-txt-primary mb-4">Company Daily Hours (Current Period)</h2>
+        {% if daily_totals and daily_totals|selectattr('hours', 'gt', 0)|list|length > 0 %}
+        <div class="h-48">
+            <canvas id="dailyTotalsChart"></canvas>
+        </div>
+        {% else %}
+        <div class="h-48 flex items-center justify-center">
+            <p class="text-txt-muted text-sm">No hours logged this period</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <!-- Current Period Payroll -->
+        <div class="bg-white shadow-card rounded-2xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-hairline">
+                <h2 class="text-sm font-semibold text-txt-primary">Current Period Payroll</h2>
+                <p class="text-xs text-txt-muted">{{ current_period_start|format_date }} &ndash; {{ current_period_end|format_date }} &middot; Pay date: {{ current_pay_date|format_date }}</p>
+            </div>
+            {% if payroll_data %}
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-hairline">
+                    <thead class="bg-pill">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Rep</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-txt-muted uppercase">Hours</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-txt-muted uppercase">Rate</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-txt-muted uppercase">Pay</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-hairline">
+                        {% for item in payroll_data %}
+                        <tr class="hover:bg-pill transition-colors duration-150">
+                            <td class="px-6 py-3 text-sm">
+                                <a href="{{ url_for('rep_time_entries', user_id=item.rep.id) }}" class="text-txt-secondary hover:text-txt-primary hover:underline">
+                                    {{ item.rep.display_name }}
+                                </a>
+                            </td>
+                            <td class="px-6 py-3 text-sm text-right text-txt-primary font-medium">{{ "%.2f"|format(item.current_hours) }}</td>
+                            <td class="px-6 py-3 text-sm text-right text-txt-secondary">${{ "%.2f"|format(item.rep.hourly_rate|float) if item.rep.hourly_rate else '0.00' }}</td>
+                            <td class="px-6 py-3 text-sm text-right text-txt-primary font-medium">${{ "%.2f"|format(item.current_pay) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="px-6 py-12 text-center">
+                <p class="text-txt-muted text-sm">No reps found</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Next Period Preview -->
+        <div class="bg-white shadow-card rounded-2xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-hairline">
+                <h2 class="text-sm font-semibold text-txt-primary">Next Period Preview</h2>
+                <p class="text-xs text-txt-muted">{{ next_period_start|format_date }} &ndash; {{ next_period_end|format_date }} &middot; Pay date: {{ next_pay_date|format_date }}</p>
+            </div>
+            {% if payroll_data %}
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-hairline">
+                    <thead class="bg-pill">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Rep</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-txt-muted uppercase">Hours</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-txt-muted uppercase">Pay</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-hairline">
+                        {% for item in payroll_data %}
+                        <tr class="hover:bg-pill transition-colors duration-150">
+                            <td class="px-6 py-3 text-sm text-txt-secondary">{{ item.rep.display_name }}</td>
+                            <td class="px-6 py-3 text-sm text-right text-txt-primary font-medium">{{ "%.2f"|format(item.next_hours) }}</td>
+                            <td class="px-6 py-3 text-sm text-right text-txt-primary font-medium">${{ "%.2f"|format(item.next_pay) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="px-6 py-12 text-center">
+                <p class="text-txt-muted text-sm">No reps found</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if filtered_payroll_data %}
+    <!-- Filtered Period Payroll -->
+    <div class="bg-white shadow-card rounded-2xl overflow-hidden mb-6">
+        <div class="px-6 py-4 border-b border-hairline">
+            <h2 class="text-sm font-semibold text-txt-primary">Filtered Period Payroll</h2>
+            <p class="text-xs text-txt-muted">{{ filtered_date_from|format_date if filtered_date_from else 'Start' }} &ndash; {{ filtered_date_to|format_date if filtered_date_to else 'Now' }}</p>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-hairline">
+                <thead class="bg-pill">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Rep</th>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-txt-muted uppercase">Hours</th>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-txt-muted uppercase">Pay</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-hairline">
+                    {% for item in filtered_payroll_data %}
+                    <tr class="hover:bg-pill transition-colors duration-150">
+                        <td class="px-6 py-3 text-sm text-txt-secondary">{{ item.rep.display_name }}</td>
+                        <td class="px-6 py-3 text-sm text-right text-txt-primary font-medium">{{ "%.2f"|format(item.hours) }}</td>
+                        <td class="px-6 py-3 text-sm text-right text-txt-primary font-medium">${{ "%.2f"|format(item.pay) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Filters -->
+    <div class="bg-white shadow-card rounded-2xl p-6 mb-6">
+        <h2 class="text-sm font-semibold text-txt-primary mb-4">Filter Entries</h2>
+        <form method="GET" class="flex flex-wrap items-end gap-4">
+            <div>
+                <label class="block text-xs font-medium text-txt-muted mb-1">From</label>
+                <input type="date" name="date_from" value="{{ date_from }}"
+                       class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-txt-muted mb-1">To</label>
+                <input type="date" name="date_to" value="{{ date_to }}"
+                       class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-txt-muted mb-1">Rep</label>
+                <select name="rep_id"
+                        class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                    <option value="">All Reps</option>
+                    {% for u in users %}
+                    <option value="{{ u.id }}">{{ u.display_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-txt-muted mb-1">Client</label>
+                <select name="client_id"
+                        class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                    <option value="">All Clients</option>
+                    {% for c in clients %}
+                    <option value="{{ c.id }}">{{ c.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="px-4 py-2 bg-txt-primary text-white text-sm rounded-md font-medium hover:bg-txt-primary/80">
+                Filter
+            </button>
+            <a href="{{ url_for('admin_dashboard') }}" class="px-4 py-2 bg-pill text-txt-secondary text-sm rounded-md font-medium hover:bg-gray-200">
+                Reset
+            </a>
+        </form>
+    </div>
+
+    <!-- All Entries Table -->
+    <div class="bg-white shadow-card rounded-2xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-hairline">
+            <h2 class="text-sm font-semibold text-txt-primary">Time Entries</h2>
+        </div>
+        {% if entries %}
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-hairline">
+                <thead class="bg-pill">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Date</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Rep</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Client</th>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-txt-muted uppercase">Hours</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase hidden lg:table-cell">Description</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-hairline">
+                    {% for entry in entries %}
+                    <tr class="hover:bg-pill transition-colors duration-150">
+                        <td class="px-6 py-3 whitespace-nowrap text-sm text-txt-primary">{{ entry.date|format_date }}</td>
+                        <td class="px-6 py-3 whitespace-nowrap text-sm text-txt-secondary">{{ entry.user.display_name }}</td>
+                        <td class="px-6 py-3 whitespace-nowrap text-sm text-txt-secondary">{{ entry.client.name if entry.client else 'Daily Activities' }}</td>
+                        <td class="px-6 py-3 whitespace-nowrap text-sm text-right font-medium text-txt-primary">{{ entry.duration_hours|format_hours }}</td>
+                        <td class="px-6 py-3 text-sm text-txt-secondary max-w-xs truncate hidden lg:table-cell">{{ entry.work_description }}</td>
+                        <td class="px-6 py-3 whitespace-nowrap text-sm">
+                            <a href="{{ url_for('edit_entry', entry_id=entry.id) }}" class="text-txt-secondary hover:text-txt-primary hover:underline">Edit</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="px-6 py-16 text-center">
+            <svg class="mx-auto h-12 w-12 text-txt-muted mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <p class="text-txt-muted text-sm">No time entries found for this period</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if daily_totals and daily_totals|selectattr('hours', 'gt', 0)|list|length > 0 %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const ctx = document.getElementById('dailyTotalsChart').getContext('2d');
+    const data = {{ daily_totals|tojson }};
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: data.map(d => {
+                const dt = new Date(d.date + 'T12:00:00');
+                return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            }),
+            datasets: [{
+                data: data.map(d => d.hours),
+                backgroundColor: '#0f172a',
+                borderRadius: 4,
+                maxBarThickness: 32
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { beginAtZero: true, grid: { color: '#eef2f6' }, ticks: { font: { size: 11 } } },
+                x: { grid: { display: false }, ticks: { font: { size: 10 } } }
+            }
+        }
+    });
+});
+</script>
+{% endif %}
+{% endblock %}

@@ -62,6 +62,49 @@
 
 
     <!-- ============================================================
+         CLOCK IN/OUT CARD
+         ============================================================ -->
+    <section class="bg-white rounded-2xl shadow-card p-6" x-data="clockCard()" x-init="poll()">
+        <div class="flex items-center justify-between">
+            <div>
+                <p class="text-xs font-medium text-txt-muted uppercase tracking-wide mb-1">Time Clock</p>
+                <template x-if="active">
+                    <div>
+                        <p class="text-2xl font-semibold text-txt-primary" x-text="elapsed"></p>
+                        <p class="text-xs text-txt-muted mt-0.5">Started <span x-text="startTime"></span></p>
+                    </div>
+                </template>
+                <template x-if="!active">
+                    <p class="text-sm text-txt-secondary">Not clocked in</p>
+                </template>
+            </div>
+            <div class="flex items-center gap-2">
+                <template x-if="active">
+                    <div class="flex items-center gap-2">
+                        <button @click="takeBreak15()" :disabled="break15Taken" class="px-3 py-2 text-xs font-medium rounded-xl transition-colors duration-150" :class="break15Taken ? 'bg-pill text-txt-muted cursor-not-allowed' : 'bg-pill text-txt-secondary hover:bg-gray-200'">
+                            15m Break
+                        </button>
+                        <button @click="takeLunch()" :disabled="lunchTaken" class="px-3 py-2 text-xs font-medium rounded-xl transition-colors duration-150" :class="lunchTaken ? 'bg-pill text-txt-muted cursor-not-allowed' : 'bg-pill text-txt-secondary hover:bg-gray-200'">
+                            Lunch
+                        </button>
+                        <a href="{{ url_for('stop_clock') }}" class="px-4 py-2 bg-neg text-white text-sm font-medium rounded-xl hover:bg-neg/80 transition-colors duration-150">
+                            Stop
+                        </a>
+                    </div>
+                </template>
+                <template x-if="!active">
+                    <form method="POST" action="{{ url_for('start_clock') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                        <button type="submit" class="px-4 py-2 bg-txt-primary text-white text-sm font-medium rounded-xl hover:bg-txt-primary/80 transition-colors duration-150">
+                            Clock In
+                        </button>
+                    </form>
+                </template>
+            </div>
+        </div>
+    </section>
+
+    <!-- ============================================================
          SUMMARY CARD: Overall ROI
          ============================================================ -->
     {% if current_user.is_supervisor %}
@@ -529,6 +572,56 @@
 
 {% block scripts %}
 <script>
+function clockCard() {
+    return {
+        active: false,
+        elapsed: '00:00:00',
+        startTime: '',
+        break15Taken: false,
+        lunchTaken: false,
+        _interval: null,
+
+        async poll() {
+            await this.fetchStatus();
+            this._interval = setInterval(() => this.fetchStatus(), 5000);
+        },
+
+        async fetchStatus() {
+            try {
+                const res = await fetch('{{ url_for("clock_status") }}');
+                const data = await res.json();
+                this.active = data.active;
+                if (data.active) {
+                    this.elapsed = data.elapsed;
+                    this.startTime = data.start_time;
+                    this.break15Taken = data.break_15_taken;
+                    this.lunchTaken = data.lunch_taken;
+                }
+            } catch(e) {}
+        },
+
+        async takeBreak15() {
+            const res = await fetch('{{ url_for("take_break_15") }}', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}'}
+            });
+            const data = await res.json();
+            if (data.success) { this.break15Taken = true; }
+            else { alert(data.message); }
+        },
+
+        async takeLunch() {
+            const res = await fetch('{{ url_for("take_lunch") }}', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}'}
+            });
+            const data = await res.json();
+            if (data.success) { this.lunchTaken = true; }
+            else { alert(data.message); }
+        }
+    };
+}
+
 function hubSections() {
     const stored = JSON.parse(localStorage.getItem('hub_sections') || '{}');
     return {

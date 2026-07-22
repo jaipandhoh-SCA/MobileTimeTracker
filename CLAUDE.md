@@ -17,3 +17,7 @@ Rules:
   new on it.
 - Never commit .env* files or secrets.
 - Ask before large refactors.
+- Before any migration that drops tables or columns: run
+  `./scripts/backup_db.sh`, confirm the backup succeeded, and get Jai's
+  approval before executing. Additive migrations (CREATE TABLE, ADD COLUMN)
+  don't require a backup but still require confirmation.

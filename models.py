@@ -15,9 +15,13 @@ class User(UserMixin, db.Model):
     phone = db.Column(db.String(20), nullable=True)
     address = db.Column(db.String(500), nullable=True)
     role = db.Column(db.String(20), nullable=False, default='rep')
+    hourly_rate = db.Column(db.Numeric(8, 2), nullable=True, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_login = db.Column(db.DateTime, nullable=True)
+
+    time_entries = db.relationship('TimeEntry', backref='user', lazy='dynamic')
+    active_clock = db.relationship('ActiveClock', backref='user', uselist=False)
 
     @property
     def is_supervisor(self):
@@ -96,11 +100,48 @@ class Client(db.Model):
     created_by = db.relationship('User', foreign_keys=[created_by_user_id])
     assigned_to = db.relationship('User', foreign_keys=[assigned_to_user_id])
     lead_source = db.relationship('LeadSource', backref='clients')
+    time_entries = db.relationship('TimeEntry', backref='client', lazy='dynamic')
     activities = db.relationship('ClientActivity', backref='client', lazy='dynamic', order_by='ClientActivity.activity_date.desc()')
     property_images = db.relationship('PropertyImage', backref='client', lazy='dynamic', order_by='PropertyImage.created_at.desc()', cascade='all, delete-orphan')
 
     def __repr__(self):
         return f'<Client {self.name}>'
+
+
+class TimeEntry(db.Model):
+    __tablename__ = 'time_entries'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=True)
+    date = db.Column(db.Date, nullable=False)
+    start_time = db.Column(db.DateTime, nullable=False)
+    end_time = db.Column(db.DateTime, nullable=True)
+    duration_hours = db.Column(db.Numeric(5, 2), nullable=True)
+    work_description = db.Column(db.Text, nullable=False)
+    is_manual = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_user_date', 'user_id', 'date'),
+        Index('idx_client_date', 'client_id', 'date'),
+    )
+
+    def __repr__(self):
+        return f'<TimeEntry {self.id} - {self.user_id} - {self.duration_hours}h>'
+
+
+class ActiveClock(db.Model):
+    __tablename__ = 'active_clocks'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String, db.ForeignKey('users.id'), unique=True, nullable=False)
+    start_time = db.Column(db.DateTime, nullable=False)
+    break_15_taken = db.Column(db.Boolean, default=False)
+    lunch_taken = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<ActiveClock {self.user_id} - {self.start_time}>'
 
 
 class ClientActivity(db.Model):
@@ -194,6 +235,7 @@ class AuthorizedUser(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(200), unique=True, nullable=False)
     role = db.Column(db.String(20), nullable=False, default='rep')
+    hourly_rate = db.Column(db.Numeric(8, 2), nullable=True, default=0)
     added_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     

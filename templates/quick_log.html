@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Quick Log - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto">
+    <div class="bg-white shadow-card rounded-2xl">
+        <div class="border-b border-hairline px-6 py-4 flex justify-between items-center">
+            <h1 class="text-2xl font-semibold text-txt-primary">Quick Log</h1>
+            <a href="{{ url_for('my_logs') }}" class="text-txt-secondary hover:text-txt-primary hover:underline text-sm">
+                View My Logs
+            </a>
+        </div>
+
+        <form method="POST" class="p-6 space-y-6">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label for="date" class="block text-sm font-semibold text-txt-secondary mb-2">
+                        Date <span class="text-neg">*</span>
+                    </label>
+                    <input type="date" id="date" name="date" value="{{ today }}" required max="{{ today }}"
+                           class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                </div>
+                <div>
+                    <label for="hours" class="block text-sm font-semibold text-txt-secondary mb-2">
+                        Hours <span class="text-neg">*</span>
+                    </label>
+                    <input type="number" id="hours" name="hours" step="0.25" min="0.25" max="12" required
+                           class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                           placeholder="e.g. 2.5">
+                </div>
+            </div>
+
+            <div>
+                <label for="client_id" class="block text-sm font-semibold text-txt-secondary mb-2">Client</label>
+                <select id="client_id" name="client_id"
+                        class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                        onchange="toggleNewClient(this)">
+                    <option value="">-- Select Client --</option>
+                    <option value="daily_activities">Daily Activities (no client)</option>
+                    {% for client in clients %}
+                    <option value="{{ client.id }}">{{ client.name }}</option>
+                    {% endfor %}
+                    <option value="new">+ Add New Client</option>
+                </select>
+            </div>
+
+            <div id="newClientFields" class="hidden space-y-4">
+                <div>
+                    <label for="new_client_name" class="block text-sm font-semibold text-txt-secondary mb-2">New Client Name</label>
+                    <input type="text" id="new_client_name" name="new_client_name"
+                           class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                </div>
+                <div>
+                    <label for="new_client_address" class="block text-sm font-semibold text-txt-secondary mb-2">New Client Address</label>
+                    <input type="text" id="new_client_address" name="new_client_address"
+                           class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                </div>
+            </div>
+
+            <div>
+                <label for="work_description" class="block text-sm font-semibold text-txt-secondary mb-2">
+                    Work Description <span class="text-neg">*</span>
+                </label>
+                <textarea id="work_description" name="work_description" rows="4" required minlength="10"
+                          class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                          placeholder="Describe the work you did (at least 10 characters)"></textarea>
+            </div>
+
+            <div class="flex items-center justify-between pt-4 border-t border-hairline">
+                <a href="{{ url_for('my_logs') }}" class="px-6 py-2 bg-pill text-txt-secondary rounded-md font-medium hover:bg-gray-200">
+                    Cancel
+                </a>
+                <button type="submit" class="px-6 py-2 bg-txt-primary text-white rounded-md font-medium hover:bg-txt-primary/80">
+                    Log Entry
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function toggleNewClient(select) {
+    const fields = document.getElementById('newClientFields');
+    fields.classList.toggle('hidden', select.value !== 'new');
+}
+</script>
+{% endblock %}

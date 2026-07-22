@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}{{ rep.display_name }} - Time Entries{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto">
+    <!-- Header -->
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-6">
+        <div>
+            <h1 class="text-2xl font-semibold text-txt-primary">{{ rep.display_name }}</h1>
+            <p class="text-sm text-txt-secondary mt-1">{{ summary_label }} &middot; ${{ "%.2f"|format(rep.hourly_rate|float) if rep.hourly_rate else '0.00' }}/hr</p>
+        </div>
+        <a href="{{ url_for('admin_dashboard') }}" class="px-4 py-2 bg-pill text-txt-secondary rounded-xl text-sm font-medium hover:bg-gray-200 transition-colors duration-150">
+            ← Payroll
+        </a>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white shadow-card rounded-2xl p-5">
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Total Hours</p>
+            <p class="text-2xl font-semibold text-txt-primary mt-1">{{ "%.2f"|format(summary_hours|float) }}</p>
+        </div>
+        <div class="bg-white shadow-card rounded-2xl p-5">
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Billable</p>
+            <p class="text-2xl font-semibold text-txt-primary mt-1">{{ "%.2f"|format(summary_billable|float) }}</p>
+        </div>
+        <div class="bg-white shadow-card rounded-2xl p-5">
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Entries</p>
+            <p class="text-2xl font-semibold text-txt-primary mt-1">{{ summary_entry_count }}</p>
+        </div>
+        <div class="bg-white shadow-card rounded-2xl p-5">
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Est. Pay</p>
+            <p class="text-2xl font-semibold text-txt-primary mt-1">${{ "%.2f"|format(summary_pay|float) }}</p>
+        </div>
+    </div>
+
+    <!-- Daily Hours Chart -->
+    <div class="bg-white shadow-card rounded-2xl p-6 mb-6">
+        <h2 class="text-sm font-semibold text-txt-primary mb-4">Daily Hours</h2>
+        {% if daily_hours and daily_hours|selectattr('hours', 'gt', 0)|list|length > 0 %}
+        <div class="h-48">
+            <canvas id="dailyChart"></canvas>
+        </div>
+        {% else %}
+        <div class="h-48 flex items-center justify-center">
+            <p class="text-txt-muted text-sm">No hours logged this period</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-white shadow-card rounded-2xl p-6 mb-6">
+        <form method="GET" class="flex flex-wrap items-end gap-4">
+            <div>
+                <label class="block text-xs font-medium text-txt-muted mb-1">Period</label>
+                <select name="timeframe" onchange="this.form.submit()"
+                        class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                    <option value="current_period" {{ 'selected' if timeframe == 'current_period' }}>Current Pay Period</option>
+                    <option value="previous_period" {{ 'selected' if timeframe == 'previous_period' }}>Previous Pay Period</option>
+                    <option value="month_to_date" {{ 'selected' if timeframe == 'month_to_date' }}>Month to Date</option>
+                    <option value="last_30" {{ 'selected' if timeframe == 'last_30' }}>Last 30 Days</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-txt-muted mb-1">From</label>
+                <input type="date" name="date_from" value="{{ date_from }}"
+                       class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-txt-muted mb-1">To</label>
+                <input type="date" name="date_to" value="{{ date_to }}"
+                       class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-txt-muted mb-1">Client</label>
+                <select name="client_id"
+                        class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                    <option value="">All Clients</option>
+                    {% for c in clients %}
+                    <option value="{{ c.id }}" {{ 'selected' if client_id|string == c.id|string }}>{{ c.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="px-4 py-2 bg-txt-primary text-white text-sm rounded-md font-medium hover:bg-txt-primary/80">
+                Filter
+            </button>
+        </form>
+    </div>
+
+    <!-- Entries Table -->
+    <div class="bg-white shadow-card rounded-2xl overflow-hidden">
+        {% if entries %}
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-hairline">
+                <thead class="bg-pill">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Date</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Client</th>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-txt-muted uppercase">Hours</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase hidden md:table-cell">Description</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Type</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-hairline">
+                    {% for entry in entries %}
+                    <tr class="hover:bg-pill transition-colors duration-150">
+                        <td class="px-6 py-3 whitespace-nowrap text-sm text-txt-primary">{{ entry.date|format_date }}</td>
+                        <td class="px-6 py-3 whitespace-nowrap text-sm text-txt-secondary">{{ entry.client.name if entry.client else 'Daily Activities' }}</td>
+                        <td class="px-6 py-3 whitespace-nowrap text-sm text-right font-medium text-txt-primary">{{ entry.duration_hours|format_hours }}</td>
+                        <td class="px-6 py-3 text-sm text-txt-secondary max-w-xs truncate hidden md:table-cell">{{ entry.work_description }}</td>
+                        <td class="px-6 py-3 whitespace-nowrap text-sm">
+                            <span class="px-2 py-1 text-xs font-medium rounded-full bg-pill text-txt-muted">
+                                {{ 'Manual' if entry.is_manual else 'Clock' }}
+                            </span>
+                        </td>
+                        <td class="px-6 py-3 whitespace-nowrap text-sm">
+                            <a href="{{ url_for('edit_entry', entry_id=entry.id, return_url=request.url) }}" class="text-txt-secondary hover:text-txt-primary hover:underline">Edit</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="px-6 py-16 text-center">
+            <svg class="mx-auto h-12 w-12 text-txt-muted mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <p class="text-txt-muted text-sm">No time entries for this period</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if daily_hours and daily_hours|selectattr('hours', 'gt', 0)|list|length > 0 %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const ctx = document.getElementById('dailyChart').getContext('2d');
+    const data = {{ daily_hours|tojson }};
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: data.map(d => {
+                const dt = new Date(d.date + 'T12:00:00');
+                return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            }),
+            datasets: [{
+                data: data.map(d => d.hours),
+                backgroundColor: '#0f172a',
+                borderRadius: 4,
+                maxBarThickness: 32
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { beginAtZero: true, grid: { color: '#eef2f6' }, ticks: { font: { size: 11 } } },
+                x: { grid: { display: false }, ticks: { font: { size: 10 } } }
+            }
+        }
+    });
+});
+</script>
+{% endif %}
+{% endblock %}

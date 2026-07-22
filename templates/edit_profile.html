@@ -78,9 +78,15 @@
                 </div>
 
                 <div class="pt-4 border-t border-hairline">
-                    <div>
-                        <label class="block text-sm font-semibold text-txt-secondary mb-1">Role</label>
-                        <p class="text-txt-primary">{{ user.role|title }}</p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-sm font-semibold text-txt-secondary mb-1">Role</label>
+                            <p class="text-txt-primary">{{ user.role|title }}</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-semibold text-txt-secondary mb-1">Hourly Rate</label>
+                            <p class="text-txt-primary">${{ "%.2f"|format(user.hourly_rate|float) if user.hourly_rate else '0.00' }}/hr</p>
+                        </div>
                     </div>
                 </div>
             </div>
