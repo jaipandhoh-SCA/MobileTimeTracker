@@ -6,7 +6,7 @@
     <div class="bg-white shadow-card rounded-2xl">
         <div class="border-b border-hairline px-6 py-4">
             <h1 class="text-2xl font-semibold text-txt-primary">Stop Clock</h1>
-            <p class="text-sm text-txt-secondary mt-1">Started {{ active_clock.start_time|format_datetime }} &middot; {{ duration|format_hours }} hours so far</p>
+            <p class="text-sm text-txt-secondary mt-1">Started {{ active_clock.start_time|format_datetime }} &middot; <span id="live-duration">{{ duration|format_hours }} hours</span> so far</p>
         </div>
 
         <form method="POST" class="p-6 space-y-6">
@@ -75,5 +75,18 @@ function toggleNewClient(select) {
     const fields = document.getElementById('newClientFields');
     fields.classList.toggle('hidden', select.value !== 'new');
 }
+
+// Live ticking duration on stop clock page
+(function() {
+    var sec = {{ (duration * 3600)|int }};
+    var el = document.getElementById('live-duration');
+    setInterval(function() {
+        sec++;
+        var h = Math.floor(sec / 3600);
+        var m = Math.floor((sec % 3600) / 60);
+        var s = sec % 60;
+        el.textContent = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+    }, 1000);
+})();
 </script>
 {% endblock %}

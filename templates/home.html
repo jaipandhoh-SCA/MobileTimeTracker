@@ -579,11 +579,29 @@ function clockCard() {
         startTime: '',
         break15Taken: false,
         lunchTaken: false,
-        _interval: null,
+        _elapsedSec: 0,
+        _tickInterval: null,
+        _syncInterval: null,
 
         async poll() {
             await this.fetchStatus();
-            this._interval = setInterval(() => this.fetchStatus(), 5000);
+            // Tick the display every second locally
+            this._tickInterval = setInterval(() => this.tick(), 1000);
+            // Sync with server every 30s to stay accurate
+            this._syncInterval = setInterval(() => this.fetchStatus(), 30000);
+        },
+
+        tick() {
+            if (!this.active) return;
+            this._elapsedSec++;
+            this.elapsed = this.formatSec(this._elapsedSec);
+        },
+
+        formatSec(s) {
+            const h = Math.floor(s / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            const sec = s % 60;
+            return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
         },
 
         async fetchStatus() {
@@ -592,7 +610,8 @@ function clockCard() {
                 const data = await res.json();
                 this.active = data.active;
                 if (data.active) {
-                    this.elapsed = data.elapsed;
+                    this._elapsedSec = data.elapsed_seconds;
+                    this.elapsed = this.formatSec(this._elapsedSec);
                     this.startTime = data.start_time;
                     this.break15Taken = data.break_15_taken;
                     this.lunchTaken = data.lunch_taken;
