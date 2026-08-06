@@ -172,40 +172,37 @@ def access_denied():
     return render_template("access_denied.html"), 403
 
 
-@google_auth.route("/dev_login")
-def dev_login():
-    """Bypass Google login for development and log in as a supervisor"""
-    # Look for an existing supervisor or dev user
-    user = User.query.filter_by(role='supervisor').first()
-    
-    if user is None:
-        # Create a new dev admin user
-        user = User()
-        user.id = "dev_admin_sub"
-        user.email = "admin@example.com"
-        user.first_name = "Dev"
-        user.last_name = "Admin"
-        user.role = "supervisor"
-        user.profile_image_url = ""
-        user.last_login = datetime.utcnow()
-        db.session.add(user)
-        db.session.commit()
-        
-        # Also ensure this user is in the AuthorizedUser list so they are fully valid
-        authorized = AuthorizedUser.query.filter_by(email="admin@example.com").first()
-        if not authorized:
-            authorized = AuthorizedUser()
-            authorized.email = "admin@example.com"
-            authorized.role = "supervisor"
-            db.session.add(authorized)
+if os.environ.get("ALLOW_DEV_LOGIN") == "true":
+    @google_auth.route("/dev_login")
+    def dev_login():
+        """Bypass Google login for development — only available when ALLOW_DEV_LOGIN=true."""
+        user = User.query.filter_by(role='supervisor').first()
+
+        if user is None:
+            user = User()
+            user.id = "dev_admin_sub"
+            user.email = "admin@example.com"
+            user.first_name = "Dev"
+            user.last_name = "Admin"
+            user.role = "supervisor"
+            user.profile_image_url = ""
+            user.last_login = datetime.utcnow()
+            db.session.add(user)
             db.session.commit()
-    else:
-        # Update last login
-        user.last_login = datetime.utcnow()
-        db.session.commit()
-        
-    login_user(user)
-    return redirect(url_for("home"))
+
+            authorized = AuthorizedUser.query.filter_by(email="admin@example.com").first()
+            if not authorized:
+                authorized = AuthorizedUser()
+                authorized.email = "admin@example.com"
+                authorized.role = "supervisor"
+                db.session.add(authorized)
+                db.session.commit()
+        else:
+            user.last_login = datetime.utcnow()
+            db.session.commit()
+
+        login_user(user)
+        return redirect(url_for("home"))
 
 
 # Decorators for route protection
