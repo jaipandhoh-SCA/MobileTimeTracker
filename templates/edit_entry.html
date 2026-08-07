@@ -1,74 +1,109 @@
 {% extends "base.html" %}
+{% from "ui/macros.html" import input, select, textarea, card, btn, form_actions, status_badge, modal %}
+
 {% block title %}Edit Entry - All Inclusive ADU Portal{% endblock %}
 
 {% block content %}
-<div class="max-w-2xl mx-auto">
-    <div class="bg-white shadow-card rounded-2xl">
-        <div class="border-b border-hairline px-6 py-4 flex justify-between items-center">
-            <h1 class="text-2xl font-semibold text-txt-primary">Edit Time Entry</h1>
-            <a href="{{ return_url or url_for('admin_dashboard') }}" class="text-txt-secondary hover:text-txt-primary hover:underline text-sm">
-                ← Back
-            </a>
-        </div>
+<div class="max-w-2xl mx-auto" x-data="{ showReject: false }">
+    {% call card(title="Edit Time Entry") %}
 
-        <form method="POST" class="p-6 space-y-6">
+        {# Status banner #}
+        {% if entry.status == 'approved' %}
+        <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-4 mb-6 text-sm text-emerald-700">
+            Approved{{ ' by ' ~ entry.approved_by.display_name if entry.approved_by else '' }}{{ ' on ' ~ (entry.approved_at|format_datetime) if entry.approved_at else '' }}.
+        </div>
+        {% elif entry.status == 'rejected' %}
+        <div class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 text-sm text-neg">
+            Rejected.{% if entry.rejection_reason %} Reason: {{ entry.rejection_reason }}{% endif %}
+        </div>
+        {% endif %}
+
+        <form method="POST" class="space-y-6">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             {% if return_url %}
             <input type="hidden" name="return_url" value="{{ return_url }}"/>
             {% endif %}
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                    <label for="date" class="block text-sm font-semibold text-txt-secondary mb-2">
-                        Date <span class="text-neg">*</span>
-                    </label>
-                    <input type="date" id="date" name="date" value="{{ entry.date }}" required
-                           class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
-                </div>
-                <div>
-                    <label for="duration_hours" class="block text-sm font-semibold text-txt-secondary mb-2">
-                        Hours <span class="text-neg">*</span>
-                    </label>
-                    <input type="number" id="duration_hours" name="duration_hours"
-                           value="{{ entry.duration_hours }}" step="0.25" min="0.25" max="24" required
-                           class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
-                </div>
+                {{ input("date", label="Date", type="date", value=entry.date, required=true) }}
+                {{ input("duration_hours", label="Hours", type="number", value=entry.duration_hours, required=true, attrs='step="0.25" min="0.25" max="24"') }}
             </div>
 
+            {{ select("client_id", label="Client", options=[
+                ("", "Daily Activities (no client)")
+            ] + (clients|map(attribute='id')|zip(clients|map(attribute='name'))|list),
+            selected=entry.client_id|default('')) }}
+
             <div>
-                <label for="client_id" class="block text-sm font-semibold text-txt-secondary mb-2">Client</label>
-                <select id="client_id" name="client_id"
-                        class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
-                    <option value="">Daily Activities (no client)</option>
-                    {% for client in clients %}
-                    <option value="{{ client.id }}" {{ 'selected' if entry.client_id == client.id }}>{{ client.name }}</option>
+                <label for="cost_code_id" class="block text-sm font-semibold text-txt-secondary mb-2">
+                    Cost Code
+                </label>
+                <select id="cost_code_id" name="cost_code_id"
+                        class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                    <option value="">-- No cost code --</option>
+                    {% for cc in cost_codes %}
+                    <option value="{{ cc.id }}" {% if cc.id == entry.cost_code_id %}selected{% endif %}>{{ cc.code }} - {{ cc.name }}</option>
                     {% endfor %}
                 </select>
+                <p class="mt-1 text-xs text-txt-muted">Required for approval</p>
             </div>
 
-            <div>
-                <label for="work_description" class="block text-sm font-semibold text-txt-secondary mb-2">
-                    Work Description <span class="text-neg">*</span>
-                </label>
-                <textarea id="work_description" name="work_description" rows="4" required
-                          class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20">{{ entry.work_description }}</textarea>
-            </div>
+            {{ textarea("work_description", label="Work Description", value=entry.work_description, required=true) }}
 
-            <div class="bg-pill rounded-xl p-4 text-sm text-txt-secondary">
-                <p><span class="font-semibold text-txt-primary">Employee:</span> {{ entry.user.display_name }}</p>
+            <div class="bg-pill rounded-xl p-4 text-sm text-txt-secondary space-y-1">
+                <p><span class="font-semibold text-txt-primary">Employee:</span> {{ entry.user.display_name }} &middot; ${{ "%.2f"|format(entry.user.hourly_rate|float) if entry.user.hourly_rate else '0.00' }}/hr &middot; Burden: {{ entry.user.burden_multiplier if entry.user.burden_multiplier else 'default' }}</p>
                 <p><span class="font-semibold text-txt-primary">Type:</span> {{ 'Manual Entry' if entry.is_manual else 'Clock Entry' }}</p>
+                <p><span class="font-semibold text-txt-primary">Status:</span> {{ entry.status|title }}</p>
                 <p><span class="font-semibold text-txt-primary">Created:</span> {{ entry.created_at|format_datetime }}</p>
             </div>
 
-            <div class="flex items-center justify-between pt-4 border-t border-hairline">
-                <a href="{{ return_url or url_for('admin_dashboard') }}" class="px-6 py-2 bg-pill text-txt-secondary rounded-md font-medium hover:bg-gray-200">
-                    Cancel
-                </a>
-                <button type="submit" class="px-6 py-2 bg-txt-primary text-white rounded-md font-medium hover:bg-txt-primary/80">
-                    Update Entry
-                </button>
+            {{ form_actions(cancel_href=return_url or url_for('admin_dashboard'), submit_text="Update Entry") }}
+        </form>
+
+        {# Approval actions #}
+        <div class="mt-6 pt-6 border-t border-hairline">
+            <h3 class="text-sm font-semibold text-txt-primary mb-3">Approval</h3>
+            <div class="flex flex-wrap gap-3">
+                {% if entry.status != 'approved' %}
+                <form method="POST" action="{{ url_for('approve_entry', entry_id=entry.id) }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    {% if return_url %}
+                    <input type="hidden" name="return_url" value="{{ return_url }}"/>
+                    {% endif %}
+                    {{ btn("Approve", type="submit", variant="primary", size="sm") }}
+                </form>
+                {% endif %}
+
+                {% if entry.status != 'rejected' %}
+                {{ btn("Reject", variant="danger", size="sm", attrs='@click="showReject = true"') }}
+                {% endif %}
+
+                {% if entry.status != 'pending' %}
+                <form method="POST" action="{{ url_for('reset_entry_pending', entry_id=entry.id) }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    {% if return_url %}
+                    <input type="hidden" name="return_url" value="{{ return_url }}"/>
+                    {% endif %}
+                    {{ btn("Reset to Pending", type="submit", variant="secondary", size="sm") }}
+                </form>
+                {% endif %}
+            </div>
+        </div>
+    {% endcall %}
+
+    {# Reject modal #}
+    {% call modal("showReject", title="Reject Time Entry") %}
+        <form method="POST" action="{{ url_for('reject_entry', entry_id=entry.id) }}" class="space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            {% if return_url %}
+            <input type="hidden" name="return_url" value="{{ return_url }}"/>
+            {% endif %}
+            {{ textarea("rejection_reason", label="Reason (optional)", placeholder="Why is this entry being rejected?", rows=3) }}
+            <div class="flex items-center justify-end gap-3">
+                {{ btn("Cancel", variant="secondary", attrs='@click="showReject = false"') }}
+                {{ btn("Reject Entry", variant="danger", type="submit") }}
             </div>
         </form>
-    </div>
+    {% endcall %}
 </div>
 {% endblock %}

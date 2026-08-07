@@ -1,54 +1,41 @@
 {% extends "base.html" %}
+{% from "ui/macros.html" import input, select, textarea, card, form_actions %}
+
 {% block title %}Stop Clock - All Inclusive ADU Portal{% endblock %}
 
 {% block content %}
 <div class="max-w-2xl mx-auto">
-    <div class="bg-white shadow-card rounded-2xl">
-        <div class="border-b border-hairline px-6 py-4">
-            <h1 class="text-2xl font-semibold text-txt-primary">Stop Clock</h1>
-            <p class="text-sm text-txt-secondary mt-1">Started {{ active_clock.start_time|format_datetime }} &middot; {{ duration|format_hours }} hours so far</p>
-        </div>
-
-        <form method="POST" class="p-6 space-y-6">
+    {% call card(title="Stop Clock", subtitle="Started " ~ (active_clock.start_time|format_datetime) ~ " &middot; " ~ (duration|format_hours) ~ " hours so far") %}
+        <form method="POST" class="space-y-6">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
 
-            <div>
-                <label for="client_id" class="block text-sm font-semibold text-txt-secondary mb-2">Client</label>
-                <select id="client_id" name="client_id"
-                        class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                        onchange="toggleNewClient(this)">
-                    <option value="">-- Select Client --</option>
-                    <option value="daily_activities">Daily Activities (no client)</option>
-                    {% for client in clients %}
-                    <option value="{{ client.id }}">{{ client.name }}</option>
-                    {% endfor %}
-                    <option value="new">+ Add New Client</option>
-                </select>
-            </div>
+            {{ select("client_id", label="Client", options=[
+                ("", "-- Select Client --"),
+                ("daily_activities", "Daily Activities (no client)")
+            ] + (clients|map(attribute='id')|zip(clients|map(attribute='name'))|list) + [
+                ("new", "+ Add New Client")
+            ], attrs='onchange="toggleNewClient(this)"') }}
 
             <div id="newClientFields" class="hidden space-y-4">
-                <div>
-                    <label for="new_client_name" class="block text-sm font-semibold text-txt-secondary mb-2">New Client Name</label>
-                    <input type="text" id="new_client_name" name="new_client_name"
-                           class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                           placeholder="Client name">
-                </div>
-                <div>
-                    <label for="new_client_address" class="block text-sm font-semibold text-txt-secondary mb-2">New Client Address</label>
-                    <input type="text" id="new_client_address" name="new_client_address"
-                           class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                           placeholder="Client address">
-                </div>
+                {{ input("new_client_name", label="New Client Name", placeholder="Client name") }}
+                {{ input("new_client_address", label="New Client Address", placeholder="Client address") }}
             </div>
 
+            {% if cost_codes %}
             <div>
-                <label for="work_description" class="block text-sm font-semibold text-txt-secondary mb-2">
-                    Work Description <span class="text-neg">*</span>
-                </label>
-                <textarea id="work_description" name="work_description" rows="4" required minlength="10"
-                          class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                          placeholder="Describe the work you did (at least 10 characters)"></textarea>
+                <label for="cost_code_id" class="block text-sm font-semibold text-txt-secondary mb-2">Cost Code</label>
+                <select id="cost_code_id" name="cost_code_id"
+                        class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                    <option value="">-- No Cost Code --</option>
+                    {% for cc in cost_codes %}
+                    <option value="{{ cc.id }}">{{ cc.code }} &mdash; {{ cc.name }}</option>
+                    {% endfor %}
+                </select>
+                <p class="mt-1 text-xs text-txt-muted">Tag this entry for job costing</p>
             </div>
+            {% endif %}
+
+            {{ textarea("work_description", label="Work Description", required=true, minlength=10, placeholder="Describe the work you did (at least 10 characters)") }}
 
             {% if active_clock.break_15_taken or active_clock.lunch_taken %}
             <div class="bg-pill rounded-xl p-4 text-sm text-txt-secondary">
@@ -58,16 +45,9 @@
             </div>
             {% endif %}
 
-            <div class="flex items-center justify-between pt-4 border-t border-hairline">
-                <a href="{{ url_for('home') }}" class="px-6 py-2 bg-pill text-txt-secondary rounded-md font-medium hover:bg-gray-200">
-                    Cancel
-                </a>
-                <button type="submit" class="px-6 py-2 bg-txt-primary text-white rounded-md font-medium hover:bg-txt-primary/80">
-                    Stop Clock & Save
-                </button>
-            </div>
+            {{ form_actions(cancel_href=url_for('home'), submit_text="Stop Clock & Save") }}
         </form>
-    </div>
+    {% endcall %}
 </div>
 
 <script>

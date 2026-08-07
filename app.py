@@ -11,7 +11,8 @@ import logging
 load_dotenv('.env.local')
 load_dotenv('.env')
 
-logging.basicConfig(level=logging.DEBUG)
+_log_level = getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO)
+logging.basicConfig(level=_log_level)
 
 
 class Base(DeclarativeBase):
@@ -19,7 +20,10 @@ class Base(DeclarativeBase):
 
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SESSION_SECRET", "dev-secret-key-for-mobile-time-tracker")
+_secret = os.environ.get("SESSION_SECRET")
+if not _secret:
+    raise RuntimeError("SESSION_SECRET environment variable is required")
+app.secret_key = _secret
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
@@ -77,5 +81,24 @@ with app.app_context():
     if 'hourly_rate' not in auth_user_cols:
         db.session.execute(text('ALTER TABLE authorized_users ADD COLUMN hourly_rate NUMERIC(8, 2) DEFAULT 0'))
         logging.info("Added hourly_rate column to authorized_users")
+
+
+    # Auto-migrate: add payroll/job-costing columns to time_entries if missing
+    te_cols = [c['name'] for c in inspector.get_columns('time_entries')]
+    if 'cost_code_id' not in te_cols:
+        db.session.execute(text('ALTER TABLE time_entries ADD COLUMN cost_code_id INTEGER REFERENCES cost_codes(id)'))
+        logging.info("Added cost_code_id column to time_entries")
+    if 'status' not in te_cols:
+        db.session.execute(text("ALTER TABLE time_entries ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'pending'"))
+        logging.info("Added status column to time_entries")
+    if 'rejection_reason' not in te_cols:
+        db.session.execute(text('ALTER TABLE time_entries ADD COLUMN rejection_reason TEXT'))
+        logging.info("Added rejection_reason column to time_entries")
+    if 'approved_by_user_id' not in te_cols:
+        db.session.execute(text('ALTER TABLE time_entries ADD COLUMN approved_by_user_id VARCHAR REFERENCES users(id)'))
+        logging.info("Added approved_by_user_id column to time_entries")
+    if 'approved_at' not in te_cols:
+        db.session.execute(text('ALTER TABLE time_entries ADD COLUMN approved_at TIMESTAMP'))
+        logging.info("Added approved_at column to time_entries")
 
     db.session.commit()

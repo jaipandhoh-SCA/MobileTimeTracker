@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, input, select, textarea, card, stat_card, table, tr, td, status_badge, modal, empty_state, toast, page_header, form_actions, filter_bar %}
+
+{% block title %}Style Guide - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto space-y-8" x-data="{ showModal: false }">
+
+    {{ page_header("Style Guide", subtitle="UI component library — every macro and state") }}
+
+    {# ── COLOR PALETTE ─────────────────────────────────── #}
+    {% call card(title="Color Palette") %}
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {% set palette = [
+            ("txt-primary", "bg-txt-primary", "#0f172a", "text-white"),
+            ("txt-secondary", "bg-txt-secondary", "#475569", "text-white"),
+            ("txt-muted", "bg-txt-muted", "#94a3b8", "text-white"),
+            ("accent", "bg-accent", "#D6246E", "text-white"),
+            ("pos", "bg-pos", "#10b981", "text-white"),
+            ("neg", "bg-neg", "#ef4444", "text-white"),
+            ("canvas", "bg-canvas", "#f3f4f6", "text-txt-primary"),
+            ("card", "bg-card", "#ffffff", "text-txt-primary"),
+            ("pill", "bg-pill", "#f1f5f9", "text-txt-primary"),
+            ("hairline", "bg-hairline", "#eef2f6", "text-txt-primary")
+        ] %}
+        {% for name, bg, hex, text_cls in palette %}
+        <div class="rounded-xl overflow-hidden shadow-card">
+            <div class="{{ bg }} h-16 flex items-end p-2">
+                <span class="{{ text_cls }} text-xs font-mono font-medium">{{ hex }}</span>
+            </div>
+            <div class="p-2 bg-white">
+                <p class="text-xs font-semibold text-txt-primary">{{ name }}</p>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endcall %}
+
+    {# ── TYPOGRAPHY ────────────────────────────────────── #}
+    {% call card(title="Typography") %}
+    <div class="space-y-3">
+        <p class="text-2xl font-semibold text-txt-primary">Page Title (2xl semibold)</p>
+        <p class="text-base font-semibold text-txt-primary">Section Title (base semibold)</p>
+        <p class="text-sm font-semibold text-txt-primary">Card Title (sm semibold)</p>
+        <p class="text-sm text-txt-secondary">Body text (sm secondary)</p>
+        <p class="text-xs text-txt-muted">Helper text (xs muted)</p>
+        <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">STAT LABEL (xs uppercase)</p>
+        <p class="text-sm font-mono text-txt-secondary">System font stack: ui-sans-serif, system-ui, -apple-system</p>
+    </div>
+    {% endcall %}
+
+    {# ── BUTTONS ───────────────────────────────────────── #}
+    {% call card(title="Buttons") %}
+    <div class="space-y-6">
+        <div>
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide mb-3">Variants</p>
+            <div class="flex flex-wrap gap-3">
+                {{ btn("Primary", variant="primary") }}
+                {{ btn("Secondary", variant="secondary") }}
+                {{ btn("Danger", variant="danger") }}
+                {{ btn("Ghost Link", variant="ghost") }}
+            </div>
+        </div>
+        <div>
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide mb-3">Sizes</p>
+            <div class="flex flex-wrap items-center gap-3">
+                {{ btn("Small", size="sm") }}
+                {{ btn("Medium", size="md") }}
+                {{ btn("Large", size="lg") }}
+            </div>
+        </div>
+        <div>
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide mb-3">States</p>
+            <div class="flex flex-wrap gap-3">
+                {{ btn("Disabled Primary", disabled=true) }}
+                {{ btn("Disabled Secondary", variant="secondary", disabled=true) }}
+            </div>
+        </div>
+    </div>
+    {% endcall %}
+
+    {# ── FORM INPUTS ───────────────────────────────────── #}
+    {% call card(title="Form Inputs") %}
+    <div class="space-y-4 max-w-md">
+        {{ input("demo_text", label="Text Input", placeholder="Enter something...", help="Helper text goes here") }}
+        {{ input("demo_required", label="Required Field", required=true, placeholder="This field is required") }}
+        {{ input("demo_date", label="Date Input", type="date", value="2026-08-07") }}
+        {{ input("demo_number", label="Number Input", type="number", placeholder="0.00", attrs='step="0.25" min="0" max="24"') }}
+        {{ select("demo_select", label="Select Input", options=[
+            ("", "-- Select --"),
+            ("1", "Option One"),
+            ("2", "Option Two"),
+            ("3", "Option Three")
+        ], selected="2") }}
+        {{ textarea("demo_textarea", label="Textarea", placeholder="Describe the work you did...", required=true) }}
+    </div>
+    {% endcall %}
+
+    {# ── STAT CARDS ────────────────────────────────────── #}
+    {% call card(title="Stat Cards") %}
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {{ stat_card("Total Hours", "42.50") }}
+        {{ stat_card("Billable", "38.25") }}
+        {{ stat_card("Entries", "17") }}
+        {{ stat_card("Est. Pay", "$1,062.50") }}
+    </div>
+    {% endcall %}
+
+    {# ── STATUS BADGES ─────────────────────────────────── #}
+    {% call card(title="Status Badges") %}
+    <div class="space-y-4">
+        <div>
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide mb-3">Pipeline Statuses</p>
+            <div class="flex flex-wrap gap-2">
+                {{ status_badge("Lead") }}
+                {{ status_badge("Prospect") }}
+                {{ status_badge("Active") }}
+                {{ status_badge("Completed") }}
+                {{ status_badge("On Hold") }}
+                {{ status_badge("Lost") }}
+            </div>
+        </div>
+        <div>
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide mb-3">Entry Types</p>
+            <div class="flex flex-wrap gap-2">
+                {{ status_badge("Clock", type="entry") }}
+                {{ status_badge("Manual", type="entry") }}
+            </div>
+        </div>
+    </div>
+    {% endcall %}
+
+    {# ── TABLE ─────────────────────────────────────────── #}
+    {% call table(title="Table Example", headers=[
+        {"text": "Date"},
+        {"text": "Client"},
+        {"text": "Hours", "align": "right"},
+        {"text": "Description", "hide_mobile": true},
+        {"text": "Type"}
+    ]) %}
+        {% call tr() %}
+            {% call td() %}08/07/2026{% endcall %}
+            {% call td() %}<span class="text-txt-secondary">Doe Residence</span>{% endcall %}
+            {% call td(align="right") %}<span class="font-medium text-txt-primary">4.50</span>{% endcall %}
+            {% call td(hide_mobile=true) %}<span class="text-txt-secondary">Framing and drywall installation</span>{% endcall %}
+            {% call td() %}{{ status_badge("Clock", type="entry") }}{% endcall %}
+        {% endcall %}
+        {% call tr() %}
+            {% call td() %}08/06/2026{% endcall %}
+            {% call td() %}<span class="text-txt-secondary">Smith ADU</span>{% endcall %}
+            {% call td(align="right") %}<span class="font-medium text-txt-primary">2.25</span>{% endcall %}
+            {% call td(hide_mobile=true) %}<span class="text-txt-secondary">Site inspection and measurements</span>{% endcall %}
+            {% call td() %}{{ status_badge("Manual", type="entry") }}{% endcall %}
+        {% endcall %}
+    {% endcall %}
+
+    {# ── EMPTY STATE ───────────────────────────────────── #}
+    {% call card(title="Empty States") %}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="border border-hairline rounded-2xl">
+            {{ empty_state("No time entries for this period", icon="clock", cta_text="Log your first entry", cta_href="#") }}
+        </div>
+        <div class="border border-hairline rounded-2xl">
+            {{ empty_state("No clients found", icon="users") }}
+        </div>
+    </div>
+    {% endcall %}
+
+    {# ── TOASTS / FLASH ────────────────────────────────── #}
+    {% call card(title="Toast / Flash Messages") %}
+    <div class="space-y-3">
+        {{ toast("Entry saved successfully!", category="success", auto_dismiss=0) }}
+        {{ toast("Something went wrong. Please try again.", category="error", auto_dismiss=0) }}
+        {{ toast("Your session will expire soon.", category="warning", auto_dismiss=0) }}
+        {{ toast("Tip: Use the / key to focus the search bar.", category="info", auto_dismiss=0) }}
+    </div>
+    {% endcall %}
+
+    {# ── MODAL ─────────────────────────────────────────── #}
+    {% call card(title="Modal") %}
+    <div>
+        {{ btn("Open Modal", attrs='@click="showModal = true"') }}
+        {% call modal("showModal", title="Confirm Action") %}
+        <p class="text-sm text-txt-secondary mb-6">Are you sure you want to delete this entry? This action cannot be undone.</p>
+        <div class="flex items-center justify-end gap-3">
+            {{ btn("Cancel", variant="secondary", attrs='@click="showModal = false"') }}
+            {{ btn("Delete", variant="danger") }}
+        </div>
+        {% endcall %}
+    </div>
+    {% endcall %}
+
+    {# ── FORM ACTIONS ──────────────────────────────────── #}
+    {% call card(title="Form Actions Footer") %}
+    {{ form_actions(cancel_href="#", submit_text="Stop Clock & Save") }}
+    {% endcall %}
+
+    {# ── CARD VARIANTS ─────────────────────────────────── #}
+    {% call card(title="Card with Title + Subtitle", subtitle="Supporting description text") %}
+    <p class="text-sm text-txt-secondary">Standard card with header divider, title, and subtitle.</p>
+    {% endcall %}
+
+    {# ── SPACING & TOUCH TARGETS ───────────────────────── #}
+    {% call card(title="Touch Targets & Accessibility") %}
+    <div class="space-y-3">
+        <p class="text-sm text-txt-secondary">All interactive elements meet the 44px minimum tap target for field/mobile use.</p>
+        <div class="flex items-center gap-2">
+            <div class="w-11 h-11 border-2 border-dashed border-accent rounded-xl flex items-center justify-center">
+                <span class="text-[10px] text-accent font-mono">44px</span>
+            </div>
+            <span class="text-xs text-txt-muted">Minimum touch target size</span>
+        </div>
+        <p class="text-sm text-txt-secondary">Focus states use a 2px solid outline for keyboard navigation visibility.</p>
+    </div>
+    {% endcall %}
+
+</div>
+{% endblock %}
