@@ -1,0 +1,416 @@
+{# ============================================================
+   UI MACRO LIBRARY — Jinja2 partials for Tailwind CDN
+   Mobile-first: 44px min tap targets, high contrast for field use.
+   Import: {% from "ui/macros.html" import btn, input, ... %}
+   ============================================================ #}
+
+
+{# ── BUTTON ──────────────────────────────────────────────────
+   Variants: primary | secondary | danger | ghost
+   Sizes:    sm | md | lg
+   tag:      "button" | "a" (renders <a> when href is given)
+
+   Usage:
+     {{ btn("Save", variant="primary") }}
+     {{ btn("Cancel", href="/home", variant="secondary") }}
+     {{ btn("Delete", variant="danger", size="sm") }}
+#}
+{% macro btn(label, variant="primary", size="md", href="", type="button", icon="", disabled=false, classes="", attrs="") %}
+{%- set base = "inline-flex items-center justify-center font-medium transition-colors duration-150 touch-target select-none" -%}
+{%- set sizes = {
+    "sm": "px-3 py-1.5 text-xs rounded-xl gap-1.5",
+    "md": "px-4 py-2.5 text-sm rounded-xl gap-2",
+    "lg": "px-6 py-3 text-base rounded-xl gap-2"
+} -%}
+{%- set variants = {
+    "primary":   "bg-txt-primary text-white hover:bg-txt-primary/80 active:bg-txt-primary/70",
+    "secondary": "bg-pill text-txt-secondary hover:bg-gray-200 active:bg-gray-300",
+    "danger":    "bg-neg text-white hover:bg-neg/80 active:bg-neg/70",
+    "ghost":     "text-txt-secondary hover:text-txt-primary hover:underline"
+} -%}
+{%- set disabled_cls = "opacity-50 cursor-not-allowed pointer-events-none" if disabled else "" -%}
+{%- set tag = "a" if href else "button" -%}
+<{{ tag }}
+    {% if href %}href="{{ href }}"{% else %}type="{{ type }}"{% endif %}
+    class="{{ base }} {{ sizes[size] }} {{ variants[variant] }} {{ disabled_cls }} {{ classes }}"
+    {% if disabled and tag == "button" %}disabled{% endif %}
+    {{ attrs }}>
+    {{ icon }}{{ label }}
+</{{ tag }}>
+{%- endmacro %}
+
+
+{# ── INPUT ───────────────────────────────────────────────────
+   Types: text | email | number | date | password | tel
+   Usage:
+     {{ input("email", label="Email", required=true) }}
+     {{ input("hours", type="number", step="0.25", min="0.25", max="12") }}
+#}
+{% macro input(name, label="", type="text", value="", placeholder="", required=false, help="", classes="", attrs="") %}
+<div>
+    {% if label %}
+    <label for="{{ name }}" class="block text-sm font-semibold text-txt-secondary mb-2">
+        {{ label }}{% if required %} <span class="text-neg">*</span>{% endif %}
+    </label>
+    {% endif %}
+    <input type="{{ type }}" id="{{ name }}" name="{{ name }}"
+           value="{{ value }}"
+           {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+           {% if required %}required{% endif %}
+           class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary placeholder-txt-muted focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target {{ classes }}"
+           {{ attrs }}>
+    {% if help %}
+    <p class="mt-1 text-xs text-txt-muted">{{ help }}</p>
+    {% endif %}
+</div>
+{%- endmacro %}
+
+
+{# ── SELECT ──────────────────────────────────────────────────
+   options: list of (value, text) tuples or list of dicts with 'value'+'text' keys
+   Usage:
+     {{ select("client_id", label="Client", options=client_options, selected=current_id) }}
+#}
+{% macro select(name, label="", options=[], selected="", required=false, help="", classes="", attrs="") %}
+<div>
+    {% if label %}
+    <label for="{{ name }}" class="block text-sm font-semibold text-txt-secondary mb-2">
+        {{ label }}{% if required %} <span class="text-neg">*</span>{% endif %}
+    </label>
+    {% endif %}
+    <select id="{{ name }}" name="{{ name }}"
+            {% if required %}required{% endif %}
+            class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target {{ classes }}"
+            {{ attrs }}>
+        {% for opt in options %}
+            {% if opt is mapping %}
+            <option value="{{ opt.value }}" {% if opt.value|string == selected|string %}selected{% endif %}>{{ opt.text }}</option>
+            {% else %}
+            <option value="{{ opt[0] }}" {% if opt[0]|string == selected|string %}selected{% endif %}>{{ opt[1] }}</option>
+            {% endif %}
+        {% endfor %}
+    </select>
+    {% if help %}
+    <p class="mt-1 text-xs text-txt-muted">{{ help }}</p>
+    {% endif %}
+</div>
+{%- endmacro %}
+
+
+{# ── TEXTAREA ────────────────────────────────────────────────
+   Usage:
+     {{ textarea("notes", label="Work Description", required=true, minlength=10) }}
+#}
+{% macro textarea(name, label="", value="", placeholder="", rows=4, required=false, minlength=0, help="", classes="", attrs="") %}
+<div>
+    {% if label %}
+    <label for="{{ name }}" class="block text-sm font-semibold text-txt-secondary mb-2">
+        {{ label }}{% if required %} <span class="text-neg">*</span>{% endif %}
+    </label>
+    {% endif %}
+    <textarea id="{{ name }}" name="{{ name }}" rows="{{ rows }}"
+              {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+              {% if required %}required{% endif %}
+              {% if minlength %}minlength="{{ minlength }}"{% endif %}
+              class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary placeholder-txt-muted focus:outline-none focus:ring-2 focus:ring-txt-primary/20 {{ classes }}"
+              {{ attrs }}>{{ value }}</textarea>
+    {% if help %}
+    <p class="mt-1 text-xs text-txt-muted">{{ help }}</p>
+    {% endif %}
+</div>
+{%- endmacro %}
+
+
+{# ── CARD ────────────────────────────────────────────────────
+   Wraps content in a standard white card.
+   Usage:
+     {% call card(title="My Card", subtitle="Optional subtitle") %}
+       <p>Card content here</p>
+     {% endcall %}
+#}
+{% macro card(title="", subtitle="", classes="", padding="p-6") %}
+<div class="bg-white shadow-card rounded-2xl {{ classes }}">
+    {% if title %}
+    <div class="border-b border-hairline px-6 py-4">
+        <h2 class="text-base font-semibold text-txt-primary">{{ title }}</h2>
+        {% if subtitle %}
+        <p class="text-sm text-txt-secondary mt-1">{{ subtitle }}</p>
+        {% endif %}
+    </div>
+    {% endif %}
+    <div class="{{ padding }}">
+        {{ caller() }}
+    </div>
+</div>
+{%- endmacro %}
+
+
+{# ── STAT CARD ───────────────────────────────────────────────
+   Small KPI card used in summary grids.
+   Usage:
+     {{ stat_card("Total Hours", "42.50") }}
+     {{ stat_card("Est. Pay", "$1,250.00") }}
+#}
+{% macro stat_card(label, value) %}
+<div class="bg-white shadow-card rounded-2xl p-5">
+    <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">{{ label }}</p>
+    <p class="text-2xl font-semibold text-txt-primary mt-1">{{ value }}</p>
+</div>
+{%- endmacro %}
+
+
+{# ── TABLE ───────────────────────────────────────────────────
+   Renders a data table inside a card.
+   headers: list of dicts { text, align?, hide_mobile?, classes? }
+   Usage:
+     {% call table(headers=[
+         {"text": "Date"},
+         {"text": "Hours", "align": "right"},
+         {"text": "Description", "hide_mobile": true}
+     ]) %}
+       <tr>...</tr>
+     {% endcall %}
+#}
+{% macro table(headers=[], title="", classes="") %}
+<div class="bg-white shadow-card rounded-2xl overflow-hidden {{ classes }}">
+    {% if title %}
+    <div class="px-6 py-4 border-b border-hairline">
+        <h2 class="text-sm font-semibold text-txt-primary">{{ title }}</h2>
+    </div>
+    {% endif %}
+    <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-hairline">
+            <thead class="bg-pill">
+                <tr>
+                    {% for h in headers %}
+                    <th class="px-6 py-3 text-{{ h.align|default('left') }} text-xs font-medium text-txt-muted uppercase {{ 'hidden md:table-cell' if h.hide_mobile else '' }} {{ h.classes|default('') }}">
+                        {{ h.text }}
+                    </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-hairline">
+                {{ caller() }}
+            </tbody>
+        </table>
+    </div>
+</div>
+{%- endmacro %}
+
+
+{# ── TABLE ROW ───────────────────────────────────────────────
+   Consistent hover row wrapper.
+#}
+{% macro tr() %}
+<tr class="hover:bg-pill transition-colors duration-150">
+    {{ caller() }}
+</tr>
+{%- endmacro %}
+
+
+{# ── TABLE CELL ──────────────────────────────────────────────
+   align: left | right | center
+   hide_mobile: hides on small screens
+   truncate: max-w-xs truncate
+#}
+{% macro td(align="left", hide_mobile=false, truncate=false, classes="") %}
+<td class="px-6 py-3 text-sm text-{{ align }} {{ 'whitespace-nowrap' if not truncate else 'max-w-xs truncate' }} {{ 'hidden md:table-cell' if hide_mobile else '' }} {{ classes }}">
+    {{ caller() }}
+</td>
+{%- endmacro %}
+
+
+{# ── STATUS BADGE ────────────────────────────────────────────
+   Pipeline status badges with consistent colors.
+   Usage:
+     {{ status_badge("Lead") }}
+     {{ status_badge("Active") }}
+     {{ status_badge("Manual", type="entry") }}
+#}
+{% macro status_badge(status, type="pipeline") %}
+{%- if type == "pipeline" -%}
+    {%- set badge_map = {
+        "Lead":      "bg-emerald-50 text-emerald-700 border border-emerald-200",
+        "Prospect":  "bg-blue-50 text-blue-700 border border-blue-200",
+        "Active":    "bg-amber-50 text-amber-700 border border-amber-200",
+        "Completed": "bg-pill text-txt-secondary",
+        "On Hold":   "bg-stone-100 text-stone-700 border border-stone-300",
+        "Lost":      "bg-red-50 text-neg border border-red-200"
+    } -%}
+{%- elif type == "entry" -%}
+    {%- set badge_map = {
+        "Clock":  "bg-pill text-txt-secondary",
+        "Manual": "bg-pill text-txt-muted"
+    } -%}
+{%- else -%}
+    {%- set badge_map = {} -%}
+{%- endif -%}
+{%- set cls = badge_map.get(status, "bg-pill text-txt-secondary") -%}
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{ cls }}">
+    {{ status }}
+</span>
+{%- endmacro %}
+
+
+{# ── MODAL ───────────────────────────────────────────────────
+   Alpine.js modal. Requires x-data with a boolean for `show`.
+   Usage:
+     <div x-data="{ showModal: false }">
+       <button @click="showModal = true">Open</button>
+       {% call modal("showModal", title="Confirm Delete") %}
+         <p>Are you sure?</p>
+       {% endcall %}
+     </div>
+#}
+{% macro modal(show_var, title="", size="max-w-lg") %}
+<div x-show="{{ show_var }}"
+     x-cloak
+     x-transition:enter="transition ease-out duration-200"
+     x-transition:enter-start="opacity-0"
+     x-transition:enter-end="opacity-100"
+     x-transition:leave="transition ease-in duration-150"
+     x-transition:leave-start="opacity-100"
+     x-transition:leave-end="opacity-0"
+     class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+     @click.self="{{ show_var }} = false"
+     @keydown.escape.window="{{ show_var }} = false">
+    <div class="bg-white rounded-2xl shadow-card {{ size }} w-full max-h-[85vh] overflow-y-auto"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0 scale-95 translate-y-2"
+         x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100 scale-100"
+         x-transition:leave-end="opacity-0 scale-95">
+        {% if title %}
+        <div class="flex items-center justify-between px-6 py-4 border-b border-hairline">
+            <h3 class="text-lg font-semibold text-txt-primary">{{ title }}</h3>
+            <button @click="{{ show_var }} = false" class="p-1 rounded-lg text-txt-muted hover:text-txt-primary hover:bg-pill transition-colors duration-150 touch-target" aria-label="Close">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+        {% endif %}
+        <div class="p-6">
+            {{ caller() }}
+        </div>
+    </div>
+</div>
+{%- endmacro %}
+
+
+{# ── EMPTY STATE ─────────────────────────────────────────────
+   Centered placeholder for empty lists/tables.
+   Usage:
+     {{ empty_state("No time entries found", icon="clock", cta_text="Log your first entry", cta_href="/quick-log") }}
+#}
+{% macro empty_state(message, icon="default", cta_text="", cta_href="") %}
+{%- set icons = {
+    "clock": '<path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+    "users": '<path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/>',
+    "folder": '<path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/>',
+    "check": '<path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+    "default": '<path stroke-linecap="round" stroke-linejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>'
+} -%}
+<div class="px-6 py-16 text-center">
+    <svg class="mx-auto h-12 w-12 text-txt-muted mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        {{ icons.get(icon, icons['default']) }}
+    </svg>
+    <p class="text-txt-muted text-sm">{{ message }}</p>
+    {% if cta_text and cta_href %}
+    <a href="{{ cta_href }}" class="inline-block mt-3 text-sm text-txt-secondary hover:text-txt-primary hover:underline">{{ cta_text }}</a>
+    {% endif %}
+</div>
+{%- endmacro %}
+
+
+{# ── FLASH / TOAST ───────────────────────────────────────────
+   Renders flash messages. Already in base.html but available
+   as a standalone macro for AJAX-injected toasts.
+   Usage:
+     {{ toast("Saved successfully!", category="success") }}
+#}
+{% macro toast(message, category="info", dismissable=true, auto_dismiss=5000) %}
+{%- set cat_styles = {
+    "error":   "bg-red-50 text-neg",
+    "success": "bg-emerald-50 text-pos",
+    "warning": "bg-amber-50 text-amber-600",
+    "info":    "bg-pill text-txt-secondary"
+} -%}
+{%- set cat_icons = {
+    "error":   '<path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+    "success": '<path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+    "warning": '<path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>',
+    "info":    '<path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>'
+} -%}
+<div x-data="{ show: true }"
+     x-show="show"
+     {% if auto_dismiss %}x-init="setTimeout(() => show = false, {{ auto_dismiss }})"{% endif %}
+     x-transition:leave="transition ease-in duration-300"
+     x-transition:leave-start="opacity-100 translate-y-0"
+     x-transition:leave-end="opacity-0 -translate-y-2"
+     class="flex items-center gap-3 p-4 rounded-2xl {{ cat_styles.get(category, cat_styles['info']) }}"
+     role="alert">
+    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">{{ cat_icons.get(category, cat_icons['info']) }}</svg>
+    <span class="text-sm font-medium">{{ message }}</span>
+    {% if dismissable %}
+    <button @click="show = false" class="ml-auto p-1 rounded hover:bg-black/5 transition-colors duration-150" aria-label="Dismiss">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>
+    {% endif %}
+</div>
+{%- endmacro %}
+
+
+{# ── PAGE HEADER ─────────────────────────────────────────────
+   Standard page header with optional CTA button.
+   Usage:
+     {{ page_header("My Time Logs", subtitle="Current pay period", cta_text="+ Quick Log", cta_href="/quick-log") }}
+#}
+{% macro page_header(title, subtitle="", cta_text="", cta_href="", cta_variant="primary", back_text="", back_href="") %}
+<div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-6">
+    <div>
+        <h1 class="text-2xl font-semibold text-txt-primary">{{ title }}</h1>
+        {% if subtitle %}
+        <p class="text-sm text-txt-secondary mt-1">{{ subtitle }}</p>
+        {% endif %}
+    </div>
+    <div class="flex items-center gap-2">
+        {% if back_text and back_href %}
+        {{ btn(back_text, href=back_href, variant="secondary", size="sm") }}
+        {% endif %}
+        {% if cta_text and cta_href %}
+        {{ btn(cta_text, href=cta_href, variant=cta_variant, size="md") }}
+        {% endif %}
+    </div>
+</div>
+{%- endmacro %}
+
+
+{# ── FORM ACTIONS ────────────────────────────────────────────
+   Footer bar for forms: Cancel + Submit.
+   Usage:
+     {{ form_actions(cancel_href="/home", submit_text="Stop Clock & Save") }}
+#}
+{% macro form_actions(cancel_href="#", cancel_text="Cancel", submit_text="Save", submit_variant="primary") %}
+<div class="flex items-center justify-between pt-4 border-t border-hairline">
+    {{ btn(cancel_text, href=cancel_href, variant="secondary") }}
+    {{ btn(submit_text, variant=submit_variant, type="submit") }}
+</div>
+{%- endmacro %}
+
+
+{# ── FILTER BAR ──────────────────────────────────────────────
+   Wraps filter form controls in a card.
+   Usage:
+     {% call filter_bar() %}
+       {{ select("period", ...) }}
+       {{ input("date_from", type="date", ...) }}
+       {{ btn("Filter", type="submit") }}
+     {% endcall %}
+#}
+{% macro filter_bar(classes="") %}
+<div class="bg-white shadow-card rounded-2xl p-6 mb-6 {{ classes }}">
+    <form method="GET" class="flex flex-wrap items-end gap-4">
+        {{ caller() }}
+    </form>
+</div>
+{%- endmacro %}

@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: adu-portal
+    runtime: python
+    buildCommand: pip install .  # uses pyproject.toml; no requirements.txt needed
+    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: R2_ENDPOINT
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      # Optional integrations
+      - key: GHL_API_KEY
+        sync: false
+      - key: GHL_LOCATION_ID
+        sync: false
+      - key: META_ADS_ACCESS_TOKEN
+        sync: false
+      - key: META_ADS_ACCOUNT_ID
+        sync: false

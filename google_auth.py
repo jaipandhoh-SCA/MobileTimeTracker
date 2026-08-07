@@ -10,7 +10,7 @@ from flask_login import login_user, logout_user, login_required, current_user
 from oauthlib.oauth2 import WebApplicationClient
 from app import db
 from models import User, AuthorizedUser
-from datetime import datetime
+from datetime import datetime, timezone
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "dummy-google-client-id")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "dummy-google-client-secret")
@@ -135,13 +135,13 @@ def callback():
                 user.hourly_rate = authorized_user.hourly_rate
 
         # Set last_login timestamp for new users
-        user.last_login = datetime.utcnow()
+        user.last_login = datetime.now(timezone.utc)
         
         db.session.add(user)
         db.session.commit()
     else:
         # Existing user found by email - update last login and profile picture
-        user.last_login = datetime.utcnow()
+        user.last_login = datetime.now(timezone.utc)
         if profile_picture and not user.profile_image_url:
             user.profile_image_url = profile_picture
         db.session.commit()
@@ -186,7 +186,7 @@ if os.environ.get("ALLOW_DEV_LOGIN") == "true":
             user.last_name = "Admin"
             user.role = "supervisor"
             user.profile_image_url = ""
-            user.last_login = datetime.utcnow()
+            user.last_login = datetime.now(timezone.utc)
             db.session.add(user)
             db.session.commit()
 
@@ -198,7 +198,7 @@ if os.environ.get("ALLOW_DEV_LOGIN") == "true":
                 db.session.add(authorized)
                 db.session.commit()
         else:
-            user.last_login = datetime.utcnow()
+            user.last_login = datetime.now(timezone.utc)
             db.session.commit()
 
         login_user(user)

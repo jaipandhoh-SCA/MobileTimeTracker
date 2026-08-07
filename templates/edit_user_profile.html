@@ -151,6 +151,21 @@
                                     placeholder="0.00">
                                 <p class="mt-1 text-xs text-txt-muted">Used for payroll calculations</p>
                             </div>
+                            <div>
+                                <label for="burden_multiplier" class="block text-sm font-semibold text-txt-secondary mb-2">
+                                    Burden Multiplier (override)
+                                </label>
+                                <input
+                                    type="number"
+                                    id="burden_multiplier"
+                                    name="burden_multiplier"
+                                    value="{{ editing_user.burden_multiplier or '' }}"
+                                    step="0.01"
+                                    min="0"
+                                    class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                                    placeholder="{{ default_burden }}">
+                                <p class="mt-1 text-xs text-txt-muted">Leave blank to use company default ({{ default_burden }}x). Burdened rate = hourly &times; multiplier.</p>
+                            </div>
                         </div>
                     </div>
 

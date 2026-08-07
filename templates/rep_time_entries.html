@@ -1,40 +1,22 @@
 {% extends "base.html" %}
+{% from "ui/macros.html" import btn, stat_card, table, tr, td, status_badge, empty_state, page_header, filter_bar %}
+
 {% block title %}{{ rep.display_name }} - Time Entries{% endblock %}
 
 {% block content %}
 <div class="max-w-6xl mx-auto">
-    <!-- Header -->
-    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-6">
-        <div>
-            <h1 class="text-2xl font-semibold text-txt-primary">{{ rep.display_name }}</h1>
-            <p class="text-sm text-txt-secondary mt-1">{{ summary_label }} &middot; ${{ "%.2f"|format(rep.hourly_rate|float) if rep.hourly_rate else '0.00' }}/hr</p>
-        </div>
-        <a href="{{ url_for('admin_dashboard') }}" class="px-4 py-2 bg-pill text-txt-secondary rounded-xl text-sm font-medium hover:bg-gray-200 transition-colors duration-150">
-            ← Payroll
-        </a>
-    </div>
 
-    <!-- Summary Cards -->
+    {{ page_header(rep.display_name, subtitle=summary_label ~ " &middot; $" ~ ("%.2f"|format(rep.hourly_rate|float) if rep.hourly_rate else "0.00") ~ "/hr", back_text="← Payroll", back_href=url_for('admin_dashboard')) }}
+
+    {# Summary Cards #}
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div class="bg-white shadow-card rounded-2xl p-5">
-            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Total Hours</p>
-            <p class="text-2xl font-semibold text-txt-primary mt-1">{{ "%.2f"|format(summary_hours|float) }}</p>
-        </div>
-        <div class="bg-white shadow-card rounded-2xl p-5">
-            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Billable</p>
-            <p class="text-2xl font-semibold text-txt-primary mt-1">{{ "%.2f"|format(summary_billable|float) }}</p>
-        </div>
-        <div class="bg-white shadow-card rounded-2xl p-5">
-            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Entries</p>
-            <p class="text-2xl font-semibold text-txt-primary mt-1">{{ summary_entry_count }}</p>
-        </div>
-        <div class="bg-white shadow-card rounded-2xl p-5">
-            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Est. Pay</p>
-            <p class="text-2xl font-semibold text-txt-primary mt-1">${{ "%.2f"|format(summary_pay|float) }}</p>
-        </div>
+        {{ stat_card("Approved Hours", "%.2f"|format(summary_hours|float)) }}
+        {{ stat_card("Billable", "%.2f"|format(summary_billable|float)) }}
+        {{ stat_card("Approved Entries", summary_entry_count) }}
+        {{ stat_card("Est. Pay", "$%.2f"|format(summary_pay|float)) }}
     </div>
 
-    <!-- Daily Hours Chart -->
+    {# Daily Hours Chart #}
     <div class="bg-white shadow-card rounded-2xl p-6 mb-6">
         <h2 class="text-sm font-semibold text-txt-primary mb-4">Daily Hours</h2>
         {% if daily_hours and daily_hours|selectattr('hours', 'gt', 0)|list|length > 0 %}
@@ -48,89 +30,78 @@
         {% endif %}
     </div>
 
-    <!-- Filters -->
-    <div class="bg-white shadow-card rounded-2xl p-6 mb-6">
-        <form method="GET" class="flex flex-wrap items-end gap-4">
-            <div>
-                <label class="block text-xs font-medium text-txt-muted mb-1">Period</label>
-                <select name="timeframe" onchange="this.form.submit()"
-                        class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
-                    <option value="current_period" {{ 'selected' if timeframe == 'current_period' }}>Current Pay Period</option>
-                    <option value="previous_period" {{ 'selected' if timeframe == 'previous_period' }}>Previous Pay Period</option>
-                    <option value="month_to_date" {{ 'selected' if timeframe == 'month_to_date' }}>Month to Date</option>
-                    <option value="last_30" {{ 'selected' if timeframe == 'last_30' }}>Last 30 Days</option>
-                </select>
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-txt-muted mb-1">From</label>
-                <input type="date" name="date_from" value="{{ date_from }}"
-                       class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-txt-muted mb-1">To</label>
-                <input type="date" name="date_to" value="{{ date_to }}"
-                       class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-txt-muted mb-1">Client</label>
-                <select name="client_id"
-                        class="px-3 py-2 border border-hairline rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
-                    <option value="">All Clients</option>
-                    {% for c in clients %}
-                    <option value="{{ c.id }}" {{ 'selected' if client_id|string == c.id|string }}>{{ c.name }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <button type="submit" class="px-4 py-2 bg-txt-primary text-white text-sm rounded-md font-medium hover:bg-txt-primary/80">
-                Filter
-            </button>
-        </form>
-    </div>
+    {# Filters #}
+    {% call filter_bar() %}
+        <div>
+            <label class="block text-xs font-medium text-txt-muted mb-1">Period</label>
+            <select name="timeframe" onchange="this.form.submit()"
+                    class="px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                <option value="current_period" {{ 'selected' if timeframe == 'current_period' }}>Current Pay Period</option>
+                <option value="previous_period" {{ 'selected' if timeframe == 'previous_period' }}>Previous Pay Period</option>
+                <option value="month_to_date" {{ 'selected' if timeframe == 'month_to_date' }}>Month to Date</option>
+                <option value="last_30" {{ 'selected' if timeframe == 'last_30' }}>Last 30 Days</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs font-medium text-txt-muted mb-1">From</label>
+            <input type="date" name="date_from" value="{{ date_from }}"
+                   class="px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+        </div>
+        <div>
+            <label class="block text-xs font-medium text-txt-muted mb-1">To</label>
+            <input type="date" name="date_to" value="{{ date_to }}"
+                   class="px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+        </div>
+        <div>
+            <label class="block text-xs font-medium text-txt-muted mb-1">Client</label>
+            <select name="client_id"
+                    class="px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                <option value="">All Clients</option>
+                {% for c in clients %}
+                <option value="{{ c.id }}" {{ 'selected' if client_id|string == c.id|string }}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        {{ btn("Filter", type="submit") }}
+    {% endcall %}
 
-    <!-- Entries Table -->
+    {# Entries Table #}
+    {% if entries %}
+    {% call table(headers=[
+        {"text": "Date"},
+        {"text": "Client"},
+        {"text": "Hours", "align": "right"},
+        {"text": "Status"},
+        {"text": "Description", "hide_mobile": true},
+        {"text": "Type", "hide_mobile": true},
+        {"text": "Actions"}
+    ]) %}
+        {% for entry in entries %}
+        {% call tr() %}
+            {% call td() %}{{ entry.date|format_date }}{% endcall %}
+            {% call td() %}<span class="text-txt-secondary">{{ entry.client.name if entry.client else 'Daily Activities' }}</span>{% endcall %}
+            {% call td(align="right") %}<span class="font-medium text-txt-primary">{{ entry.duration_hours|format_hours }}</span>{% endcall %}
+            {% call td() %}
+                {% if entry.status == 'approved' %}
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">Approved</span>
+                {% elif entry.status == 'rejected' %}
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-50 text-neg border border-red-200">Rejected</span>
+                {% else %}
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">Pending</span>
+                {% endif %}
+            {% endcall %}
+            {% call td(hide_mobile=true, truncate=true) %}<span class="text-txt-secondary">{{ entry.work_description }}</span>{% endcall %}
+            {% call td(hide_mobile=true) %}{{ status_badge('Manual' if entry.is_manual else 'Clock', type="entry") }}{% endcall %}
+            {% call td() %}<a href="{{ url_for('edit_entry', entry_id=entry.id, return_url=request.url) }}" class="text-txt-secondary hover:text-txt-primary hover:underline text-sm">Edit</a>{% endcall %}
+        {% endcall %}
+        {% endfor %}
+    {% endcall %}
+    {% else %}
     <div class="bg-white shadow-card rounded-2xl overflow-hidden">
-        {% if entries %}
-        <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-hairline">
-                <thead class="bg-pill">
-                    <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Date</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Client</th>
-                        <th class="px-6 py-3 text-right text-xs font-medium text-txt-muted uppercase">Hours</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase hidden md:table-cell">Description</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Type</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-hairline">
-                    {% for entry in entries %}
-                    <tr class="hover:bg-pill transition-colors duration-150">
-                        <td class="px-6 py-3 whitespace-nowrap text-sm text-txt-primary">{{ entry.date|format_date }}</td>
-                        <td class="px-6 py-3 whitespace-nowrap text-sm text-txt-secondary">{{ entry.client.name if entry.client else 'Daily Activities' }}</td>
-                        <td class="px-6 py-3 whitespace-nowrap text-sm text-right font-medium text-txt-primary">{{ entry.duration_hours|format_hours }}</td>
-                        <td class="px-6 py-3 text-sm text-txt-secondary max-w-xs truncate hidden md:table-cell">{{ entry.work_description }}</td>
-                        <td class="px-6 py-3 whitespace-nowrap text-sm">
-                            <span class="px-2 py-1 text-xs font-medium rounded-full bg-pill text-txt-muted">
-                                {{ 'Manual' if entry.is_manual else 'Clock' }}
-                            </span>
-                        </td>
-                        <td class="px-6 py-3 whitespace-nowrap text-sm">
-                            <a href="{{ url_for('edit_entry', entry_id=entry.id, return_url=request.url) }}" class="text-txt-secondary hover:text-txt-primary hover:underline">Edit</a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="px-6 py-16 text-center">
-            <svg class="mx-auto h-12 w-12 text-txt-muted mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            <p class="text-txt-muted text-sm">No time entries for this period</p>
-        </div>
-        {% endif %}
+        {{ empty_state("No time entries for this period", icon="clock") }}
     </div>
+    {% endif %}
+
 </div>
 
 {% if daily_hours and daily_hours|selectattr('hours', 'gt', 0)|list|length > 0 %}

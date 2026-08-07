@@ -112,7 +112,7 @@
                         </a>
                         <a href="{{ url_for('edit_profile') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
-                                  {{ 'bg-pill text-txt-primary' if current_endpoint in ['edit_profile', 'manage_users', 'edit_user_profile', 'lead_sources_settings', 'lead_source_backfill', 'integrations_settings'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
+                                  {{ 'bg-pill text-txt-primary' if current_endpoint in ['edit_profile', 'manage_users', 'edit_user_profile', 'lead_sources_settings', 'lead_source_backfill', 'integrations_settings', 'cost_codes_settings'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
                             Settings
                         </a>
                     </div>
@@ -259,6 +259,10 @@
                                     <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
                                     Manage Users
                                 </a>
+                                <a href="{{ url_for('cost_codes_settings') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-txt-secondary hover:bg-pill transition-colors duration-150">
+                                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                                    Cost Codes
+                                </a>
                                 <a href="{{ url_for('lead_sources_settings') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-txt-secondary hover:bg-pill transition-colors duration-150">
                                     <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"/></svg>
                                     Lead Sources
@@ -336,7 +340,7 @@
                 </a>
                 <a href="{{ url_for('edit_profile') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
-                          {{ 'bg-pill text-txt-primary' if current_endpoint in ['edit_profile', 'manage_users', 'lead_sources_settings', 'lead_source_backfill', 'integrations_settings'] else 'text-txt-muted hover:bg-pill' }}">
+                          {{ 'bg-pill text-txt-primary' if current_endpoint in ['edit_profile', 'manage_users', 'lead_sources_settings', 'lead_source_backfill', 'integrations_settings', 'cost_codes_settings'] else 'text-txt-muted hover:bg-pill' }}">
                     Settings
                 </a>
             </div>

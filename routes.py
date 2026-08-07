@@ -1,15 +1,20 @@
 from flask import render_template, request, redirect, url_for, session, jsonify, flash, Response, current_app, abort
 from flask_login import current_user
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import csv
 from io import StringIO, BytesIO
+from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
 from collections import defaultdict
 
 from app import app, db
-from models import User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage, LeadSource, ClientStatusChange, ChannelSpend
+from models import (
+    User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage,
+    LeadSource, ClientStatusChange, ChannelSpend, AppSetting,
+    Project, CostCode, Budget, CostEntry, COST_TYPES, COST_SOURCES,
+)
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
     utc_to_pacific, pacific_to_utc, calculate_duration, round_to_quarter_hour,
@@ -132,7 +137,7 @@ def _build_client_timeline(client, activities):
                 ev['data']['stage_label'] = ev['data']['from_status']
 
     # Compute total deal age and current stage duration
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     total_age_days = (now - client.created_at).days if client.created_at else 0
 
     # Current stage duration: time since last status change
@@ -197,8 +202,8 @@ def _get_integration_status():
         'google_ads': google_ads,
         'any_connected': ghl or meta or google_ads,
         'connected_names': [n for n, v in [('GoHighLevel', ghl), ('Meta', meta), ('Google', google_ads)] if v],
-        'ghl_last_sync': session.get('ghl_last_sync'),
-        'meta_last_sync': session.get('meta_last_sync'),
+        'ghl_last_sync': AppSetting.get('ghl_last_sync'),
+        'meta_last_sync': AppSetting.get('meta_last_sync'),
     }
 
 
@@ -351,6 +356,12 @@ def _build_channel_cards():
     return cards
 
 
+@app.route('/styleguide')
+@require_supervisor
+def styleguide():
+    return render_template('styleguide.html')
+
+
 @app.route('/home')
 @require_login
 def home():
@@ -392,7 +403,7 @@ def home():
             next_steps = ClientActivity.query.join(Client).filter(
                 Client.assigned_to_user_id == filter_user_id,
                 ClientActivity.next_step_date.isnot(None),
-                ClientActivity.next_step_date >= datetime.utcnow()
+                ClientActivity.next_step_date >= datetime.now(timezone.utc)
             ).order_by(ClientActivity.next_step_date.asc()).limit(5).all()
             
             recent_activities = ClientActivity.query.options(joinedload(ClientActivity.user)).join(Client).filter(
@@ -401,7 +412,7 @@ def home():
         else:
             next_steps = ClientActivity.query.join(Client).filter(
                 ClientActivity.next_step_date.isnot(None),
-                ClientActivity.next_step_date >= datetime.utcnow()
+                ClientActivity.next_step_date >= datetime.now(timezone.utc)
             ).order_by(ClientActivity.next_step_date.asc()).limit(5).all()
             
             recent_activities = ClientActivity.query.options(joinedload(ClientActivity.user)).join(Client).order_by(
@@ -411,7 +422,7 @@ def home():
         next_steps = ClientActivity.query.join(Client).filter(
             Client.assigned_to_user_id == current_user.id,
             ClientActivity.next_step_date.isnot(None),
-            ClientActivity.next_step_date >= datetime.utcnow()
+            ClientActivity.next_step_date >= datetime.now(timezone.utc)
         ).order_by(ClientActivity.next_step_date.asc()).limit(5).all()
         
         recent_activities = ClientActivity.query.options(joinedload(ClientActivity.user)).join(Client).filter(
@@ -504,7 +515,7 @@ def home():
     last_week_completed_count = last_completed_q.count()
 
     # === NEEDS ATTENTION (unified) ===
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stale_amber_days = app.config.get('STALE_AMBER_DAYS', 14)
     stale_red_days = app.config.get('STALE_RED_DAYS', 28)
     active_statuses = ['Lead', 'Prospect', 'Active']
@@ -698,7 +709,7 @@ def start_clock():
         flash('You already have an active clock running.', 'warning')
         return redirect(url_for('home'))
 
-    new_clock = ActiveClock(user_id=current_user.id, start_time=datetime.utcnow())
+    new_clock = ActiveClock(user_id=current_user.id, start_time=datetime.now(timezone.utc))
     db.session.add(new_clock)
     db.session.commit()
 
@@ -711,7 +722,7 @@ def start_clock():
 def clock_status():
     active_clock = ActiveClock.query.filter_by(user_id=current_user.id).first()
     if active_clock:
-        elapsed = (datetime.utcnow() - active_clock.start_time).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - active_clock.start_time).total_seconds()
         hours = int(elapsed // 3600)
         minutes = int((elapsed % 3600) // 60)
         seconds = int(elapsed % 60)
@@ -736,7 +747,7 @@ def take_break_15():
     if active_clock.break_15_taken:
         return jsonify({'success': False, 'message': '15-minute break already taken'}), 400
 
-    elapsed = (datetime.utcnow() - active_clock.start_time).total_seconds()
+    elapsed = (datetime.now(timezone.utc) - active_clock.start_time).total_seconds()
     if elapsed < 3600:
         return jsonify({'success': False, 'message': 'Must work at least 1 hour before taking break'}), 400
 
@@ -756,7 +767,7 @@ def take_lunch():
     if active_clock.lunch_taken:
         return jsonify({'success': False, 'message': 'Lunch break already taken'}), 400
 
-    elapsed = (datetime.utcnow() - active_clock.start_time).total_seconds()
+    elapsed = (datetime.now(timezone.utc) - active_clock.start_time).total_seconds()
     if elapsed < 7200:
         return jsonify({'success': False, 'message': 'Must work at least 2 hours before taking lunch'}), 400
 
@@ -776,13 +787,16 @@ def stop_clock():
 
     if request.method == 'GET':
         clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
-        duration = calculate_duration(active_clock.start_time, datetime.utcnow())
+        cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+        duration = calculate_duration(active_clock.start_time, datetime.now(timezone.utc))
         return render_template('stop_clock.html',
                              active_clock=active_clock,
                              clients=clients,
+                             cost_codes=cost_codes,
                              duration=duration)
 
     client_id = request.form.get('client_id')
+    cost_code_id = request.form.get('cost_code_id') or None
     new_client_name = request.form.get('new_client_name', '').strip()
     new_client_address = request.form.get('new_client_address', '').strip()
     work_description = request.form.get('work_description', '').strip()
@@ -802,7 +816,7 @@ def stop_clock():
         flash('Work description must be at least 10 characters.', 'error')
         return redirect(url_for('stop_clock'))
 
-    end_time = datetime.utcnow()
+    end_time = datetime.now(timezone.utc)
     duration = calculate_duration(active_clock.start_time, end_time)
 
     break_deduction = Decimal('0')
@@ -816,6 +830,7 @@ def stop_clock():
     entry = TimeEntry(
         user_id=current_user.id,
         client_id=client_id,
+        cost_code_id=cost_code_id,
         date=utc_to_pacific(end_time).date(),
         start_time=active_clock.start_time,
         end_time=end_time,
@@ -837,10 +852,12 @@ def stop_clock():
 def quick_log():
     if request.method == 'GET':
         clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
-        return render_template('quick_log.html', clients=clients, today=date.today())
+        cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+        return render_template('quick_log.html', clients=clients, cost_codes=cost_codes, today=date.today())
 
     entry_date = request.form.get('date')
     client_id = request.form.get('client_id')
+    cost_code_id = request.form.get('cost_code_id') or None
     new_client_name = request.form.get('new_client_name', '').strip()
     new_client_address = request.form.get('new_client_address', '').strip()
     work_description = request.form.get('work_description', '').strip()
@@ -886,6 +903,7 @@ def quick_log():
     entry = TimeEntry(
         user_id=current_user.id,
         client_id=client_id,
+        cost_code_id=cost_code_id,
         date=entry_date,
         start_time=start_time,
         end_time=start_time,
@@ -949,16 +967,17 @@ def my_logs():
 
     clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
 
-    summary_entries = TimeEntry.query.filter(
+    approved_entries = TimeEntry.query.filter(
         TimeEntry.user_id == current_user.id,
+        TimeEntry.status == 'approved',
         TimeEntry.date >= summary_start,
         TimeEntry.date <= summary_end
     ).all()
 
-    summary_hours = sum((e.duration_hours or 0) for e in summary_entries)
-    summary_billable = sum((e.duration_hours or 0) for e in summary_entries if e.client_id)
-    summary_entry_count = len(summary_entries)
-    summary_unique_clients = len(set(e.client_id for e in summary_entries if e.client_id))
+    summary_hours = sum((e.duration_hours or 0) for e in approved_entries)
+    summary_billable = sum((e.duration_hours or 0) for e in approved_entries if e.client_id)
+    summary_entry_count = len(approved_entries)
+    summary_unique_clients = len(set(e.client_id for e in approved_entries if e.client_id))
     summary_pay = float(summary_hours) * float(current_user.hourly_rate or 0)
     daily_hours = build_daily_hours(summary_entries, summary_start, summary_end)
 
@@ -1005,12 +1024,12 @@ def quick_add_next_step(client_id):
         user_id=current_user.id,
         activity_type='Next Step Scheduled',
         note_text=f"Next step added: {step_type}",
-        activity_date=datetime.utcnow(),
+        activity_date=datetime.now(timezone.utc),
         next_step_description=step_type,
         next_step_date=step_date_utc
     )
     db.session.add(activity)
-    client.updated_at = datetime.utcnow()
+    client.updated_at = datetime.now(timezone.utc)
     db.session.commit()
 
     flash(f'Next step added for {client.name}.', 'success')
@@ -1135,7 +1154,7 @@ def create_client():
         from_status=None,
         to_status=client.status,
         changed_by_user_id=current_user.id,
-        changed_at=client.created_at or datetime.utcnow()
+        changed_at=client.created_at or datetime.now(timezone.utc)
     ))
     db.session.commit()
 
@@ -1207,7 +1226,7 @@ def edit_client(client_id):
             from_status=old_status,
             to_status=status,
             changed_by_user_id=current_user.id,
-            changed_at=datetime.utcnow()
+            changed_at=datetime.now(timezone.utc)
         ))
     
     client.lot_sqft = lot_sqft if lot_sqft else None
@@ -1291,7 +1310,7 @@ def update_client_status(client_id):
             user_id=current_user.id,
             activity_type='Status Change',
             note_text=f'{old_status} → {new_status}',
-            activity_date=datetime.utcnow()
+            activity_date=datetime.now(timezone.utc)
         )
         db.session.add(activity)
 
@@ -1300,7 +1319,7 @@ def update_client_status(client_id):
             from_status=old_status,
             to_status=new_status,
             changed_by_user_id=current_user.id,
-            changed_at=datetime.utcnow()
+            changed_at=datetime.now(timezone.utc)
         )
         db.session.add(status_change)
 
@@ -1411,7 +1430,7 @@ def add_activity(client_id):
                 client.storage_prefix = build_client_prefix(client.name, client.address)
                 db.session.commit()
 
-            timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
             unique_filename = f"{timestamp}_{filename}"
 
             try:
@@ -1538,7 +1557,7 @@ def upload_property_image(client_id):
         file_content = file.read()
         mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
 
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         unique_filename = f"property_{timestamp}_{filename}"
         key = f"{client.storage_prefix}/property-images/{unique_filename}"
 
@@ -1699,7 +1718,7 @@ def upload_to_folder(client_id):
         file_content = file.read()
         mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
 
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         unique_filename = f"{timestamp}_{filename}"
         key = f"{client.storage_prefix}/{folder_key_segment[folder_type]}/{unique_filename}"
 
@@ -1716,7 +1735,7 @@ def upload_to_folder(client_id):
             user_id=current_user.id,
             activity_type=activity_type_map[folder_type],
             note_text=f"Uploaded {filename}",
-            activity_date=datetime.utcnow(),
+            activity_date=datetime.now(timezone.utc),
             file_path=key,
             file_name=filename
         )
@@ -1732,6 +1751,50 @@ def upload_to_folder(client_id):
 
 
 # --- Payroll / Admin Time Tracking Routes ---
+
+
+def _sync_time_entry_cost(entry, approver_id):
+    """Create/update a CostEntry when a time entry is approved.
+
+    Snapshots the employee's rate, burden multiplier, and computed amount
+    so job-cost data is immutable once posted.  Upserts on the unique
+    time_entry_id column for idempotency.
+    """
+    if not entry.client_id or not entry.cost_code_id:
+        return
+    client = Client.query.get(entry.client_id)
+    if not client:
+        return
+    project = client.default_project()
+    employee = entry.user
+    rate = Decimal(str(employee.hourly_rate or 0))
+    hours = Decimal(str(entry.duration_hours or 0))
+    burden = employee.effective_burden_multiplier()
+    amount = (rate * hours * burden).quantize(Decimal('0.01'))
+    CostEntry.upsert_for_time_entry(
+        time_entry_id=entry.id,
+        project_id=project.id,
+        cost_code_id=entry.cost_code_id,
+        cost_type='Labor',
+        source='time',
+        user_id=employee.id,
+        raw_hours=hours,
+        hourly_rate=rate,
+        burden_multiplier=burden,
+        amount=amount,
+        description=entry.work_description[:500] if entry.work_description else None,
+        entry_date=entry.date,
+        committed=False,
+        created_by_user_id=approver_id,
+    )
+
+
+def _remove_time_entry_cost(entry):
+    """Remove the CostEntry when a time entry is unapproved/rejected."""
+    ce = CostEntry.query.filter_by(time_entry_id=entry.id).first()
+    if ce:
+        db.session.delete(ce)
+
 
 @app.route('/admin')
 @require_supervisor
@@ -1776,10 +1839,14 @@ def admin_dashboard():
 
     entries = query.order_by(TimeEntry.date.desc()).all()
 
-    total_hours = sum((e.duration_hours or 0) for e in entries)
-    total_billable = sum((e.duration_hours or 0) for e in entries if e.client_id)
+    approved_entries = [e for e in entries if e.status == 'approved']
+    pending_entries = [e for e in entries if e.status == 'pending']
+
+    total_hours = sum((e.duration_hours or 0) for e in approved_entries)
+    total_billable = sum((e.duration_hours or 0) for e in approved_entries if e.client_id)
+    pending_hours = sum((e.duration_hours or 0) for e in pending_entries)
     entry_count = len(entries)
-    unique_clients = len(set(e.client_id for e in entries if e.client_id))
+    unique_clients = len(set(e.client_id for e in approved_entries if e.client_id))
 
     reps = User.query.filter_by(role='rep').order_by(User.first_name).all()
     supervisors = User.query.filter_by(role='supervisor').order_by(User.first_name).all()
@@ -1790,30 +1857,54 @@ def admin_dashboard():
     next_period_start, next_period_end, next_pay_date = get_next_pay_period_dates()
 
     payroll_data = []
-    for rep in reps:
-        current_hours = TimeEntry.query.filter(
+    for rep in all_users:
+        cur_approved = TimeEntry.query.filter(
             TimeEntry.user_id == rep.id,
+            TimeEntry.status == 'approved',
             TimeEntry.date >= current_period_start,
-            TimeEntry.date <= current_period_end
+            TimeEntry.date <= current_period_end,
         ).all()
-        current_total_hours = sum((e.duration_hours or 0) for e in current_hours)
-        current_pay = float(current_total_hours) * float(rep.hourly_rate or 0)
-
-        next_hours = TimeEntry.query.filter(
+        cur_hours = sum((e.duration_hours or 0) for e in cur_approved)
+        cur_pay = float(cur_hours) * float(rep.hourly_rate or 0)
+        cur_pending = TimeEntry.query.filter(
             TimeEntry.user_id == rep.id,
-            TimeEntry.date >= next_period_start,
-            TimeEntry.date <= next_period_end
-        ).all()
-        next_total_hours = sum((e.duration_hours or 0) for e in next_hours)
-        next_pay = float(next_total_hours) * float(rep.hourly_rate or 0)
+            TimeEntry.status == 'pending',
+            TimeEntry.date >= current_period_start,
+            TimeEntry.date <= current_period_end,
+        ).count()
 
-        payroll_data.append({
-            'rep': rep,
-            'current_hours': float(current_total_hours),
-            'current_pay': current_pay,
-            'next_hours': float(next_total_hours),
-            'next_pay': next_pay
-        })
+        # Costed labor from CostEntries for this employee in current period
+        costed_labor = float(db.session.query(
+            func.coalesce(func.sum(CostEntry.amount), 0)
+        ).filter(
+            CostEntry.user_id == rep.id,
+            CostEntry.cost_type == 'Labor',
+            CostEntry.source == 'time',
+            CostEntry.entry_date >= current_period_start,
+            CostEntry.entry_date <= current_period_end,
+        ).scalar())
+        cost_variance = cur_pay - costed_labor
+
+        nxt_approved = TimeEntry.query.filter(
+            TimeEntry.user_id == rep.id,
+            TimeEntry.status == 'approved',
+            TimeEntry.date >= next_period_start,
+            TimeEntry.date <= next_period_end,
+        ).all()
+        nxt_hours = sum((e.duration_hours or 0) for e in nxt_approved)
+        nxt_pay = float(nxt_hours) * float(rep.hourly_rate or 0)
+
+        if cur_hours > 0 or nxt_hours > 0 or cur_pending > 0:
+            payroll_data.append({
+                'rep': rep,
+                'current_hours': float(cur_hours),
+                'current_pay': cur_pay,
+                'current_pending': cur_pending,
+                'costed_labor': costed_labor,
+                'cost_variance': cost_variance,
+                'next_hours': float(nxt_hours),
+                'next_pay': nxt_pay,
+            })
 
     filtered_payroll_data = None
     filtered_date_from = None
@@ -1837,7 +1928,9 @@ def admin_dashboard():
 
         filtered_payroll_data = []
         for rep in filtered_reps:
-            filtered_query = TimeEntry.query.filter_by(user_id=rep.id)
+            filtered_query = TimeEntry.query.filter_by(user_id=rep.id).filter(
+                TimeEntry.status == 'approved'
+            )
 
             if filtered_date_from:
                 filtered_query = filtered_query.filter(TimeEntry.date >= filtered_date_from)
@@ -1859,18 +1952,72 @@ def admin_dashboard():
                     'pay': filtered_pay
                 })
 
+    # --- Job cost reconciliation: budgeted labor vs costed labor per project ---
+    recon_data = []
+    active_projects = Project.query.join(Client).filter(Client.is_active.is_(True)).all()
+    for proj in active_projects:
+        budgeted = sum(
+            b.amount for b in Budget.query.filter_by(project_id=proj.id, cost_type='Labor').all()
+        )
+        labor_ces = CostEntry.query.filter_by(
+            project_id=proj.id, cost_type='Labor', source='time',
+        ).all()
+        actual = sum(ce.amount for ce in labor_ces)
+        variance = budgeted - actual
+        # Per-employee breakdown within this job
+        emp_breakdown = defaultdict(lambda: {'hours': 0.0, 'gross': 0.0, 'costed': 0.0})
+        for ce in labor_ces:
+            name = ce.employee.display_name if ce.employee else 'Unknown'
+            emp_breakdown[name]['hours'] += float(ce.raw_hours or 0)
+            emp_breakdown[name]['gross'] += float((ce.raw_hours or 0) * (ce.hourly_rate or 0))
+            emp_breakdown[name]['costed'] += float(ce.amount or 0)
+        if budgeted or actual:
+            recon_data.append({
+                'project': proj,
+                'client_name': proj.client.name if proj.client else '',
+                'budgeted': float(budgeted),
+                'actual': float(actual),
+                'variance': float(variance),
+                'pct': float((actual / budgeted * 100).quantize(Decimal('0.1'))) if budgeted else 0,
+                'employees': dict(emp_breakdown),
+            })
+
+    # Per-employee cost code breakdown for current period
+    emp_cost_data = []
+    for rep in all_users:
+        rep_entries = TimeEntry.query.filter(
+            TimeEntry.user_id == rep.id,
+            TimeEntry.status == 'approved',
+            TimeEntry.date >= current_period_start,
+            TimeEntry.date <= current_period_end,
+        ).all()
+        by_code = defaultdict(float)
+        for e in rep_entries:
+            code_label = e.cost_code.code if e.cost_code else 'Untagged'
+            by_code[code_label] += float(e.duration_hours or 0)
+        if by_code:
+            emp_cost_data.append({
+                'rep': rep,
+                'codes': dict(by_code),
+                'total_hours': sum(by_code.values()),
+                'total_pay': sum(by_code.values()) * float(rep.hourly_rate or 0),
+            })
+
     daily_totals = build_daily_hours(
         TimeEntry.query.filter(
             TimeEntry.date >= current_period_start,
-            TimeEntry.date <= current_period_end
+            TimeEntry.date <= current_period_end,
         ).all(),
-        current_period_start, current_period_end
+        current_period_start, current_period_end,
     )
 
     return render_template('admin_dashboard.html',
                          entries=entries,
+                         approved_entries=approved_entries,
+                         pending_entries=pending_entries,
                          total_hours=total_hours,
                          total_billable=total_billable,
+                         pending_hours=pending_hours,
                          entry_count=entry_count,
                          unique_clients=unique_clients,
                          users=all_users,
@@ -1888,7 +2035,115 @@ def admin_dashboard():
                          filtered_payroll_data=filtered_payroll_data,
                          filtered_date_from=filtered_date_from,
                          filtered_date_to=filtered_date_to,
+                         recon_data=recon_data,
+                         emp_cost_data=emp_cost_data,
                          daily_totals=daily_totals)
+
+
+@app.route('/admin/entries/approve', methods=['POST'])
+@require_supervisor
+def approve_entries():
+    entry_ids = request.form.getlist('entry_ids')
+    if not entry_ids:
+        flash('No entries selected.', 'error')
+        return redirect(url_for('admin_dashboard'))
+    now = datetime.now(timezone.utc)
+    count = 0
+    for eid in entry_ids:
+        entry = TimeEntry.query.get(int(eid))
+        if entry and entry.status == 'pending':
+            entry.status = 'approved'
+            entry.approved_by_user_id = current_user.id
+            entry.approved_at = now
+            entry.rejection_reason = None
+            _sync_time_entry_cost(entry, current_user.id)
+            count += 1
+    db.session.commit()
+    flash(f'{count} entries approved.', 'success')
+    return redirect(request.form.get('return_url') or url_for('admin_dashboard'))
+
+
+@app.route('/admin/entries/reject', methods=['POST'])
+@require_supervisor
+def reject_entries():
+    entry_ids = request.form.getlist('entry_ids')
+    reason = request.form.get('rejection_reason', '').strip()
+    if not entry_ids:
+        flash('No entries selected.', 'error')
+        return redirect(url_for('admin_dashboard'))
+    count = 0
+    for eid in entry_ids:
+        entry = TimeEntry.query.get(int(eid))
+        if entry and entry.status in ('pending', 'approved'):
+            if entry.status == 'approved':
+                _remove_time_entry_cost(entry)
+            entry.status = 'rejected'
+            entry.rejection_reason = reason or None
+            entry.approved_by_user_id = current_user.id
+            entry.approved_at = datetime.now(timezone.utc)
+            count += 1
+    db.session.commit()
+    flash(f'{count} entries rejected.', 'success')
+    return redirect(request.form.get('return_url') or url_for('admin_dashboard'))
+
+
+@app.route('/admin/payroll/export')
+@require_supervisor
+def payroll_export():
+    """CSV export of approved time entries mapped to cost codes for QuickBooks."""
+    period_start, period_end, _ = get_pay_period_dates()
+    date_from = request.args.get('date_from')
+    date_to = request.args.get('date_to')
+    try:
+        start = datetime.strptime(date_from, '%Y-%m-%d').date() if date_from else period_start
+        end = datetime.strptime(date_to, '%Y-%m-%d').date() if date_to else period_end
+    except (ValueError, TypeError):
+        start, end = period_start, period_end
+
+    entries = TimeEntry.query.filter(
+        TimeEntry.status == 'approved',
+        TimeEntry.date >= start,
+        TimeEntry.date <= end,
+    ).order_by(TimeEntry.user_id, TimeEntry.date).all()
+
+    si = StringIO()
+    writer = csv.writer(si)
+    # QuickBooks-friendly headers: Customer:Job maps to QB Customer, Class maps to QB Class
+    writer.writerow([
+        'Employee', 'Date', 'Hours', 'Hourly Rate', 'Gross Pay',
+        'Burden Multiplier', 'Burdened Cost',
+        'Cost Code', 'Cost Code Name',
+        'Customer:Job', 'Class',
+        'Description',
+    ])
+    for e in entries:
+        rate = float(e.user.hourly_rate or 0)
+        hours = float(e.duration_hours or 0)
+        burden = float(e.user.effective_burden_multiplier())
+        gross = hours * rate
+        burdened = gross * burden
+        cc_code = e.cost_code.code if e.cost_code else ''
+        writer.writerow([
+            e.user.display_name,
+            e.date.strftime('%m/%d/%Y'),
+            f'{hours:.2f}',
+            f'{rate:.2f}',
+            f'{gross:.2f}',
+            f'{burden:.4f}',
+            f'{burdened:.2f}',
+            cc_code,
+            e.cost_code.name if e.cost_code else '',
+            e.client.name if e.client else 'Overhead',
+            cc_code,  # QB Class = cost code
+            e.work_description,
+        ])
+
+    filename = f"payroll_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}.csv"
+    return Response(
+        si.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename={filename}'},
+    )
 
 
 @app.route('/admin/entry/<int:entry_id>/edit', methods=['GET', 'POST'])
@@ -1899,16 +2154,19 @@ def edit_entry(entry_id):
 
     if request.method == 'GET':
         clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
-        return render_template('edit_entry.html', entry=entry, clients=clients, return_url=return_url)
+        cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+        return render_template('edit_entry.html', entry=entry, clients=clients, cost_codes=cost_codes, return_url=return_url)
 
     entry_date = request.form.get('date')
     client_id = request.form.get('client_id')
+    cost_code_id = request.form.get('cost_code_id') or None
     work_description = request.form.get('work_description', '').strip()
     duration_hours = request.form.get('duration_hours')
 
     try:
         entry.date = datetime.strptime(entry_date, '%Y-%m-%d').date()
         entry.client_id = client_id if client_id else None
+        entry.cost_code_id = cost_code_id
         entry.work_description = work_description
         entry.duration_hours = round_to_quarter_hour(Decimal(duration_hours))
 
@@ -1921,6 +2179,79 @@ def edit_entry(entry_id):
     except Exception as e:
         flash(f'Error updating entry: {str(e)}', 'error')
         return redirect(url_for('edit_entry', entry_id=entry_id, return_url=return_url))
+
+
+@app.route('/admin/entry/<int:entry_id>/approve', methods=['POST'])
+@require_supervisor
+def approve_entry(entry_id):
+    entry = TimeEntry.query.get_or_404(entry_id)
+    return_url = request.form.get('return_url')
+
+    if not entry.client_id:
+        flash('Cannot approve: entry must be assigned to a client.', 'error')
+        return redirect(url_for('edit_entry', entry_id=entry_id, return_url=return_url))
+
+    if not entry.cost_code_id:
+        flash('Cannot approve: a cost code is required.', 'error')
+        return redirect(url_for('edit_entry', entry_id=entry_id, return_url=return_url))
+
+    _sync_time_entry_cost(entry, current_user.id)
+
+    entry.status = 'approved'
+    entry.rejection_reason = None
+    entry.approved_by_user_id = current_user.id
+    entry.approved_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+    hours = entry.duration_hours or 0
+    rate = entry.user.hourly_rate or 0
+    burden = entry.user.effective_burden_multiplier()
+    costed = (Decimal(str(hours)) * Decimal(str(rate)) * burden).quantize(Decimal('0.01'))
+    flash(f'Entry approved. Labor cost ${costed} posted.', 'success')
+    if return_url:
+        return redirect(return_url)
+    return redirect(url_for('admin_dashboard'))
+
+
+@app.route('/admin/entry/<int:entry_id>/reject', methods=['POST'])
+@require_supervisor
+def reject_entry(entry_id):
+    entry = TimeEntry.query.get_or_404(entry_id)
+    return_url = request.form.get('return_url')
+    reason = request.form.get('rejection_reason', '').strip()
+
+    entry.status = 'rejected'
+    entry.rejection_reason = reason or None
+    entry.approved_by_user_id = None
+    entry.approved_at = None
+
+    _remove_time_entry_cost(entry)
+
+    db.session.commit()
+    flash('Entry rejected.', 'success')
+    if return_url:
+        return redirect(return_url)
+    return redirect(url_for('admin_dashboard'))
+
+
+@app.route('/admin/entry/<int:entry_id>/reset-pending', methods=['POST'])
+@require_supervisor
+def reset_entry_pending(entry_id):
+    entry = TimeEntry.query.get_or_404(entry_id)
+    return_url = request.form.get('return_url')
+
+    entry.status = 'pending'
+    entry.rejection_reason = None
+    entry.approved_by_user_id = None
+    entry.approved_at = None
+
+    _remove_time_entry_cost(entry)
+
+    db.session.commit()
+    flash('Entry reset to pending.', 'success')
+    if return_url:
+        return redirect(return_url)
+    return redirect(url_for('admin_dashboard'))
 
 
 @app.route('/admin/rep/<user_id>/entries')
@@ -1975,6 +2306,7 @@ def rep_time_entries(user_id):
 
     summary_entries = TimeEntry.query.filter(
         TimeEntry.user_id == user_id,
+        TimeEntry.status == 'approved',
         TimeEntry.date >= summary_start,
         TimeEntry.date <= summary_end
     ).all()
@@ -2120,7 +2452,7 @@ def edit_profile():
         current_user.phone = phone
         current_user.address = address
 
-        current_user.updated_at = datetime.utcnow()
+        current_user.updated_at = datetime.now(timezone.utc)
         
         db.session.commit()
         
@@ -2167,7 +2499,7 @@ def upload_profile_picture():
     profile_images_folder = os.path.join(os.getcwd(), 'profile_images')
     os.makedirs(profile_images_folder, exist_ok=True)
     
-    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
     unique_filename = f"profile_{current_user.id}_{timestamp}.{ext}"
     file_path = os.path.join(profile_images_folder, unique_filename)
     
@@ -2185,7 +2517,7 @@ def upload_profile_picture():
         file.save(file_path)
         
         current_user.profile_image_url = f'/profile-picture/{unique_filename}'
-        current_user.updated_at = datetime.utcnow()
+        current_user.updated_at = datetime.now(timezone.utc)
         
         db.session.commit()
         
@@ -2247,6 +2579,14 @@ def edit_user_profile(user_id):
         except:
             hourly_rate_val = Decimal('0')
 
+        burden_str = request.form.get('burden_multiplier', '').strip()
+        burden_val = None
+        if burden_str:
+            try:
+                burden_val = Decimal(burden_str)
+            except:
+                pass
+
         user.first_name = first_name
         user.last_name = last_name
         user.email = email
@@ -2254,18 +2594,21 @@ def edit_user_profile(user_id):
         user.address = address
         user.role = role
         user.hourly_rate = hourly_rate_val
+        user.burden_multiplier = burden_val
 
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         db.session.commit()
 
         flash(f'Profile for {user.display_name} updated successfully!', 'success')
         return redirect(url_for('edit_user_profile', user_id=user_id))
-    
+
+    default_burden = AppSetting.get('labor_burden_multiplier', '1.25')
     all_users = User.query.order_by(User.first_name, User.last_name).all()
     clients_assigned_count = Client.query.filter_by(assigned_to_user_id=user.id, is_active=True).count()
     
-    return render_template('edit_user_profile.html', user=user, editing_user=user, 
-                          all_users=all_users, clients_assigned_count=clients_assigned_count)
+    return render_template('edit_user_profile.html', user=user, editing_user=user,
+                          all_users=all_users, clients_assigned_count=clients_assigned_count,
+                          default_burden=default_burden)
 
 
 @app.route('/admin/users/<user_id>/remove', methods=['POST'])
@@ -2325,6 +2668,72 @@ def format_datetime_input_filter(value):
 @app.template_filter('format_hours')
 def format_hours_filter(value):
     return format_hours(value)
+
+
+# --- Cost Code & Burden Settings (Supervisors Only) ---
+
+@app.route('/settings/cost-codes')
+@require_supervisor
+def cost_codes_settings():
+    codes = CostCode.query.order_by(CostCode.sort_order, CostCode.code).all()
+    default_burden = AppSetting.get('labor_burden_multiplier', '1.25')
+    return render_template('cost_codes_settings.html', codes=codes, cost_types=COST_TYPES,
+                         default_burden=default_burden)
+
+
+@app.route('/settings/cost-codes/add', methods=['POST'])
+@require_supervisor
+def add_cost_code():
+    code = request.form.get('code', '').strip()
+    name = request.form.get('name', '').strip()
+    default_cost_type = request.form.get('default_cost_type', 'Other')
+    sort_order = request.form.get('sort_order', '0')
+
+    if not code or not name:
+        flash('Code and name are required.', 'error')
+        return redirect(url_for('cost_codes_settings'))
+
+    existing = CostCode.query.filter_by(code=code).first()
+    if existing:
+        flash(f'Cost code "{code}" already exists.', 'error')
+        return redirect(url_for('cost_codes_settings'))
+
+    try:
+        sort_val = int(sort_order)
+    except:
+        sort_val = 0
+
+    cc = CostCode(code=code, name=name, default_cost_type=default_cost_type, sort_order=sort_val)
+    db.session.add(cc)
+    db.session.commit()
+    flash(f'Cost code {code} - {name} added.', 'success')
+    return redirect(url_for('cost_codes_settings'))
+
+
+@app.route('/settings/cost-codes/<int:code_id>/toggle', methods=['POST'])
+@require_supervisor
+def toggle_cost_code(code_id):
+    cc = CostCode.query.get_or_404(code_id)
+    cc.is_active = not cc.is_active
+    db.session.commit()
+    status = 'activated' if cc.is_active else 'deactivated'
+    flash(f'Cost code {cc.code} {status}.', 'success')
+    return redirect(url_for('cost_codes_settings'))
+
+
+@app.route('/settings/burden-multiplier', methods=['POST'])
+@require_supervisor
+def update_burden_multiplier():
+    value = request.form.get('burden_multiplier', '').strip()
+    try:
+        val = Decimal(value)
+        if val <= 0:
+            raise ValueError
+        AppSetting.set('labor_burden_multiplier', str(val))
+        flash(f'Default burden multiplier updated to {val}.', 'success')
+    except:
+        flash('Invalid burden multiplier. Must be a positive number.', 'error')
+    return redirect(url_for('cost_codes_settings'))
 
 
 # --- Lead Source Management (Supervisors Only) ---
@@ -2564,9 +2973,9 @@ def integrations_settings():
         'location_name': ghl_location_name,
         'has_key': bool(os.environ.get('GHL_API_KEY')),
         'has_location': bool(os.environ.get('GHL_LOCATION_ID')),
-        'last_sync': session.get('ghl_last_sync'),
-        'last_sync_result': session.get('ghl_sync_result'),
-        'last_sync_success': session.get('ghl_sync_success', False),
+        'last_sync': AppSetting.get('ghl_last_sync'),
+        'last_sync_result': AppSetting.get('ghl_sync_result'),
+        'last_sync_success': AppSetting.get('ghl_sync_success') == 'true',
     }
 
     # Meta status
@@ -2582,9 +2991,9 @@ def integrations_settings():
         'account_name': meta_account_name,
         'has_token': bool(os.environ.get('META_ADS_ACCESS_TOKEN')),
         'has_account': bool(os.environ.get('META_ADS_ACCOUNT_ID')),
-        'last_sync': session.get('meta_last_sync'),
-        'last_sync_result': session.get('meta_sync_result'),
-        'last_sync_success': session.get('meta_sync_success', False),
+        'last_sync': AppSetting.get('meta_last_sync'),
+        'last_sync_result': AppSetting.get('meta_sync_result'),
+        'last_sync_success': AppSetting.get('meta_sync_success') == 'true',
     }
 
     # Campaign breakdown for current month
@@ -2601,8 +3010,8 @@ def integrations_settings():
                          meta_status=meta_status,
                          meta_campaigns=meta_campaigns,
                          lead_sources=lead_sources,
-                         ghl_lead_source_id=session.get(_GHL_LEAD_SOURCE_KEY),
-                         meta_lead_source_id=session.get(_META_LEAD_SOURCE_KEY))
+                         ghl_lead_source_id=AppSetting.get(_GHL_LEAD_SOURCE_KEY),
+                         meta_lead_source_id=AppSetting.get(_META_LEAD_SOURCE_KEY))
 
 
 @app.route('/settings/integrations/ghl/test', methods=['POST'])
@@ -2621,10 +3030,10 @@ def ghl_test_connection():
 def save_ghl_lead_source():
     source_id = request.form.get('lead_source_id', '').strip()
     if source_id:
-        session[_GHL_LEAD_SOURCE_KEY] = int(source_id)
+        AppSetting.set(_GHL_LEAD_SOURCE_KEY, source_id)
         flash('GHL lead source mapping saved.', 'success')
     else:
-        session.pop(_GHL_LEAD_SOURCE_KEY, None)
+        AppSetting.set(_GHL_LEAD_SOURCE_KEY, '')
         flash('GHL lead source mapping cleared.', 'success')
     return redirect(url_for('integrations_settings'))
 
@@ -2633,10 +3042,11 @@ def save_ghl_lead_source():
 @require_supervisor
 def ghl_sync_contacts():
     """Import GHL contacts as CRM leads."""
-    lead_source_id = session.get(_GHL_LEAD_SOURCE_KEY)
+    lead_source_id = AppSetting.get(_GHL_LEAD_SOURCE_KEY)
     if not lead_source_id:
         flash('Please set a lead source mapping for GHL first.', 'error')
         return redirect(url_for('integrations_settings'))
+    lead_source_id = int(lead_source_id)
 
     if not ghl_helper.is_configured():
         flash('GoHighLevel is not configured.', 'error')
@@ -2697,9 +3107,9 @@ def ghl_sync_contacts():
     if skipped:
         result += f', skipped {skipped} existing'
 
-    session['ghl_last_sync'] = format_datetime_for_display(datetime.utcnow())
-    session['ghl_sync_result'] = result
-    session['ghl_sync_success'] = True
+    AppSetting.set('ghl_last_sync', format_datetime_for_display(datetime.now(timezone.utc)))
+    AppSetting.set('ghl_sync_result', result)
+    AppSetting.set('ghl_sync_success', 'true')
     flash(result, 'success')
     return redirect(url_for('integrations_settings'))
 
@@ -2720,10 +3130,10 @@ def meta_test_connection():
 def save_meta_lead_source():
     source_id = request.form.get('lead_source_id', '').strip()
     if source_id:
-        session[_META_LEAD_SOURCE_KEY] = int(source_id)
+        AppSetting.set(_META_LEAD_SOURCE_KEY, source_id)
         flash('Meta Ads lead source mapping saved.', 'success')
     else:
-        session.pop(_META_LEAD_SOURCE_KEY, None)
+        AppSetting.set(_META_LEAD_SOURCE_KEY, '')
         flash('Meta Ads lead source mapping cleared.', 'success')
     return redirect(url_for('integrations_settings'))
 
@@ -2732,10 +3142,11 @@ def save_meta_lead_source():
 @require_supervisor
 def meta_sync_spend():
     """Pull Meta Ads spend for current month into ChannelSpend."""
-    lead_source_id = session.get(_META_LEAD_SOURCE_KEY)
+    lead_source_id = AppSetting.get(_META_LEAD_SOURCE_KEY)
     if not lead_source_id:
         flash('Please set a lead source mapping for Meta Ads first.', 'error')
         return redirect(url_for('integrations_settings'))
+    lead_source_id = int(lead_source_id)
 
     if not meta_ads_helper.is_configured():
         flash('Meta Ads is not configured.', 'error')
@@ -2772,9 +3183,9 @@ def meta_sync_spend():
     db.session.commit()
 
     result = f'{action} spend entry: ${spend:,.2f} for {now_pacific.strftime("%B %Y")} ({leads} leads, {clicks:,} clicks)'
-    session['meta_last_sync'] = format_datetime_for_display(datetime.utcnow())
-    session['meta_sync_result'] = result
-    session['meta_sync_success'] = True
+    AppSetting.set('meta_last_sync', format_datetime_for_display(datetime.now(timezone.utc)))
+    AppSetting.set('meta_sync_result', result)
+    AppSetting.set('meta_sync_success', 'true')
     flash(result, 'success')
     return redirect(url_for('integrations_settings'))
 
