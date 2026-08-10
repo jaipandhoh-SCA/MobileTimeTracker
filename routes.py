@@ -14,6 +14,8 @@ from models import (
     User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage,
     LeadSource, ClientStatusChange, ChannelSpend, AppSetting,
     Project, CostCode, Budget, CostEntry, COST_TYPES, COST_SOURCES,
+    AssemblyItem, EstimateTemplate, EstimateTemplateItem,
+    Estimate, EstimateLineItem, ADU_TYPES, ESTIMATE_STATUSES,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -1323,10 +1325,24 @@ def update_client_status(client_id):
         )
         db.session.add(status_change)
 
+    # When status moves to Active, auto-carry accepted estimate into budget
+    estimate_carried = False
+    if old_status != new_status and new_status == 'Active':
+        accepted_est = Estimate.query.filter_by(
+            client_id=client.id, status='Accepted'
+        ).order_by(Estimate.accepted_at.desc()).first()
+        if accepted_est and not client.final_contract_value:
+            project = client.default_project()
+            project.contract_value = accepted_est.total
+            client.final_contract_value = accepted_est.total
+            estimate_carried = True
+
     db.session.commit()
 
     needs_final_value = (new_status == 'Completed' and client.final_contract_value is None)
-    return jsonify({'success': True, 'status': new_status, 'needs_final_value': needs_final_value})
+    return jsonify({'success': True, 'status': new_status,
+                    'needs_final_value': needs_final_value,
+                    'estimate_carried': estimate_carried})
 
 
 @app.route('/clients/<int:client_id>/update_final_value', methods=['POST'])
@@ -3432,6 +3448,453 @@ def roi_report_export():
         si.getvalue(), mimetype='text/csv',
         headers={'Content-Disposition': f'attachment; filename={filename}'}
     )
+
+
+# --- Estimating Routes ---
+
+@app.route('/estimates')
+@require_login
+def estimates_list():
+    client_id = request.args.get('client_id')
+    status_filter = request.args.get('status')
+    query = Estimate.query
+    if client_id:
+        query = query.filter_by(client_id=int(client_id))
+    if status_filter:
+        query = query.filter_by(status=status_filter)
+    estimates = query.order_by(Estimate.updated_at.desc()).all()
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    templates = EstimateTemplate.query.filter_by(is_active=True).order_by(EstimateTemplate.name).all()
+    return render_template('estimates_list.html', estimates=estimates, clients=clients,
+                         templates=templates, statuses=ESTIMATE_STATUSES,
+                         selected_client=client_id, selected_status=status_filter)
+
+
+@app.route('/estimates/create', methods=['GET', 'POST'])
+@require_login
+def create_estimate():
+    if request.method == 'GET':
+        clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+        templates = EstimateTemplate.query.filter_by(is_active=True).order_by(EstimateTemplate.name).all()
+        preselect_client = request.args.get('client_id')
+        preselect_template = request.args.get('template_id')
+        return render_template('estimate_create.html', clients=clients, templates=templates,
+                             adu_types=ADU_TYPES, preselect_client=preselect_client,
+                             preselect_template=preselect_template)
+
+    client_id = request.form.get('client_id')
+    template_id = request.form.get('template_id') or None
+    name = request.form.get('name', '').strip()
+    adu_type = request.form.get('adu_type', '').strip()
+    sqft = request.form.get('sqft', '').strip()
+
+    if not client_id or not name:
+        flash('Client and estimate name are required.', 'error')
+        return redirect(url_for('create_estimate'))
+
+    client = Client.query.get_or_404(int(client_id))
+
+    # Default from template if selected
+    markup, overhead, contingency = Decimal('15'), Decimal('10'), Decimal('5')
+    if template_id:
+        tpl = EstimateTemplate.query.get(int(template_id))
+        if tpl:
+            markup = tpl.default_markup_pct
+            overhead = tpl.default_overhead_pct
+            contingency = tpl.default_contingency_pct
+            if not adu_type:
+                adu_type = tpl.adu_type
+            if not sqft and tpl.default_sqft:
+                sqft = str(tpl.default_sqft)
+
+    # Pull ADU fields from client if not specified
+    if not adu_type and client.type_of_adu:
+        adu_type = client.type_of_adu
+    if not sqft and client.desired_adu_sqft:
+        sqft = client.desired_adu_sqft
+
+    estimate = Estimate(
+        client_id=client.id,
+        template_id=int(template_id) if template_id else None,
+        name=name,
+        adu_type=adu_type or None,
+        sqft=int(sqft) if sqft and sqft.isdigit() else None,
+        markup_pct=markup,
+        overhead_pct=overhead,
+        contingency_pct=contingency,
+        created_by_user_id=current_user.id,
+    )
+    db.session.add(estimate)
+    db.session.flush()
+
+    # Populate line items from template
+    if template_id:
+        tpl = EstimateTemplate.query.get(int(template_id))
+        if tpl:
+            est_sqft = estimate.sqft or tpl.default_sqft or 400
+            for ti in tpl.items.order_by(EstimateTemplateItem.sort_order).all():
+                ai = ti.assembly_item
+                # Scale qty for SF-based items
+                qty = float(ti.default_qty)
+                if ai.unit == 'SF' and est_sqft:
+                    qty = est_sqft  # SF items scale to building size
+                elif ai.unit == 'SQ':
+                    qty = max(1, est_sqft / 100)  # roofing squares
+                elif ai.unit == 'LF':
+                    qty = float(ti.default_qty)  # keep template default for linear items
+
+                li = EstimateLineItem(
+                    estimate_id=estimate.id,
+                    cost_code_id=ai.cost_code_id,
+                    assembly_item_id=ai.id,
+                    description=ai.name,
+                    unit=ai.unit,
+                    qty=Decimal(str(round(qty, 2))),
+                    unit_cost=ai.unit_cost,
+                    labor_pct=ai.labor_pct,
+                    material_pct=ai.material_pct,
+                    waste_pct=ai.waste_pct,
+                    sort_order=ti.sort_order,
+                )
+                db.session.add(li)
+
+    db.session.commit()
+    flash(f'Estimate "{name}" created.', 'success')
+    return redirect(url_for('edit_estimate', estimate_id=estimate.id))
+
+
+@app.route('/estimates/<int:estimate_id>')
+@require_login
+def view_estimate(estimate_id):
+    estimate = Estimate.query.get_or_404(estimate_id)
+    # Group line items by cost code
+    line_items = estimate.line_items.order_by(EstimateLineItem.sort_order).all()
+    grouped = defaultdict(list)
+    for li in line_items:
+        key = li.cost_code.code if li.cost_code else 'Other'
+        grouped[key].append(li)
+    show_internal = request.args.get('internal', '1') == '1'
+    return render_template('estimate_view.html', estimate=estimate,
+                         grouped=dict(grouped), line_items=line_items,
+                         show_internal=show_internal)
+
+
+@app.route('/estimates/<int:estimate_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_estimate(estimate_id):
+    estimate = Estimate.query.get_or_404(estimate_id)
+
+    if request.method == 'GET':
+        line_items = estimate.line_items.order_by(EstimateLineItem.sort_order).all()
+        cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+        assembly_items = AssemblyItem.query.filter_by(is_active=True).order_by(AssemblyItem.sort_order).all()
+        return render_template('estimate_edit.html', estimate=estimate,
+                             line_items=line_items, cost_codes=cost_codes,
+                             assembly_items=assembly_items, adu_types=ADU_TYPES,
+                             statuses=ESTIMATE_STATUSES)
+
+    # Update estimate header
+    estimate.name = request.form.get('name', estimate.name).strip()
+    estimate.adu_type = request.form.get('adu_type', '').strip() or None
+    sqft_str = request.form.get('sqft', '').strip()
+    estimate.sqft = int(sqft_str) if sqft_str and sqft_str.isdigit() else None
+    estimate.notes = request.form.get('notes', '').strip() or None
+
+    try:
+        estimate.markup_pct = Decimal(request.form.get('markup_pct', '15'))
+        estimate.overhead_pct = Decimal(request.form.get('overhead_pct', '10'))
+        estimate.contingency_pct = Decimal(request.form.get('contingency_pct', '5'))
+    except (InvalidOperation, ValueError):
+        pass
+
+    status = request.form.get('status', '').strip()
+    if status and status in ESTIMATE_STATUSES:
+        if status == 'Accepted' and estimate.status != 'Accepted':
+            estimate.accepted_at = datetime.now(timezone.utc)
+        estimate.status = status
+
+    db.session.commit()
+    flash('Estimate updated.', 'success')
+    return redirect(url_for('edit_estimate', estimate_id=estimate.id))
+
+
+@app.route('/estimates/<int:estimate_id>/line-items', methods=['POST'])
+@require_login
+def add_estimate_line_item(estimate_id):
+    estimate = Estimate.query.get_or_404(estimate_id)
+    cost_code_id = request.form.get('cost_code_id')
+    assembly_item_id = request.form.get('assembly_item_id') or None
+    description = request.form.get('description', '').strip()
+    unit = request.form.get('unit', 'EA').strip()
+
+    if not cost_code_id or not description:
+        flash('Cost code and description are required.', 'error')
+        return redirect(url_for('edit_estimate', estimate_id=estimate.id))
+
+    # Pre-fill from assembly item if selected
+    unit_cost, labor_pct, material_pct, waste_pct, qty = Decimal('0'), Decimal('50'), Decimal('50'), Decimal('5'), Decimal('1')
+    if assembly_item_id:
+        ai = AssemblyItem.query.get(int(assembly_item_id))
+        if ai:
+            unit_cost = ai.unit_cost
+            labor_pct = ai.labor_pct
+            material_pct = ai.material_pct
+            waste_pct = ai.waste_pct
+            unit = ai.unit
+            if not description:
+                description = ai.name
+
+    try:
+        qty = Decimal(request.form.get('qty', '1'))
+        unit_cost = Decimal(request.form.get('unit_cost', str(unit_cost)))
+    except (InvalidOperation, ValueError):
+        pass
+
+    max_sort = db.session.query(func.max(EstimateLineItem.sort_order)).filter_by(estimate_id=estimate.id).scalar() or 0
+
+    li = EstimateLineItem(
+        estimate_id=estimate.id,
+        cost_code_id=int(cost_code_id),
+        assembly_item_id=int(assembly_item_id) if assembly_item_id else None,
+        description=description,
+        unit=unit,
+        qty=qty,
+        unit_cost=unit_cost,
+        labor_pct=labor_pct,
+        material_pct=material_pct,
+        waste_pct=waste_pct,
+        sort_order=max_sort + 10,
+    )
+    db.session.add(li)
+    db.session.commit()
+    flash('Line item added.', 'success')
+    return redirect(url_for('edit_estimate', estimate_id=estimate.id))
+
+
+@app.route('/estimates/<int:estimate_id>/line-items/<int:item_id>/update', methods=['POST'])
+@require_login
+def update_estimate_line_item(estimate_id, item_id):
+    li = EstimateLineItem.query.get_or_404(item_id)
+    if li.estimate_id != estimate_id:
+        abort(404)
+    try:
+        li.description = request.form.get('description', li.description).strip()
+        li.qty = Decimal(request.form.get('qty', str(li.qty)))
+        li.unit_cost = Decimal(request.form.get('unit_cost', str(li.unit_cost)))
+        li.unit = request.form.get('unit', li.unit).strip()
+        li.waste_pct = Decimal(request.form.get('waste_pct', str(li.waste_pct)))
+        li.labor_pct = Decimal(request.form.get('labor_pct', str(li.labor_pct)))
+        li.material_pct = Decimal(request.form.get('material_pct', str(li.material_pct)))
+    except (InvalidOperation, ValueError):
+        flash('Invalid number format.', 'error')
+        return redirect(url_for('edit_estimate', estimate_id=estimate_id))
+    db.session.commit()
+    return redirect(url_for('edit_estimate', estimate_id=estimate_id))
+
+
+@app.route('/estimates/<int:estimate_id>/line-items/<int:item_id>/delete', methods=['POST'])
+@require_login
+def delete_estimate_line_item(estimate_id, item_id):
+    li = EstimateLineItem.query.get_or_404(item_id)
+    if li.estimate_id != estimate_id:
+        abort(404)
+    db.session.delete(li)
+    db.session.commit()
+    flash('Line item removed.', 'success')
+    return redirect(url_for('edit_estimate', estimate_id=estimate_id))
+
+
+@app.route('/estimates/<int:estimate_id>/duplicate', methods=['POST'])
+@require_login
+def duplicate_estimate(estimate_id):
+    orig = Estimate.query.get_or_404(estimate_id)
+    new_est = Estimate(
+        client_id=orig.client_id,
+        template_id=orig.template_id,
+        name=f"{orig.name} (Copy)",
+        adu_type=orig.adu_type,
+        sqft=orig.sqft,
+        markup_pct=orig.markup_pct,
+        overhead_pct=orig.overhead_pct,
+        contingency_pct=orig.contingency_pct,
+        notes=orig.notes,
+        created_by_user_id=current_user.id,
+    )
+    db.session.add(new_est)
+    db.session.flush()
+    for li in orig.line_items.all():
+        new_li = EstimateLineItem(
+            estimate_id=new_est.id,
+            cost_code_id=li.cost_code_id,
+            assembly_item_id=li.assembly_item_id,
+            description=li.description,
+            unit=li.unit,
+            qty=li.qty,
+            unit_cost=li.unit_cost,
+            labor_pct=li.labor_pct,
+            material_pct=li.material_pct,
+            waste_pct=li.waste_pct,
+            sort_order=li.sort_order,
+        )
+        db.session.add(new_li)
+    db.session.commit()
+    flash(f'Estimate duplicated as "{new_est.name}".', 'success')
+    return redirect(url_for('edit_estimate', estimate_id=new_est.id))
+
+
+@app.route('/estimates/<int:estimate_id>/accept', methods=['POST'])
+@require_supervisor
+def accept_estimate(estimate_id):
+    """Accept estimate: carry into Client budget by cost code, set contract value."""
+    estimate = Estimate.query.get_or_404(estimate_id)
+    client = estimate.client
+    project = client.default_project()
+
+    # Mark accepted
+    estimate.status = 'Accepted'
+    estimate.accepted_at = datetime.now(timezone.utc)
+
+    # Set contract value from estimate total
+    project.contract_value = estimate.total
+    client.final_contract_value = estimate.total
+
+    # Carry line items into Budget by cost code + cost type
+    # Group line items by cost_code_id, split into Labor and Material budgets
+    code_labor = defaultdict(Decimal)
+    code_material = defaultdict(Decimal)
+    for li in estimate.line_items.all():
+        ext = li.extended_cost
+        code_labor[li.cost_code_id] += li.labor_amount
+        code_material[li.cost_code_id] += li.material_amount
+
+    # Add overhead, markup, contingency proportionally
+    subtotal = estimate.subtotal
+    if subtotal > 0:
+        multiplier = estimate.total / subtotal
+    else:
+        multiplier = Decimal('1')
+
+    for cc_id, labor_amt in code_labor.items():
+        scaled = (labor_amt * multiplier).quantize(Decimal('0.01'))
+        existing = Budget.query.filter_by(project_id=project.id, cost_code_id=cc_id, cost_type='Labor').first()
+        if existing:
+            existing.amount = scaled
+            existing.notes = f'From estimate #{estimate.id}'
+        else:
+            db.session.add(Budget(
+                project_id=project.id, cost_code_id=cc_id,
+                cost_type='Labor', amount=scaled,
+                notes=f'From estimate #{estimate.id}',
+            ))
+
+    for cc_id, mat_amt in code_material.items():
+        scaled = (mat_amt * multiplier).quantize(Decimal('0.01'))
+        existing = Budget.query.filter_by(project_id=project.id, cost_code_id=cc_id, cost_type='Material').first()
+        if existing:
+            existing.amount = scaled
+            existing.notes = f'From estimate #{estimate.id}'
+        else:
+            db.session.add(Budget(
+                project_id=project.id, cost_code_id=cc_id,
+                cost_type='Material', amount=scaled,
+                notes=f'From estimate #{estimate.id}',
+            ))
+
+    db.session.commit()
+
+    budget_count = Budget.query.filter_by(project_id=project.id).count()
+    flash(f'Estimate accepted. ${estimate.total:,.2f} contract value set. '
+          f'{budget_count} budget lines created for {client.name}.', 'success')
+    return redirect(url_for('view_estimate', estimate_id=estimate.id))
+
+
+@app.route('/estimates/<int:estimate_id>/delete', methods=['POST'])
+@require_supervisor
+def delete_estimate(estimate_id):
+    estimate = Estimate.query.get_or_404(estimate_id)
+    client_id = estimate.client_id
+    if estimate.status == 'Accepted':
+        flash('Cannot delete an accepted estimate.', 'error')
+        return redirect(url_for('view_estimate', estimate_id=estimate.id))
+    db.session.delete(estimate)
+    db.session.commit()
+    flash('Estimate deleted.', 'success')
+    return redirect(url_for('estimates_list', client_id=client_id))
+
+
+@app.route('/api/assembly-items/<int:item_id>')
+@require_login
+def api_assembly_item(item_id):
+    """Return assembly item details as JSON for dynamic form population."""
+    ai = AssemblyItem.query.get_or_404(item_id)
+    return jsonify({
+        'id': ai.id,
+        'name': ai.name,
+        'unit': ai.unit,
+        'unit_cost': float(ai.unit_cost),
+        'labor_pct': float(ai.labor_pct),
+        'material_pct': float(ai.material_pct),
+        'waste_pct': float(ai.waste_pct),
+        'cost_code_id': ai.cost_code_id,
+    })
+
+
+# Stub: PDF takeoff interface (not yet built)
+@app.route('/estimates/<int:estimate_id>/takeoff')
+@require_login
+def estimate_takeoff(estimate_id):
+    """Stub for future on-screen PDF takeoff interface."""
+    estimate = Estimate.query.get_or_404(estimate_id)
+    flash('PDF takeoff is coming soon. Use the estimate builder for now.', 'info')
+    return redirect(url_for('edit_estimate', estimate_id=estimate.id))
+
+
+# --- Assembly Item Management ---
+
+@app.route('/settings/assembly-items')
+@require_supervisor
+def assembly_items_settings():
+    items = AssemblyItem.query.order_by(AssemblyItem.sort_order).all()
+    cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+    return render_template('assembly_items_settings.html', items=items, cost_codes=cost_codes)
+
+
+@app.route('/settings/assembly-items/add', methods=['POST'])
+@require_supervisor
+def add_assembly_item():
+    name = request.form.get('name', '').strip()
+    cost_code_id = request.form.get('cost_code_id')
+    if not name or not cost_code_id:
+        flash('Name and cost code are required.', 'error')
+        return redirect(url_for('assembly_items_settings'))
+    try:
+        ai = AssemblyItem(
+            cost_code_id=int(cost_code_id),
+            name=name,
+            description=request.form.get('description', '').strip() or None,
+            unit=request.form.get('unit', 'EA').strip(),
+            unit_cost=Decimal(request.form.get('unit_cost', '0')),
+            labor_pct=Decimal(request.form.get('labor_pct', '50')),
+            material_pct=Decimal(request.form.get('material_pct', '50')),
+            waste_pct=Decimal(request.form.get('waste_pct', '5')),
+            sort_order=int(request.form.get('sort_order', '0')),
+        )
+        db.session.add(ai)
+        db.session.commit()
+        flash(f'Assembly item "{name}" added.', 'success')
+    except (InvalidOperation, ValueError) as e:
+        flash(f'Invalid input: {e}', 'error')
+    return redirect(url_for('assembly_items_settings'))
+
+
+@app.route('/settings/assembly-items/<int:item_id>/toggle', methods=['POST'])
+@require_supervisor
+def toggle_assembly_item(item_id):
+    ai = AssemblyItem.query.get_or_404(item_id)
+    ai.is_active = not ai.is_active
+    db.session.commit()
+    flash(f'Assembly item "{ai.name}" {"activated" if ai.is_active else "deactivated"}.', 'success')
+    return redirect(url_for('assembly_items_settings'))
 
 
 @app.route('/api/search')

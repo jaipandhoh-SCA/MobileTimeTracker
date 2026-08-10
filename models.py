@@ -26,7 +26,8 @@ class User(UserMixin, db.Model):
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
     last_login = db.Column(db.DateTime, nullable=True)
 
-    time_entries = db.relationship('TimeEntry', backref='user', lazy='dynamic')
+    time_entries = db.relationship('TimeEntry', backref='user', lazy='dynamic',
+                                   foreign_keys='TimeEntry.user_id')
     active_clock = db.relationship('ActiveClock', backref='user', uselist=False)
 
     def effective_burden_multiplier(self):
@@ -147,6 +148,9 @@ class Client(db.Model):
 COST_TYPES = ['Labor', 'Material', 'Subcontractor', 'Equipment', 'Other']
 PROJECT_STATUSES = ['Planning', 'Permitted', 'In Progress', 'Completed', 'On Hold']
 COST_SOURCES = ['time', 'payroll', 'po', 'invoice', 'manual']
+
+ADU_TYPES = ['Studio', '1BR', '2BR', 'Detached', 'Garage Conversion']
+ESTIMATE_STATUSES = ['Draft', 'Sent', 'Accepted', 'Rejected', 'Expired']
 
 
 class Project(db.Model):
@@ -297,6 +301,194 @@ class CostEntry(db.Model):
 
     def __repr__(self):
         return f'<CostEntry {self.id} - {self.source} ${self.amount}>'
+
+
+class AssemblyItem(db.Model):
+    """Maintainable cost/assembly database — unit costs for ADU construction."""
+    __tablename__ = 'assembly_items'
+    id = db.Column(db.Integer, primary_key=True)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=False)
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.String(500), nullable=True)
+    unit = db.Column(db.String(20), nullable=False, default='EA')
+    unit_cost = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+    labor_pct = db.Column(db.Numeric(5, 2), nullable=False, default=50)
+    material_pct = db.Column(db.Numeric(5, 2), nullable=False, default=50)
+    waste_pct = db.Column(db.Numeric(5, 2), nullable=False, default=5)
+    default_qty = db.Column(db.Numeric(10, 2), nullable=True)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    cost_code = db.relationship('CostCode')
+
+    __table_args__ = (
+        Index('idx_assembly_cost_code', 'cost_code_id'),
+    )
+
+    @property
+    def labor_cost(self):
+        return (self.unit_cost * self.labor_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def material_cost(self):
+        return (self.unit_cost * self.material_pct / 100).quantize(Decimal('0.01'))
+
+
+class EstimateTemplate(db.Model):
+    """Reusable ADU estimate templates (Studio, 1BR, etc.)."""
+    __tablename__ = 'estimate_templates'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    adu_type = db.Column(db.String(50), nullable=False)
+    description = db.Column(db.String(500), nullable=True)
+    default_sqft = db.Column(db.Integer, nullable=True)
+    default_markup_pct = db.Column(db.Numeric(5, 2), nullable=False, default=15)
+    default_overhead_pct = db.Column(db.Numeric(5, 2), nullable=False, default=10)
+    default_contingency_pct = db.Column(db.Numeric(5, 2), nullable=False, default=5)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    items = db.relationship('EstimateTemplateItem', backref='template',
+                            lazy='dynamic', cascade='all, delete-orphan',
+                            order_by='EstimateTemplateItem.sort_order')
+
+
+class EstimateTemplateItem(db.Model):
+    """Line items preloaded into a template."""
+    __tablename__ = 'estimate_template_items'
+    id = db.Column(db.Integer, primary_key=True)
+    template_id = db.Column(db.Integer, db.ForeignKey('estimate_templates.id'), nullable=False)
+    assembly_item_id = db.Column(db.Integer, db.ForeignKey('assembly_items.id'), nullable=False)
+    default_qty = db.Column(db.Numeric(10, 2), nullable=False, default=1)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    assembly_item = db.relationship('AssemblyItem')
+
+    __table_args__ = (
+        Index('idx_eti_template', 'template_id'),
+    )
+
+
+class Estimate(db.Model):
+    """A concrete estimate for a client."""
+    __tablename__ = 'estimates'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    template_id = db.Column(db.Integer, db.ForeignKey('estimate_templates.id'), nullable=True)
+    name = db.Column(db.String(200), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='Draft')
+    adu_type = db.Column(db.String(50), nullable=True)
+    sqft = db.Column(db.Integer, nullable=True)
+    markup_pct = db.Column(db.Numeric(5, 2), nullable=False, default=15)
+    overhead_pct = db.Column(db.Numeric(5, 2), nullable=False, default=10)
+    contingency_pct = db.Column(db.Numeric(5, 2), nullable=False, default=5)
+    notes = db.Column(db.Text, nullable=True)
+    accepted_at = db.Column(db.DateTime, nullable=True)
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('estimates', lazy='dynamic'))
+    template = db.relationship('EstimateTemplate')
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+    line_items = db.relationship('EstimateLineItem', backref='estimate',
+                                lazy='dynamic', cascade='all, delete-orphan',
+                                order_by='EstimateLineItem.sort_order')
+
+    __table_args__ = (
+        Index('idx_estimate_client', 'client_id'),
+    )
+
+    @property
+    def subtotal(self):
+        """Sum of all line item extended costs (with waste)."""
+        total = Decimal('0')
+        for li in self.line_items.all():
+            total += li.extended_cost
+        return total
+
+    @property
+    def overhead_amount(self):
+        return (self.subtotal * self.overhead_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def markup_amount(self):
+        return (self.subtotal * self.markup_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def contingency_amount(self):
+        return (self.subtotal * self.contingency_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def total(self):
+        return self.subtotal + self.overhead_amount + self.markup_amount + self.contingency_amount
+
+    @property
+    def internal_cost(self):
+        """Cost before markup — what it actually costs us."""
+        return self.subtotal + self.overhead_amount + self.contingency_amount
+
+    def labor_subtotal(self):
+        total = Decimal('0')
+        for li in self.line_items.all():
+            total += li.labor_amount
+        return total
+
+    def material_subtotal(self):
+        total = Decimal('0')
+        for li in self.line_items.all():
+            total += li.material_amount
+        return total
+
+
+class EstimateLineItem(db.Model):
+    """A single line item on an estimate."""
+    __tablename__ = 'estimate_line_items'
+    id = db.Column(db.Integer, primary_key=True)
+    estimate_id = db.Column(db.Integer, db.ForeignKey('estimates.id'), nullable=False)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=False)
+    assembly_item_id = db.Column(db.Integer, db.ForeignKey('assembly_items.id'), nullable=True)
+    description = db.Column(db.String(300), nullable=False)
+    unit = db.Column(db.String(20), nullable=False, default='EA')
+    qty = db.Column(db.Numeric(10, 2), nullable=False, default=1)
+    unit_cost = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+    labor_pct = db.Column(db.Numeric(5, 2), nullable=False, default=50)
+    material_pct = db.Column(db.Numeric(5, 2), nullable=False, default=50)
+    waste_pct = db.Column(db.Numeric(5, 2), nullable=False, default=5)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    cost_code = db.relationship('CostCode')
+    assembly_item = db.relationship('AssemblyItem')
+
+    __table_args__ = (
+        Index('idx_eli_estimate', 'estimate_id'),
+    )
+
+    @property
+    def base_extended(self):
+        """qty * unit_cost."""
+        return (self.qty * self.unit_cost).quantize(Decimal('0.01'))
+
+    @property
+    def waste_amount(self):
+        return (self.base_extended * self.waste_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def extended_cost(self):
+        """qty * unit_cost * (1 + waste_pct/100)."""
+        return self.base_extended + self.waste_amount
+
+    @property
+    def labor_amount(self):
+        return (self.extended_cost * self.labor_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def material_amount(self):
+        return (self.extended_cost * self.material_pct / 100).quantize(Decimal('0.01'))
 
 
 class TimeEntry(db.Model):

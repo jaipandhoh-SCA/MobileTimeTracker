@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import input, select, btn, card, form_actions %}
+
+{% block title %}New Estimate - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto">
+    {% call card(title="Create Estimate") %}
+        <form method="POST" class="space-y-6">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+            {{ select("client_id", label="Client", options=[("", "Select a client...")] + (clients|map(attribute='id')|zip(clients|map(attribute='name'))|list), selected=preselect_client|default(''), required=true) }}
+
+            {{ select("template_id", label="ADU Template (optional)", options=[("", "Blank estimate")] + (templates|map(attribute='id')|zip(templates|map(attribute='name'))|list), selected=preselect_template|default('')) }}
+
+            {{ input("name", label="Estimate Name", placeholder="e.g. Smith Residence - Studio ADU", required=true) }}
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {{ select("adu_type", label="ADU Type", options=[("", "Select type...")] + (adu_types|map('string')|zip(adu_types)|list)) }}
+                {{ input("sqft", label="Square Footage", type="number", placeholder="e.g. 400", attrs='min="100" max="2000"') }}
+            </div>
+
+            {{ form_actions(cancel_href=url_for('estimates_list'), submit_text="Create Estimate") }}
+        </form>
+    {% endcall %}
+</div>
+{% endblock %}

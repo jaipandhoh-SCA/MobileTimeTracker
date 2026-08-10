@@ -457,6 +457,24 @@
         </div>
 
         <div class="lg:col-span-6 space-y-6">
+            {# Estimates quick access #}
+            <div class="bg-white rounded-2xl shadow-card p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-sm font-semibold text-txt-primary">Estimates</h3>
+                        {% set est_count = client.estimates.count() if client.estimates else 0 %}
+                        <p class="text-xs text-txt-muted mt-0.5">{{ est_count }} estimate{{ 's' if est_count != 1 else '' }}</p>
+                    </div>
+                    <div class="flex gap-2">
+                        {% if est_count > 0 %}
+                        <a href="{{ url_for('estimates_list', client_id=client.id) }}" class="text-xs text-txt-secondary hover:text-txt-primary hover:underline">View All</a>
+                        {% endif %}
+                        <a href="{{ url_for('create_estimate', client_id=client.id) }}"
+                           class="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-medium bg-txt-primary text-white hover:bg-txt-primary/80 transition-colors touch-target">+ New Estimate</a>
+                    </div>
+                </div>
+            </div>
+
             <div class="bg-white rounded-2xl shadow-card">
                 <div class="px-4 py-3 bg-pill rounded-t-2xl">
                     <h2 class="text-base font-semibold text-txt-primary">Client Status</h2>
