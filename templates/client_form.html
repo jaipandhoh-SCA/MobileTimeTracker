@@ -475,6 +475,20 @@
                 </div>
             </div>
 
+            {# Documents & Permits quick access #}
+            <div class="bg-white rounded-2xl shadow-card p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-sm font-semibold text-txt-primary">Documents & Permits</h3>
+                        {% set doc_count = client.documents.count() if client.documents else 0 %}
+                        {% set permit_count = client.permits.count() if client.permits else 0 %}
+                        <p class="text-xs text-txt-muted mt-0.5">{{ doc_count }} doc{{ 's' if doc_count != 1 else '' }} &middot; {{ permit_count }} permit{{ 's' if permit_count != 1 else '' }}</p>
+                    </div>
+                    <a href="{{ url_for('client_documents', client_id=client.id) }}"
+                       class="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-medium bg-txt-primary text-white hover:bg-txt-primary/80 transition-colors touch-target">Manage</a>
+                </div>
+            </div>
+
             <div class="bg-white rounded-2xl shadow-card">
                 <div class="px-4 py-3 bg-pill rounded-t-2xl">
                     <h2 class="text-base font-semibold text-txt-primary">Client Status</h2>
@@ -778,8 +792,11 @@
 
         <div class="lg:col-span-3 space-y-6">
             <div class="bg-white rounded-2xl shadow-card p-4">
-                <h3 class="text-base font-semibold text-txt-primary mb-2">Property Files</h3>
-                <p class="text-xs text-txt-secondary mb-3">Upload and manage all client files</p>
+                <div class="flex items-center justify-between mb-2">
+                    <h3 class="text-base font-semibold text-txt-primary">Property Files</h3>
+                    <a href="{{ url_for('client_documents', client_id=client.id) }}" class="text-xs text-accent hover:text-accent/80 font-medium">Full Document Manager &rarr;</a>
+                </div>
+                <p class="text-xs text-txt-secondary mb-3">Quick upload — or use the document manager for versioning & permits</p>
 
                 <div class="space-y-2">
                     <div class="border-2 border-slate-400 rounded-lg p-3 bg-white">

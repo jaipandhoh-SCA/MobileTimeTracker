@@ -17,6 +17,8 @@ from models import (
     AssemblyItem, EstimateTemplate, EstimateTemplateItem,
     Estimate, EstimateLineItem, ADU_TYPES, ESTIMATE_STATUSES,
     Proposal, Contract, DrawScheduleItem, PROPOSAL_STATUSES, CONTRACT_STATUSES,
+    Document, DocumentVersion, Permit,
+    DOCUMENT_FOLDERS, DOCUMENT_FOLDER_KEYS, PERMIT_STATUSES, PERMIT_TYPES,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -4337,3 +4339,485 @@ def global_search():
         })
 
     return jsonify(results)
+
+
+# ── Document Management ──────────────────────────────────────────────
+
+def _ensure_storage_prefix(client):
+    if not client.storage_prefix:
+        from r2_storage_helper import build_client_prefix
+        client.storage_prefix = build_client_prefix(client.name, client.address)
+        db.session.commit()
+
+
+def _can_view_document(doc, user):
+    """Role-based visibility check."""
+    if doc.visibility == 'team':
+        return True
+    if doc.visibility == 'supervisor':
+        return user.role == 'supervisor'
+    return True  # 'client' visibility = everyone
+
+
+@app.route('/clients/<int:client_id>/documents')
+@require_login
+def client_documents(client_id):
+    client = Client.query.get_or_404(client_id)
+    folder = request.args.get('folder', '')
+    q = Document.query.filter_by(client_id=client_id, is_superseded=False)
+    if folder and folder in DOCUMENT_FOLDER_KEYS:
+        q = q.filter_by(folder=folder)
+    # Role-based filtering
+    if current_user.role != 'supervisor':
+        q = q.filter(Document.visibility != 'supervisor')
+    documents = q.order_by(Document.folder, Document.updated_at.desc()).all()
+    # Group by folder
+    by_folder = defaultdict(list)
+    for doc in documents:
+        by_folder[doc.folder].append(doc)
+    permits = Permit.query.filter_by(client_id=client_id).order_by(Permit.updated_at.desc()).all()
+    return render_template('client_documents.html', client=client,
+                           documents=documents, by_folder=by_folder,
+                           folders=DOCUMENT_FOLDERS, active_folder=folder,
+                           permits=permits, permit_statuses=PERMIT_STATUSES,
+                           permit_types=PERMIT_TYPES)
+
+
+@app.route('/clients/<int:client_id>/documents/upload', methods=['POST'])
+@require_login
+def upload_document(client_id):
+    from werkzeug.utils import secure_filename
+    import mimetypes
+
+    client = Client.query.get_or_404(client_id)
+    _ensure_storage_prefix(client)
+
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if not file or not file.filename:
+        return jsonify({'success': False, 'error': 'No file selected'}), 400
+
+    filename = secure_filename(file.filename)
+    if not filename:
+        return jsonify({'success': False, 'error': 'Invalid filename'}), 400
+
+    folder = request.form.get('folder', 'other')
+    if folder not in DOCUMENT_FOLDER_KEYS:
+        folder = 'other'
+
+    title = request.form.get('title', '').strip() or filename
+    description = request.form.get('description', '').strip() or None
+    visibility = request.form.get('visibility', 'team')
+    if visibility not in ('team', 'supervisor', 'client'):
+        visibility = 'team'
+
+    file_content = file.read()
+    file_size = len(file_content)
+    mime = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    key = f"{client.storage_prefix}/{folder}/{timestamp}_v1_{filename}"
+
+    try:
+        from r2_storage_helper import upload_file as r2_upload
+        r2_upload(file_content, key, mime)
+
+        doc = Document(
+            client_id=client_id,
+            folder=folder,
+            title=title,
+            description=description,
+            file_name=filename,
+            mime_type=mime,
+            visibility=visibility,
+            uploaded_by_user_id=current_user.id,
+        )
+        db.session.add(doc)
+        db.session.flush()  # get doc.id
+
+        version = DocumentVersion(
+            document_id=doc.id,
+            version_number=1,
+            storage_key=key,
+            file_name=filename,
+            file_size=file_size,
+            mime_type=mime,
+            change_note='Initial upload',
+            uploaded_by_user_id=current_user.id,
+        )
+        db.session.add(version)
+        db.session.flush()
+
+        doc.current_version_id = version.id
+
+        # Audit trail
+        activity = ClientActivity(
+            client_id=client_id,
+            user_id=current_user.id,
+            activity_type='Document uploaded',
+            note_text=f'Uploaded "{title}" to {folder}',
+            activity_date=datetime.now(timezone.utc),
+            file_path=key,
+            file_name=filename,
+        )
+        db.session.add(activity)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'document_id': doc.id,
+            'title': doc.title,
+            'redirect': url_for('client_documents', client_id=client_id, folder=folder),
+        })
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f'Document upload failed: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/revise', methods=['POST'])
+@require_login
+def revise_document(client_id, doc_id):
+    """Upload a new revision of an existing document. Never overwrites."""
+    from werkzeug.utils import secure_filename
+    import mimetypes
+
+    client = Client.query.get_or_404(client_id)
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    _ensure_storage_prefix(client)
+
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if not file or not file.filename:
+        return jsonify({'success': False, 'error': 'No file selected'}), 400
+
+    filename = secure_filename(file.filename)
+    if not filename:
+        return jsonify({'success': False, 'error': 'Invalid filename'}), 400
+
+    change_note = request.form.get('change_note', '').strip() or None
+
+    file_content = file.read()
+    file_size = len(file_content)
+    mime = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+
+    # Next version number
+    max_ver = db.session.query(func.max(DocumentVersion.version_number)).filter_by(
+        document_id=doc.id).scalar() or 0
+    next_ver = max_ver + 1
+
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    key = f"{client.storage_prefix}/{doc.folder}/{timestamp}_v{next_ver}_{filename}"
+
+    try:
+        from r2_storage_helper import upload_file as r2_upload
+        r2_upload(file_content, key, mime)
+
+        version = DocumentVersion(
+            document_id=doc.id,
+            version_number=next_ver,
+            storage_key=key,
+            file_name=filename,
+            file_size=file_size,
+            mime_type=mime,
+            change_note=change_note,
+            uploaded_by_user_id=current_user.id,
+        )
+        db.session.add(version)
+        db.session.flush()
+
+        doc.current_version_id = version.id
+        doc.file_name = filename
+        doc.mime_type = mime
+        doc.updated_at = datetime.now(timezone.utc)
+
+        activity = ClientActivity(
+            client_id=client_id,
+            user_id=current_user.id,
+            activity_type='Document revised',
+            note_text=f'Uploaded revision v{next_ver} of "{doc.title}"'
+                      + (f' — {change_note}' if change_note else ''),
+            activity_date=datetime.now(timezone.utc),
+            file_path=key,
+            file_name=filename,
+        )
+        db.session.add(activity)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'version_number': next_ver,
+            'redirect': url_for('view_document', client_id=client_id, doc_id=doc.id),
+        })
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f'Document revision failed: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/supersede', methods=['POST'])
+@require_login
+def supersede_document(client_id, doc_id):
+    """Mark a document as superseded by a new one (for drawings)."""
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    new_doc_id = request.form.get('new_document_id', type=int)
+    doc.is_superseded = True
+    note = f'"{doc.title}" marked as superseded'
+    if new_doc_id:
+        new_doc = Document.query.filter_by(id=new_doc_id, client_id=client_id).first_or_404()
+        doc.superseded_by_id = new_doc.id
+        note = f'"{doc.title}" superseded by "{new_doc.title}"'
+    activity = ClientActivity(
+        client_id=client_id,
+        user_id=current_user.id,
+        activity_type='Document superseded',
+        note_text=note,
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+    flash(f'"{doc.title}" marked as superseded.', 'success')
+    return redirect(url_for('client_documents', client_id=client_id, folder=doc.folder))
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>')
+@require_login
+def view_document(client_id, doc_id):
+    """Document detail page with version history."""
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    if not _can_view_document(doc, current_user):
+        abort(403)
+    client = Client.query.get_or_404(client_id)
+    versions = doc.versions.all()
+    # Other non-superseded docs in same folder for supersede picker
+    folder_docs = Document.query.filter(
+        Document.client_id == client_id,
+        Document.folder == doc.folder,
+        Document.id != doc.id,
+        Document.is_superseded == False,
+    ).order_by(Document.title).all()
+    return render_template('document_view.html', client=client, doc=doc,
+                           versions=versions, folder_docs=folder_docs,
+                           folders=DOCUMENT_FOLDERS)
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/edit', methods=['POST'])
+@require_login
+def edit_document(client_id, doc_id):
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    doc.title = request.form.get('title', doc.title).strip()
+    doc.description = request.form.get('description', '').strip() or None
+    doc.folder = request.form.get('folder', doc.folder)
+    visibility = request.form.get('visibility', doc.visibility)
+    if visibility in ('team', 'supervisor', 'client'):
+        doc.visibility = visibility
+    db.session.commit()
+    flash('Document updated.', 'success')
+    return redirect(url_for('view_document', client_id=client_id, doc_id=doc.id))
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/delete', methods=['POST'])
+@require_supervisor
+def delete_document(client_id, doc_id):
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    folder = doc.folder
+    title = doc.title
+    # Don't delete R2 objects — keep for audit trail
+    db.session.delete(doc)
+    activity = ClientActivity(
+        client_id=client_id,
+        user_id=current_user.id,
+        activity_type='Document deleted',
+        note_text=f'Deleted document "{title}" from {folder}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+    flash(f'Document "{title}" deleted.', 'success')
+    return redirect(url_for('client_documents', client_id=client_id, folder=folder))
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/download')
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/download/<int:version_id>')
+@require_login
+def download_document(client_id, doc_id, version_id=None):
+    """Serve a document via presigned URL (or direct download as fallback)."""
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    if not _can_view_document(doc, current_user):
+        abort(403)
+
+    if version_id:
+        version = DocumentVersion.query.filter_by(id=version_id, document_id=doc.id).first_or_404()
+    else:
+        version = doc.current_version
+        if not version:
+            abort(404)
+
+    try:
+        from r2_storage_helper import generate_presigned_url
+        url = generate_presigned_url(version.storage_key, expiration=3600)
+        return redirect(url)
+    except Exception as e:
+        current_app.logger.error(f'Presigned URL failed: {e}')
+        # Fallback: stream from R2
+        from r2_storage_helper import download_file
+        from flask import send_file
+        content = download_file(version.storage_key)
+        return send_file(
+            BytesIO(content),
+            download_name=version.file_name,
+            mimetype=version.mime_type or 'application/octet-stream',
+        )
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/view-pdf')
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/view-pdf/<int:version_id>')
+@require_login
+def view_pdf(client_id, doc_id, version_id=None):
+    """PDF viewer page with basic markup tools."""
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    if not _can_view_document(doc, current_user):
+        abort(403)
+    client = Client.query.get_or_404(client_id)
+
+    if version_id:
+        version = DocumentVersion.query.filter_by(id=version_id, document_id=doc.id).first_or_404()
+    else:
+        version = doc.current_version
+
+    # Get presigned URL for the PDF
+    try:
+        from r2_storage_helper import generate_presigned_url
+        pdf_url = generate_presigned_url(version.storage_key, expiration=3600)
+    except Exception:
+        pdf_url = url_for('download_document', client_id=client_id, doc_id=doc.id,
+                          version_id=version.id if version else None)
+
+    return render_template('pdf_viewer.html', client=client, doc=doc,
+                           version=version, pdf_url=pdf_url)
+
+
+# ── Permit Tracking ──────────────────────────────────────────────────
+
+@app.route('/clients/<int:client_id>/permits/new', methods=['GET', 'POST'])
+@require_login
+def create_permit(client_id):
+    client = Client.query.get_or_404(client_id)
+
+    if request.method == 'GET':
+        return render_template('permit_form.html', client=client, permit=None,
+                               permit_types=PERMIT_TYPES, permit_statuses=PERMIT_STATUSES)
+
+    permit = Permit(
+        client_id=client_id,
+        permit_type=request.form.get('permit_type', 'Building Permit'),
+        jurisdiction=request.form.get('jurisdiction', '').strip() or None,
+        permit_number=request.form.get('permit_number', '').strip() or None,
+        status=request.form.get('status', 'Not Started'),
+        notes=request.form.get('notes', '').strip() or None,
+        created_by_user_id=current_user.id,
+    )
+
+    # Parse dates
+    for field in ('submitted_date', 'approved_date', 'issued_date',
+                  'expiration_date', 'corrections_due_date'):
+        val = request.form.get(field, '').strip()
+        if val:
+            try:
+                setattr(permit, field, datetime.strptime(val, '%Y-%m-%d').date())
+            except ValueError:
+                pass
+
+    fee = request.form.get('fee_amount', '').strip().replace(',', '').replace('$', '')
+    if fee:
+        try:
+            permit.fee_amount = Decimal(fee)
+        except (ValueError, InvalidOperation):
+            pass
+    permit.fee_paid = request.form.get('fee_paid') == 'on'
+    permit.corrections_note = request.form.get('corrections_note', '').strip() or None
+
+    db.session.add(permit)
+
+    activity = ClientActivity(
+        client_id=client_id,
+        user_id=current_user.id,
+        activity_type='Permit created',
+        note_text=f'{permit.permit_type} — {permit.status}'
+                  + (f' ({permit.jurisdiction})' if permit.jurisdiction else ''),
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'{permit.permit_type} permit created.', 'success')
+    return redirect(url_for('client_documents', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/permits/<int:permit_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_permit(client_id, permit_id):
+    client = Client.query.get_or_404(client_id)
+    permit = Permit.query.filter_by(id=permit_id, client_id=client_id).first_or_404()
+
+    if request.method == 'GET':
+        return render_template('permit_form.html', client=client, permit=permit,
+                               permit_types=PERMIT_TYPES, permit_statuses=PERMIT_STATUSES)
+
+    old_status = permit.status
+    permit.permit_type = request.form.get('permit_type', permit.permit_type)
+    permit.jurisdiction = request.form.get('jurisdiction', '').strip() or None
+    permit.permit_number = request.form.get('permit_number', '').strip() or None
+    permit.status = request.form.get('status', permit.status)
+    permit.notes = request.form.get('notes', '').strip() or None
+    permit.corrections_note = request.form.get('corrections_note', '').strip() or None
+
+    for field in ('submitted_date', 'approved_date', 'issued_date',
+                  'expiration_date', 'corrections_due_date'):
+        val = request.form.get(field, '').strip()
+        if val:
+            try:
+                setattr(permit, field, datetime.strptime(val, '%Y-%m-%d').date())
+            except ValueError:
+                pass
+        else:
+            setattr(permit, field, None)
+
+    fee = request.form.get('fee_amount', '').strip().replace(',', '').replace('$', '')
+    if fee:
+        try:
+            permit.fee_amount = Decimal(fee)
+        except (ValueError, InvalidOperation):
+            pass
+    else:
+        permit.fee_amount = None
+    permit.fee_paid = request.form.get('fee_paid') == 'on'
+
+    if permit.status != old_status:
+        activity = ClientActivity(
+            client_id=client_id,
+            user_id=current_user.id,
+            activity_type='Permit status changed',
+            note_text=f'{permit.permit_type}: {old_status} → {permit.status}',
+            activity_date=datetime.now(timezone.utc),
+        )
+        db.session.add(activity)
+
+    db.session.commit()
+    flash(f'{permit.permit_type} permit updated.', 'success')
+    return redirect(url_for('client_documents', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/permits/<int:permit_id>/delete', methods=['POST'])
+@require_supervisor
+def delete_permit(client_id, permit_id):
+    permit = Permit.query.filter_by(id=permit_id, client_id=client_id).first_or_404()
+    ptype = permit.permit_type
+    db.session.delete(permit)
+    db.session.commit()
+    flash(f'{ptype} permit deleted.', 'success')
+    return redirect(url_for('client_documents', client_id=client_id))

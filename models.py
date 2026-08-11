@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from decimal import Decimal
 from app import db
 from flask_login import UserMixin
@@ -755,6 +755,152 @@ class AuthorizedUser(db.Model):
     
     def __repr__(self):
         return f'<AuthorizedUser {self.email}>'
+
+
+DOCUMENT_FOLDERS = [
+    ('plans', 'Plans & Drawings'),
+    ('permits', 'Permits'),
+    ('specs', 'Specs & Engineering'),
+    ('contracts', 'Contracts'),
+    ('photos', 'Photos'),
+    ('other', 'Other'),
+]
+
+DOCUMENT_FOLDER_KEYS = [k for k, _ in DOCUMENT_FOLDERS]
+
+PERMIT_STATUSES = [
+    'Not Started', 'In Preparation', 'Submitted', 'In Review',
+    'Corrections Required', 'Approved', 'Issued', 'Expired', 'Denied',
+]
+
+PERMIT_TYPES = [
+    'Building Permit', 'Grading Permit', 'Electrical Permit',
+    'Plumbing Permit', 'Mechanical Permit', 'Demolition Permit',
+    'Encroachment Permit', 'School Fee', 'Utility Connection',
+    'HOA Approval', 'Other',
+]
+
+
+class Document(db.Model):
+    """A managed file belonging to a client, organized into folders."""
+    __tablename__ = 'documents'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    folder = db.Column(db.String(30), nullable=False, default='other')
+    title = db.Column(db.String(300), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    file_name = db.Column(db.String(255), nullable=False)
+    mime_type = db.Column(db.String(100), nullable=True)
+    current_version_id = db.Column(db.Integer, nullable=True)  # FK added after DocumentVersion
+    is_superseded = db.Column(db.Boolean, default=False)
+    superseded_by_id = db.Column(db.Integer, db.ForeignKey('documents.id'), nullable=True)
+    visibility = db.Column(db.String(20), nullable=False, default='team')  # team, supervisor, client
+    uploaded_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('documents', lazy='dynamic'))
+    uploaded_by = db.relationship('User', foreign_keys=[uploaded_by_user_id])
+    superseded_by = db.relationship('Document', remote_side='Document.id', foreign_keys=[superseded_by_id])
+    versions = db.relationship('DocumentVersion', backref='document',
+                               lazy='dynamic', cascade='all, delete-orphan',
+                               order_by='DocumentVersion.version_number.desc()')
+
+    __table_args__ = (
+        Index('idx_doc_client_folder', 'client_id', 'folder'),
+    )
+
+    @property
+    def current_version(self):
+        if self.current_version_id:
+            return DocumentVersion.query.get(self.current_version_id)
+        return self.versions.first()
+
+    @property
+    def version_count(self):
+        return self.versions.count()
+
+    @property
+    def is_drawing(self):
+        return self.folder == 'plans'
+
+    @property
+    def is_pdf(self):
+        return self.file_name.lower().endswith('.pdf') if self.file_name else False
+
+
+class DocumentVersion(db.Model):
+    """A specific version/revision of a document. Never overwritten."""
+    __tablename__ = 'document_versions'
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('documents.id'), nullable=False)
+    version_number = db.Column(db.Integer, nullable=False, default=1)
+    storage_key = db.Column(db.String(500), nullable=False)
+    file_name = db.Column(db.String(255), nullable=False)
+    file_size = db.Column(db.Integer, nullable=True)
+    mime_type = db.Column(db.String(100), nullable=True)
+    change_note = db.Column(db.String(500), nullable=True)
+    uploaded_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    uploaded_by = db.relationship('User', foreign_keys=[uploaded_by_user_id])
+
+    __table_args__ = (
+        UniqueConstraint('document_id', 'version_number', name='uq_doc_version'),
+        Index('idx_docver_doc', 'document_id'),
+    )
+
+
+class Permit(db.Model):
+    """Permit tracking for a client's ADU project."""
+    __tablename__ = 'permits'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    permit_type = db.Column(db.String(50), nullable=False)
+    jurisdiction = db.Column(db.String(200), nullable=True)
+    permit_number = db.Column(db.String(100), nullable=True)
+    status = db.Column(db.String(30), nullable=False, default='Not Started')
+    # Key dates
+    submitted_date = db.Column(db.Date, nullable=True)
+    approved_date = db.Column(db.Date, nullable=True)
+    issued_date = db.Column(db.Date, nullable=True)
+    expiration_date = db.Column(db.Date, nullable=True)
+    # Corrections
+    corrections_due_date = db.Column(db.Date, nullable=True)
+    corrections_note = db.Column(db.Text, nullable=True)
+    # Fees
+    fee_amount = db.Column(db.Numeric(10, 2), nullable=True)
+    fee_paid = db.Column(db.Boolean, default=False)
+    # Notes / docs
+    notes = db.Column(db.Text, nullable=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('documents.id'), nullable=True)
+    # Meta
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('permits', lazy='dynamic'))
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+    document = db.relationship('Document')
+
+    __table_args__ = (
+        Index('idx_permit_client', 'client_id'),
+        Index('idx_permit_status', 'status'),
+    )
+
+    @property
+    def is_overdue(self):
+        if self.corrections_due_date and self.status == 'Corrections Required':
+            return self.corrections_due_date < date.today()
+        if self.expiration_date and self.status == 'Issued':
+            return self.expiration_date < date.today()
+        return False
+
+    @property
+    def days_in_review(self):
+        if self.submitted_date and self.status in ('Submitted', 'In Review'):
+            return (date.today() - self.submitted_date).days
+        return None
 
 
 class AppSetting(db.Model):

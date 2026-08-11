@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+
+{% block title %}{{ doc.title }} - PDF Viewer{% endblock %}
+
+{% block head %}
+<style>
+    #pdfContainer { position: relative; background: #525659; min-height: 60vh; }
+    #pdfContainer canvas { display: block; margin: 0 auto; }
+    .markup-toolbar { position: sticky; top: 64px; z-index: 30; }
+    .markup-canvas {
+        position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+        cursor: crosshair; pointer-events: none;
+    }
+    .markup-canvas.active { pointer-events: auto; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-full mx-auto" x-data="pdfViewer()">
+
+    {# Header bar #}
+    <div class="flex items-center justify-between px-4 py-2 bg-white border-b border-hairline mb-0">
+        <div class="flex items-center gap-3">
+            <a href="{{ url_for('view_document', client_id=client.id, doc_id=doc.id) }}" class="text-sm text-txt-secondary hover:text-txt-primary">&larr; Back</a>
+            <div>
+                <h1 class="text-sm font-semibold text-txt-primary">{{ doc.title }}</h1>
+                <p class="text-xs text-txt-muted">v{{ version.version_number }} &middot; {{ version.file_name }}</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <a href="{{ url_for('download_document', client_id=client.id, doc_id=doc.id, version_id=version.id) }}"
+               class="text-xs text-txt-secondary hover:text-txt-primary font-medium px-3 py-1.5 border border-hairline rounded-lg">Download</a>
+        </div>
+    </div>
+
+    {# Markup toolbar #}
+    <div class="markup-toolbar flex items-center gap-2 px-4 py-2 bg-pill border-b border-hairline">
+        <div class="flex items-center gap-1 mr-4">
+            <button @click="prevPage()" :disabled="currentPage <= 1"
+                    class="px-2 py-1 text-xs font-medium rounded border border-hairline bg-white hover:bg-gray-50 disabled:opacity-40">Prev</button>
+            <span class="text-xs text-txt-secondary px-2">
+                Page <span x-text="currentPage"></span> / <span x-text="totalPages"></span>
+            </span>
+            <button @click="nextPage()" :disabled="currentPage >= totalPages"
+                    class="px-2 py-1 text-xs font-medium rounded border border-hairline bg-white hover:bg-gray-50 disabled:opacity-40">Next</button>
+        </div>
+
+        <div class="flex items-center gap-1 mr-4">
+            <button @click="zoomOut()" class="px-2 py-1 text-xs font-medium rounded border border-hairline bg-white hover:bg-gray-50">−</button>
+            <span class="text-xs text-txt-secondary px-1" x-text="Math.round(scale * 100) + '%'"></span>
+            <button @click="zoomIn()" class="px-2 py-1 text-xs font-medium rounded border border-hairline bg-white hover:bg-gray-50">+</button>
+            <button @click="fitWidth()" class="px-2 py-1 text-xs font-medium rounded border border-hairline bg-white hover:bg-gray-50">Fit</button>
+        </div>
+
+        <div class="border-l border-hairline h-5 mx-2"></div>
+
+        <button @click="setTool('none')" :class="tool === 'none' ? 'bg-txt-primary text-white' : 'bg-white hover:bg-gray-50'"
+                class="px-2 py-1 text-xs font-medium rounded border border-hairline">Pan</button>
+        <button @click="setTool('pen')" :class="tool === 'pen' ? 'bg-red-500 text-white' : 'bg-white hover:bg-gray-50'"
+                class="px-2 py-1 text-xs font-medium rounded border border-hairline">Pen</button>
+        <button @click="setTool('highlight')" :class="tool === 'highlight' ? 'bg-yellow-400 text-white' : 'bg-white hover:bg-gray-50'"
+                class="px-2 py-1 text-xs font-medium rounded border border-hairline">Highlight</button>
+        <button @click="setTool('text')" :class="tool === 'text' ? 'bg-blue-500 text-white' : 'bg-white hover:bg-gray-50'"
+                class="px-2 py-1 text-xs font-medium rounded border border-hairline">Text</button>
+
+        <template x-if="hasMarkup">
+            <button @click="clearMarkup()" class="px-2 py-1 text-xs font-medium rounded border border-red-300 text-red-600 hover:bg-red-50 ml-2">Clear</button>
+        </template>
+
+        <template x-if="hasMarkup">
+            <button @click="exportMarkup()" class="px-2 py-1 text-xs font-medium rounded border border-hairline bg-white hover:bg-gray-50 ml-1">Save PNG</button>
+        </template>
+    </div>
+
+    {# PDF render area #}
+    <div id="pdfContainer" class="overflow-auto" style="height: calc(100vh - 170px);">
+        <canvas id="pdfCanvas"></canvas>
+        <canvas id="markupCanvas" class="markup-canvas"></canvas>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs" type="module"></script>
+<script type="module">
+import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs';
+
+const pdfUrl = {{ pdf_url|tojson }};
+let pdfDoc = null;
+
+window.pdfViewer = function() {
+    return {
+        currentPage: 1,
+        totalPages: 0,
+        scale: 1.0,
+        tool: 'none',
+        hasMarkup: false,
+        _drawing: false,
+        _lastX: 0,
+        _lastY: 0,
+
+        async init() {
+            try {
+                pdfDoc = await pdfjsLib.getDocument(pdfUrl).promise;
+                this.totalPages = pdfDoc.numPages;
+                this.fitWidth();
+            } catch (e) {
+                console.error('PDF load error:', e);
+                document.getElementById('pdfContainer').innerHTML =
+                    '<div class="text-center py-20 text-white"><p>Unable to load PDF.</p><a href="' +
+                    '{{ url_for("download_document", client_id=client.id, doc_id=doc.id, version_id=version.id) }}' +
+                    '" class="underline">Download instead</a></div>';
+            }
+        },
+
+        async renderPage() {
+            if (!pdfDoc) return;
+            const page = await pdfDoc.getPage(this.currentPage);
+            const viewport = page.getViewport({ scale: this.scale });
+
+            const canvas = document.getElementById('pdfCanvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            canvas.style.width = viewport.width + 'px';
+            canvas.style.height = viewport.height + 'px';
+
+            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+            // Size markup canvas to match
+            const mc = document.getElementById('markupCanvas');
+            mc.width = viewport.width;
+            mc.height = viewport.height;
+            mc.style.width = viewport.width + 'px';
+            mc.style.height = viewport.height + 'px';
+        },
+
+        prevPage() { if (this.currentPage > 1) { this.currentPage--; this.renderPage(); } },
+        nextPage() { if (this.currentPage < this.totalPages) { this.currentPage++; this.renderPage(); } },
+        zoomIn() { this.scale = Math.min(this.scale + 0.25, 4); this.renderPage(); },
+        zoomOut() { this.scale = Math.max(this.scale - 0.25, 0.25); this.renderPage(); },
+
+        async fitWidth() {
+            if (!pdfDoc) { await this.renderPage(); return; }
+            const page = await pdfDoc.getPage(this.currentPage);
+            const container = document.getElementById('pdfContainer');
+            const vp = page.getViewport({ scale: 1 });
+            this.scale = (container.clientWidth - 40) / vp.width;
+            this.renderPage();
+        },
+
+        setTool(t) {
+            this.tool = t;
+            const mc = document.getElementById('markupCanvas');
+            mc.classList.toggle('active', t !== 'none');
+            this._setupMarkupEvents(mc);
+        },
+
+        _setupMarkupEvents(mc) {
+            if (mc._bound) return;
+            mc._bound = true;
+            const self = this;
+
+            mc.addEventListener('mousedown', (e) => self._startDraw(e, mc));
+            mc.addEventListener('mousemove', (e) => self._draw(e, mc));
+            mc.addEventListener('mouseup', () => self._endDraw());
+            mc.addEventListener('mouseleave', () => self._endDraw());
+            mc.addEventListener('touchstart', (e) => { e.preventDefault(); self._startDraw(e.touches[0], mc); });
+            mc.addEventListener('touchmove', (e) => { e.preventDefault(); self._draw(e.touches[0], mc); });
+            mc.addEventListener('touchend', () => self._endDraw());
+
+            mc.addEventListener('click', (e) => {
+                if (self.tool === 'text') {
+                    const rect = mc.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    const text = prompt('Enter text:');
+                    if (text) {
+                        const ctx = mc.getContext('2d');
+                        ctx.font = '14px Inter, sans-serif';
+                        ctx.fillStyle = '#1a56db';
+                        ctx.fillText(text, x, y);
+                        self.hasMarkup = true;
+                    }
+                }
+            });
+        },
+
+        _startDraw(e, mc) {
+            if (this.tool !== 'pen' && this.tool !== 'highlight') return;
+            this._drawing = true;
+            const rect = mc.getBoundingClientRect();
+            this._lastX = e.clientX - rect.left;
+            this._lastY = e.clientY - rect.top;
+        },
+
+        _draw(e, mc) {
+            if (!this._drawing) return;
+            const ctx = mc.getContext('2d');
+            const rect = mc.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            ctx.beginPath();
+            ctx.moveTo(this._lastX, this._lastY);
+            ctx.lineTo(x, y);
+
+            if (this.tool === 'pen') {
+                ctx.strokeStyle = '#dc2626';
+                ctx.lineWidth = 2;
+                ctx.globalAlpha = 1;
+            } else {
+                ctx.strokeStyle = '#fbbf24';
+                ctx.lineWidth = 16;
+                ctx.globalAlpha = 0.35;
+            }
+            ctx.lineCap = 'round';
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+
+            this._lastX = x;
+            this._lastY = y;
+            this.hasMarkup = true;
+        },
+
+        _endDraw() { this._drawing = false; },
+
+        clearMarkup() {
+            const mc = document.getElementById('markupCanvas');
+            mc.getContext('2d').clearRect(0, 0, mc.width, mc.height);
+            this.hasMarkup = false;
+        },
+
+        exportMarkup() {
+            const pdfC = document.getElementById('pdfCanvas');
+            const mc = document.getElementById('markupCanvas');
+            const merged = document.createElement('canvas');
+            merged.width = pdfC.width;
+            merged.height = pdfC.height;
+            const ctx = merged.getContext('2d');
+            ctx.drawImage(pdfC, 0, 0);
+            ctx.drawImage(mc, 0, 0);
+            const link = document.createElement('a');
+            link.download = '{{ doc.title|replace("'", "") }}_markup_p' + this.currentPage + '.png';
+            link.href = merged.toDataURL('image/png');
+            link.click();
+        },
+    };
+};
+</script>
+{% endblock %}

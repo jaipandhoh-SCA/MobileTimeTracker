@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, stat_card, page_header, status_badge, empty_state, modal %}
+
+{% block title %}Documents - {{ client.name }} - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto" x-data="{ uploadOpen: false, uploadFolder: 'other', tab: '{{ active_folder or 'all' }}' }">
+
+    {{ page_header("Documents & Permits",
+        subtitle=client.name,
+        back_text="&larr; Client", back_href=url_for('edit_client', client_id=client.id)) }}
+
+    {# Summary row #}
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+        {{ stat_card("Total Docs", documents|length) }}
+        {{ stat_card("Plans", by_folder.get('plans', [])|length) }}
+        {{ stat_card("Permits", permits|length) }}
+        {% set overdue = permits|selectattr('is_overdue')|list %}
+        {% if overdue %}
+        <div class="bg-red-50 rounded-2xl p-4 border border-red-200">
+            <p class="text-xs text-red-600 font-medium">Overdue</p>
+            <p class="text-2xl font-bold text-red-700 mt-1">{{ overdue|length }}</p>
+        </div>
+        {% else %}
+        {{ stat_card("Active Permits", permits|selectattr('status', 'in', ['Submitted', 'In Review'])|list|length) }}
+        {% endif %}
+    </div>
+
+    {# Actions bar #}
+    <div class="flex flex-wrap gap-3 mb-6">
+        <button @click="uploadOpen = true"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-txt-primary text-white rounded-xl text-sm font-medium hover:bg-txt-primary/80 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+            Upload Document
+        </button>
+        {{ btn("New Permit", href=url_for('create_permit', client_id=client.id), variant="secondary", size="sm") }}
+    </div>
+
+    {# Folder tabs #}
+    <div class="flex gap-1 overflow-x-auto mb-6 bg-pill rounded-xl p-1">
+        <button @click="tab = 'all'" :class="tab === 'all' ? 'bg-white shadow-sm text-txt-primary' : 'text-txt-secondary hover:text-txt-primary'"
+                class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap">All ({{ documents|length }})</button>
+        {% for key, label in folders %}
+        {% set count = by_folder.get(key, [])|length %}
+        <button @click="tab = '{{ key }}'" :class="tab === '{{ key }}' ? 'bg-white shadow-sm text-txt-primary' : 'text-txt-secondary hover:text-txt-primary'"
+                class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap">{{ label }} ({{ count }})</button>
+        {% endfor %}
+        <button @click="tab = 'permits'" :class="tab === 'permits' ? 'bg-white shadow-sm text-txt-primary' : 'text-txt-secondary hover:text-txt-primary'"
+                class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap">Permits ({{ permits|length }})</button>
+    </div>
+
+    {# Document lists by folder #}
+    {% for key, label in folders %}
+    <div x-show="tab === 'all' || tab === '{{ key }}'" x-cloak>
+        {% set folder_docs = by_folder.get(key, []) %}
+        {% if folder_docs %}
+        <div class="bg-white shadow-card rounded-2xl overflow-hidden mb-4">
+            <div class="px-6 py-3 bg-pill border-b border-hairline flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-txt-primary">{{ label }}</h3>
+                <span class="text-xs text-txt-muted">{{ folder_docs|length }} file{{ 's' if folder_docs|length != 1 }}</span>
+            </div>
+            <div class="divide-y divide-hairline">
+                {% for doc in folder_docs %}
+                <div class="px-6 py-3 flex items-center gap-4 hover:bg-pill transition-colors">
+                    {# File icon #}
+                    <div class="flex-shrink-0">
+                        {% if doc.is_pdf %}
+                        <div class="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center">
+                            <svg class="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                        </div>
+                        {% elif doc.mime_type and doc.mime_type.startswith('image/') %}
+                        <div class="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center">
+                            <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                        </div>
+                        {% else %}
+                        <div class="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center">
+                            <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    {# Info #}
+                    <div class="flex-1 min-w-0">
+                        <a href="{{ url_for('view_document', client_id=client.id, doc_id=doc.id) }}" class="text-sm font-medium text-txt-primary hover:text-accent truncate block">{{ doc.title }}</a>
+                        <p class="text-xs text-txt-muted">
+                            {{ doc.file_name }}
+                            {% if doc.version_count > 1 %}<span class="text-amber-600 font-medium ml-1">v{{ doc.version_count }}</span>{% endif %}
+                            &middot; {{ doc.updated_at|format_date if doc.updated_at }}
+                            {% if doc.visibility == 'supervisor' %}<span class="ml-1 text-purple-600">Supervisor only</span>{% endif %}
+                        </p>
+                    </div>
+
+                    {# Actions #}
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                        {% if doc.is_pdf %}
+                        <a href="{{ url_for('view_pdf', client_id=client.id, doc_id=doc.id) }}" class="text-xs text-accent hover:text-accent/80 font-medium">View</a>
+                        {% endif %}
+                        <a href="{{ url_for('download_document', client_id=client.id, doc_id=doc.id) }}" class="text-xs text-txt-secondary hover:text-txt-primary font-medium">Download</a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% elif active_folder == key %}
+        <div class="text-center py-12 text-txt-muted text-sm mb-4">No documents in {{ label }}.</div>
+        {% endif %}
+    </div>
+    {% endfor %}
+
+    {# Permits tab #}
+    <div x-show="tab === 'permits'" x-cloak>
+        {% if permits %}
+        <div class="bg-white shadow-card rounded-2xl overflow-hidden mb-4">
+            <div class="px-6 py-3 bg-pill border-b border-hairline">
+                <h3 class="text-sm font-semibold text-txt-primary">Permit Tracker</h3>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-hairline">
+                    <thead class="bg-white">
+                        <tr>
+                            <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">Type</th>
+                            <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">Jurisdiction</th>
+                            <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">Status</th>
+                            <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase hidden md:table-cell">Permit #</th>
+                            <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase hidden md:table-cell">Submitted</th>
+                            <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase hidden lg:table-cell">Fee</th>
+                            <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Days</th>
+                            <th class="px-4 py-2"></th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-hairline">
+                        {% for p in permits %}
+                        <tr class="hover:bg-pill transition-colors {% if p.is_overdue %}bg-red-50{% endif %}">
+                            <td class="px-4 py-2 text-sm font-medium text-txt-primary">{{ p.permit_type }}</td>
+                            <td class="px-4 py-2 text-sm text-txt-secondary">{{ p.jurisdiction or '—' }}</td>
+                            <td class="px-4 py-2">
+                                {% if p.status == 'Approved' or p.status == 'Issued' %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700">{{ p.status }}</span>
+                                {% elif p.status == 'Corrections Required' %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700">{{ p.status }}</span>
+                                {% elif p.status == 'Denied' or p.status == 'Expired' %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700">{{ p.status }}</span>
+                                {% elif p.status in ('Submitted', 'In Review') %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">{{ p.status }}</span>
+                                {% else %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-txt-secondary">{{ p.status }}</span>
+                                {% endif %}
+                                {% if p.is_overdue %}<span class="text-xs text-red-600 font-bold ml-1">OVERDUE</span>{% endif %}
+                            </td>
+                            <td class="px-4 py-2 text-sm text-txt-muted hidden md:table-cell">{{ p.permit_number or '—' }}</td>
+                            <td class="px-4 py-2 text-sm text-txt-muted hidden md:table-cell">{{ p.submitted_date.strftime('%m/%d/%Y') if p.submitted_date else '—' }}</td>
+                            <td class="px-4 py-2 text-sm text-right text-txt-secondary hidden lg:table-cell">
+                                {% if p.fee_amount %}${{ "{:,.0f}".format(p.fee_amount|float) }}{% if p.fee_paid %} <span class="text-emerald-600">Paid</span>{% endif %}{% else %}—{% endif %}
+                            </td>
+                            <td class="px-4 py-2 text-sm text-right text-txt-muted">
+                                {% if p.days_in_review is not none %}{{ p.days_in_review }}d{% else %}—{% endif %}
+                            </td>
+                            <td class="px-4 py-2 text-right">
+                                <a href="{{ url_for('edit_permit', client_id=client.id, permit_id=p.id) }}" class="text-xs text-accent hover:text-accent/80 font-medium">Edit</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% else %}
+        <div class="text-center py-12">
+            <p class="text-txt-muted text-sm mb-3">No permits tracked yet.</p>
+            {{ btn("Add Permit", href=url_for('create_permit', client_id=client.id), variant="primary", size="sm") }}
+        </div>
+        {% endif %}
+    </div>
+
+    {# Upload modal #}
+    <div x-show="uploadOpen" x-cloak class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" @keydown.escape.window="uploadOpen = false">
+        <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6" @click.outside="uploadOpen = false">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-txt-primary">Upload Document</h3>
+                <button @click="uploadOpen = false" class="text-txt-muted hover:text-txt-secondary">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+
+            <form id="docUploadForm" enctype="multipart/form-data" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Folder</label>
+                    <select name="folder" x-model="uploadFolder" class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                        {% for key, label in folders %}
+                        <option value="{{ key }}">{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Title</label>
+                    <input type="text" name="title" placeholder="Auto-fills from filename if blank"
+                           class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">File</label>
+                    <input type="file" name="file" required id="docFileInput"
+                           class="w-full text-sm text-txt-secondary file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-medium file:bg-pill file:text-txt-primary hover:file:bg-gray-200">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Visibility</label>
+                    <select name="visibility" class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                        <option value="team">Team (everyone)</option>
+                        <option value="supervisor">Supervisor only</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Description <span class="text-txt-muted">(optional)</span></label>
+                    <textarea name="description" rows="2" class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20" placeholder="Brief note about this document"></textarea>
+                </div>
+
+                <div id="uploadStatus" class="hidden text-sm p-2 rounded-lg"></div>
+
+                <div class="flex gap-3">
+                    <button type="button" @click="uploadOpen = false" class="flex-1 bg-pill hover:bg-gray-200 text-txt-primary font-medium py-2 px-4 rounded-xl transition-colors text-sm">Cancel</button>
+                    <button type="submit" id="uploadBtn" class="flex-1 bg-txt-primary text-white py-2 px-4 rounded-xl hover:bg-txt-primary/80 transition-colors font-medium text-sm">Upload</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('docUploadForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const form = this;
+    const btn = document.getElementById('uploadBtn');
+    const status = document.getElementById('uploadStatus');
+    const fileInput = document.getElementById('docFileInput');
+
+    if (!fileInput.files.length) {
+        status.textContent = 'Please select a file.';
+        status.className = 'text-sm p-2 rounded-lg bg-red-50 text-red-700';
+        status.classList.remove('hidden');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Uploading...';
+    status.textContent = 'Uploading...';
+    status.className = 'text-sm p-2 rounded-lg bg-blue-50 text-blue-700';
+    status.classList.remove('hidden');
+
+    const formData = new FormData(form);
+
+    try {
+        const resp = await fetch('{{ url_for("upload_document", client_id=client.id) }}', {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await resp.json();
+        if (data.success) {
+            status.textContent = 'Uploaded successfully!';
+            status.className = 'text-sm p-2 rounded-lg bg-emerald-50 text-emerald-700';
+            setTimeout(() => { window.location.href = data.redirect || window.location.href; }, 500);
+        } else {
+            status.textContent = data.error || 'Upload failed.';
+            status.className = 'text-sm p-2 rounded-lg bg-red-50 text-red-700';
+            btn.disabled = false;
+            btn.textContent = 'Upload';
+        }
+    } catch (err) {
+        status.textContent = 'Network error.';
+        status.className = 'text-sm p-2 rounded-lg bg-red-50 text-red-700';
+        btn.disabled = false;
+        btn.textContent = 'Upload';
+    }
+});
+</script>
+{% endblock %}
