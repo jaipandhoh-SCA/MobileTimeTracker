@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, stat_card, page_header %}
+
+{% block title %}Proposal: {{ estimate.name }} - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto">
+
+    {{ page_header("Proposal", subtitle=estimate.client.name ~ " &middot; " ~ estimate.name, back_text="&larr; Estimate", back_href=url_for('view_estimate', estimate_id=estimate.id)) }}
+
+    {# Status + Actions #}
+    <div class="flex flex-wrap items-center gap-3 mb-6">
+        {% if proposal.status == 'Draft' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-txt-secondary">Draft</span>
+        {% elif proposal.status == 'Sent' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-50 text-blue-700">Sent</span>
+        {% elif proposal.status == 'Viewed' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-amber-50 text-amber-700">Viewed{{ ' on ' ~ (proposal.viewed_at|format_datetime) if proposal.viewed_at else '' }}</span>
+        {% elif proposal.status == 'Accepted' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-emerald-50 text-pos">Accepted by {{ proposal.accepted_name }}</span>
+        {% elif proposal.status == 'Rejected' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-50 text-neg">Rejected</span>
+        {% elif proposal.status == 'Expired' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-amber-50 text-amber-700">Expired</span>
+        {% endif %}
+
+        {{ btn("Edit", href=url_for('edit_proposal', proposal_id=proposal.id), size="sm") }}
+
+        {% if proposal.status == 'Draft' %}
+        <form method="POST" action="{{ url_for('send_proposal', proposal_id=proposal.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            {{ btn("Mark Sent &amp; Get Link", type="submit", variant="primary", size="sm") }}
+        </form>
+        {% endif %}
+
+        {% if proposal.status in ('Sent', 'Viewed', 'Draft') %}
+        <div class="flex items-center gap-2">
+            <input type="text" readonly value="{{ url_for('public_proposal', token=proposal.share_token, _external=True) }}"
+                   id="shareUrl" class="text-xs px-3 py-2 border border-hairline rounded-lg w-64 bg-pill">
+            <button onclick="navigator.clipboard.writeText(document.getElementById('shareUrl').value); this.textContent='Copied!'; setTimeout(() => this.textContent='Copy', 2000)"
+                    class="text-xs text-txt-secondary hover:text-txt-primary font-medium">Copy</button>
+        </div>
+        {% endif %}
+
+        {% if proposal.status == 'Accepted' and not proposal.contract %}
+        <form method="GET" action="{{ url_for('create_contract', proposal_id=proposal.id) }}" class="inline">
+            {{ btn("Create Contract &rarr;", variant="primary", size="sm", type="submit") }}
+        </form>
+        {% elif proposal.contract %}
+        {{ btn("View Contract", href=url_for('view_contract', contract_id=proposal.contract.id), variant="secondary", size="sm") }}
+        {% endif %}
+    </div>
+
+    {# Proposal preview (client view) #}
+    <div class="bg-white shadow-card rounded-2xl p-8 mb-6">
+        {% if proposal.cover_note %}
+        <div class="prose prose-sm max-w-none mb-8 text-txt-secondary whitespace-pre-wrap">{{ proposal.cover_note }}</div>
+        {% endif %}
+
+        <h2 class="text-lg font-bold text-txt-primary mb-2">{{ estimate.name }}</h2>
+        <p class="text-sm text-txt-secondary mb-6">{{ estimate.client.name }}{% if estimate.adu_type %} &middot; {{ estimate.adu_type }}{% endif %}{% if estimate.sqft %} &middot; {{ estimate.sqft }} SF{% endif %}</p>
+
+        {# Line items grouped by cost code (client view — no internal costs) #}
+        {% for code, items in grouped.items() %}
+        <div class="mb-4">
+            <h3 class="text-sm font-semibold text-txt-primary mb-2 border-b border-hairline pb-1">{{ items[0].cost_code.name if items[0].cost_code else code }}</h3>
+            <div class="space-y-1">
+                {% for li in items %}
+                <div class="flex justify-between text-sm">
+                    <span class="text-txt-secondary">{{ li.description }} <span class="text-txt-muted">({{ "{:.0f}".format(li.qty|float) }} {{ li.unit }})</span></span>
+                    <span class="font-medium text-txt-primary">${{ "{:,.2f}".format(li.extended_cost|float) }}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+
+        {# Total #}
+        <div class="border-t-2 border-txt-primary pt-4 mt-6">
+            <div class="flex justify-between text-lg">
+                <span class="font-bold text-txt-primary">Total</span>
+                <span class="font-bold text-txt-primary">${{ "{:,.2f}".format(estimate.total|float) }}</span>
+            </div>
+        </div>
+
+        {% if proposal.scope_text %}
+        <div class="mt-8">
+            <h3 class="text-sm font-semibold text-txt-primary mb-2">Scope of Work</h3>
+            <div class="text-sm text-txt-secondary whitespace-pre-wrap">{{ proposal.scope_text }}</div>
+        </div>
+        {% endif %}
+
+        {% if proposal.exclusions_text %}
+        <div class="mt-6">
+            <h3 class="text-sm font-semibold text-txt-primary mb-2">Exclusions</h3>
+            <div class="text-sm text-txt-secondary whitespace-pre-wrap">{{ proposal.exclusions_text }}</div>
+        </div>
+        {% endif %}
+
+        <div class="mt-6 text-xs text-txt-muted">
+            Valid for {{ proposal.validity_days }} days{% if proposal.expires_on %} (expires {{ proposal.expires_on.strftime('%m/%d/%Y') }}){% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

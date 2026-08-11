@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import input, textarea, btn, card, form_actions %}
+
+{% block title %}New Proposal - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto">
+    {% call card(title="Create Proposal from Estimate") %}
+        <div class="bg-pill rounded-xl p-4 mb-6 text-sm">
+            <p class="font-semibold text-txt-primary">{{ estimate.name }}</p>
+            <p class="text-txt-secondary">{{ estimate.client.name }} &middot; {{ estimate.adu_type or 'ADU' }}{% if estimate.sqft %} &middot; {{ estimate.sqft }}SF{% endif %}</p>
+            <p class="text-txt-primary font-bold mt-1">${{ "{:,.2f}".format(estimate.total|float) }}</p>
+        </div>
+
+        <form method="POST" class="space-y-6">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+            {{ textarea("cover_note", label="Cover Note (shown at top of proposal)", placeholder="Dear Client,\n\nThank you for the opportunity to provide this estimate for your ADU project...", rows=4) }}
+
+            {{ textarea("scope_text", label="Scope of Work", value=default_scope, rows=12) }}
+
+            {{ textarea("exclusions_text", label="Exclusions (optional)", placeholder="The following items are NOT included in this proposal:\n- Furniture and furnishings\n- Window treatments\n- ...", rows=4) }}
+
+            {{ input("validity_days", label="Proposal Valid For (days)", type="number", value="30", attrs='min="7" max="180"') }}
+
+            {{ form_actions(cancel_href=url_for('view_estimate', estimate_id=estimate.id), submit_text="Create Proposal") }}
+        </form>
+    {% endcall %}
+</div>
+{% endblock %}

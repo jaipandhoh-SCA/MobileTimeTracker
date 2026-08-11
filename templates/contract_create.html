@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import input, textarea, btn, card, form_actions %}
+
+{% block title %}Create Contract - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto">
+    {% call card(title="Create Contract") %}
+        <div class="bg-pill rounded-xl p-4 mb-6 text-sm">
+            <p class="font-semibold text-txt-primary">{{ estimate.client.name }}</p>
+            <p class="text-txt-secondary">{{ estimate.name }} &middot; ${{ "{:,.2f}".format(estimate.total|float) }}</p>
+        </div>
+
+        <form method="POST" class="space-y-6" x-data="{ draws: {{ default_draws|tojson }} }">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+            {{ input("contract_number", label="Contract Number", value=contract_number, required=true) }}
+
+            {{ textarea("scope_text", label="Scope of Work", value=default_scope, rows=10) }}
+
+            {{ textarea("terms_text", label="Terms & Conditions", value=default_terms, rows=12) }}
+
+            {# Draw Schedule #}
+            <div>
+                <label class="block text-sm font-semibold text-txt-secondary mb-2">Draw / Payment Schedule</label>
+                <p class="text-xs text-txt-muted mb-3">Total: ${{ "{:,.2f}".format(estimate.total|float) }}. Percentages should sum to 100%.</p>
+
+                <div class="space-y-2">
+                    <template x-for="(draw, idx) in draws" :key="idx">
+                        <div class="flex gap-2 items-center">
+                            <input type="text" :name="'milestone'" x-model="draw[0]"
+                                   class="flex-1 px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target"
+                                   placeholder="Milestone name">
+                            <div class="relative w-20">
+                                <input type="number" :name="'draw_pct'" x-model="draw[1]" step="1" min="0" max="100"
+                                       class="w-full px-3 py-2 border border-hairline rounded-xl text-sm text-right focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                                <span class="absolute right-2 top-1/2 -translate-y-1/2 text-txt-muted text-xs">%</span>
+                            </div>
+                            <button type="button" @click="draws.splice(idx, 1)"
+                                    class="text-neg/60 hover:text-neg text-sm px-1">&times;</button>
+                        </div>
+                    </template>
+                </div>
+
+                <button type="button" @click="draws.push(['', 0])"
+                        class="mt-2 text-sm text-txt-secondary hover:text-txt-primary">+ Add milestone</button>
+
+                <p class="mt-2 text-xs font-medium" :class="{ 'text-pos': draws.reduce((s, d) => s + Number(d[1]), 0) === 100, 'text-neg': draws.reduce((s, d) => s + Number(d[1]), 0) !== 100 }">
+                    Total: <span x-text="draws.reduce((s, d) => s + Number(d[1]), 0)"></span>%
+                </p>
+            </div>
+
+            {{ form_actions(cancel_href=url_for('view_proposal', proposal_id=proposal.id), submit_text="Create Contract") }}
+        </form>
+    {% endcall %}
+</div>
+{% endblock %}

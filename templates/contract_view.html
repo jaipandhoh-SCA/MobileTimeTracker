@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, stat_card, page_header %}
+
+{% block title %}Contract {{ contract.contract_number }} - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto">
+
+    {{ page_header("Contract " ~ contract.contract_number,
+        subtitle=contract.client.name ~ " &middot; $" ~ "{:,.2f}".format(contract.total_price|float),
+        back_text="&larr; Proposal", back_href=url_for('view_proposal', proposal_id=contract.proposal_id)) }}
+
+    {# Status + Actions #}
+    <div class="flex flex-wrap items-center gap-3 mb-6">
+        {% if contract.status == 'Draft' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-txt-secondary">Draft</span>
+        {% elif contract.status == 'Sent' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-50 text-blue-700">Sent</span>
+        {% elif contract.status == 'Signed' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-emerald-50 text-pos">Signed by {{ contract.signed_name }}</span>
+        {% elif contract.status == 'Executed' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-emerald-100 text-pos font-bold">Executed</span>
+        {% elif contract.status == 'Voided' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-50 text-neg">Voided</span>
+        {% endif %}
+
+        {% if contract.status not in ('Signed', 'Executed') %}
+        {{ btn("Edit", href=url_for('edit_contract', contract_id=contract.id), size="sm") }}
+        {% endif %}
+
+        {% if contract.status == 'Draft' %}
+        <form method="POST" action="{{ url_for('send_contract', contract_id=contract.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            {{ btn("Send &amp; Get Link", type="submit", variant="primary", size="sm") }}
+        </form>
+        {% endif %}
+
+        {% if contract.status in ('Sent', 'Draft') %}
+        <div class="flex items-center gap-2">
+            <input type="text" readonly value="{{ url_for('public_contract', token=contract.share_token, _external=True) }}"
+                   id="contractUrl" class="text-xs px-3 py-2 border border-hairline rounded-lg w-64 bg-pill">
+            <button onclick="navigator.clipboard.writeText(document.getElementById('contractUrl').value); this.textContent='Copied!'; setTimeout(() => this.textContent='Copy', 2000)"
+                    class="text-xs text-txt-secondary hover:text-txt-primary font-medium">Copy</button>
+        </div>
+        {% endif %}
+    </div>
+
+    {# Summary Cards #}
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        {{ stat_card("Contract Value", "${:,.0f}".format(contract.total_price|float)) }}
+        {{ stat_card("Draws", draws|length) }}
+        {% if contract.signed_at %}
+        {{ stat_card("Signed", contract.signed_at|format_date) }}
+        {% endif %}
+        {% if contract.signed_name %}
+        {{ stat_card("Signed By", contract.signed_name) }}
+        {% endif %}
+    </div>
+
+    {# Contract Content #}
+    <div class="bg-white shadow-card rounded-2xl p-8 mb-6">
+        {% if contract.scope_text %}
+        <h3 class="text-base font-semibold text-txt-primary mb-2">Scope of Work</h3>
+        <div class="text-sm text-txt-secondary whitespace-pre-wrap mb-6">{{ contract.scope_text }}</div>
+        {% endif %}
+
+        {# Draw Schedule #}
+        <h3 class="text-base font-semibold text-txt-primary mb-3">Draw / Payment Schedule</h3>
+        <div class="overflow-x-auto mb-6">
+            <table class="min-w-full divide-y divide-hairline">
+                <thead class="bg-pill">
+                    <tr>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">#</th>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">Milestone</th>
+                        <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">%</th>
+                        <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Amount</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-hairline">
+                    {% for draw in draws %}
+                    <tr>
+                        <td class="px-4 py-2 text-sm text-txt-muted">{{ loop.index }}</td>
+                        <td class="px-4 py-2 text-sm text-txt-primary font-medium">{{ draw.milestone }}</td>
+                        <td class="px-4 py-2 text-sm text-right text-txt-secondary">{{ draw.pct_of_total }}%</td>
+                        <td class="px-4 py-2 text-sm text-right font-medium text-txt-primary">${{ "{:,.2f}".format(draw.amount|float) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot class="bg-pill">
+                    <tr>
+                        <td colspan="2" class="px-4 py-2 text-sm font-semibold text-txt-primary">Total</td>
+                        <td class="px-4 py-2 text-sm text-right font-semibold">100%</td>
+                        <td class="px-4 py-2 text-sm text-right font-bold text-txt-primary">${{ "{:,.2f}".format(contract.total_price|float) }}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+
+        {% if contract.terms_text %}
+        <h3 class="text-base font-semibold text-txt-primary mb-2">Terms & Conditions</h3>
+        <div class="text-sm text-txt-secondary whitespace-pre-wrap">{{ contract.terms_text }}</div>
+        {% endif %}
+    </div>
+
+    {# Signature details #}
+    {% if contract.is_signed %}
+    <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 mb-6">
+        <h3 class="text-sm font-semibold text-emerald-800 mb-2">Signature Record</h3>
+        <div class="text-sm text-emerald-700 space-y-1">
+            <p><strong>Signed by:</strong> {{ contract.signed_name }}</p>
+            {% if contract.signed_email %}<p><strong>Email:</strong> {{ contract.signed_email }}</p>{% endif %}
+            <p><strong>Date:</strong> {{ contract.signed_at|format_datetime }}</p>
+            <p><strong>IP Address:</strong> {{ contract.signed_ip }}</p>
+            {% if contract.signed_pdf_key %}<p><strong>Audit log:</strong> Stored in R2</p>{% endif %}
+        </div>
+        {% if contract.signature_data %}
+        <div class="mt-4">
+            <p class="text-xs text-emerald-600 font-medium mb-1">Signature:</p>
+            <img src="{{ contract.signature_data }}" alt="Signature" class="max-h-16 border border-emerald-200 rounded-lg bg-white p-2">
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

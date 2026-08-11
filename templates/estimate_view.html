@@ -45,6 +45,15 @@
         {% endif %}
 
         {{ btn("PDF Takeoff (Coming Soon)", href=url_for('estimate_takeoff', estimate_id=estimate.id), variant="secondary", size="sm") }}
+
+        {% set latest_proposal = estimate.proposals.first() %}
+        {% if not latest_proposal %}
+        <form method="GET" action="{{ url_for('create_proposal', estimate_id=estimate.id) }}" class="inline">
+            {{ btn("Create Proposal &rarr;", variant="primary", size="sm", type="submit") }}
+        </form>
+        {% else %}
+        {{ btn("View Proposal", href=url_for('view_proposal', proposal_id=latest_proposal.id), variant="secondary", size="sm") }}
+        {% endif %}
     </div>
 
     {# Summary Cards #}

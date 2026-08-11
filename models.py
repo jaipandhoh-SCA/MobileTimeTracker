@@ -151,6 +151,8 @@ COST_SOURCES = ['time', 'payroll', 'po', 'invoice', 'manual']
 
 ADU_TYPES = ['Studio', '1BR', '2BR', 'Detached', 'Garage Conversion']
 ESTIMATE_STATUSES = ['Draft', 'Sent', 'Accepted', 'Rejected', 'Expired']
+PROPOSAL_STATUSES = ['Draft', 'Sent', 'Viewed', 'Accepted', 'Rejected', 'Expired']
+CONTRACT_STATUSES = ['Draft', 'Sent', 'Signed', 'Executed', 'Voided']
 
 
 class Project(db.Model):
@@ -489,6 +491,124 @@ class EstimateLineItem(db.Model):
     @property
     def material_amount(self):
         return (self.extended_cost * self.material_pct / 100).quantize(Decimal('0.01'))
+
+
+class Proposal(db.Model):
+    """Client-facing branded proposal generated from an estimate."""
+    __tablename__ = 'proposals'
+    id = db.Column(db.Integer, primary_key=True)
+    estimate_id = db.Column(db.Integer, db.ForeignKey('estimates.id'), nullable=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='Draft')
+    share_token = db.Column(db.String(64), unique=True, nullable=False)
+    # Content overrides (if None, pulled from estimate/client)
+    cover_note = db.Column(db.Text, nullable=True)
+    scope_text = db.Column(db.Text, nullable=True)
+    exclusions_text = db.Column(db.Text, nullable=True)
+    validity_days = db.Column(db.Integer, nullable=False, default=30)
+    # Tracking
+    viewed_at = db.Column(db.DateTime, nullable=True)
+    viewed_ip = db.Column(db.String(45), nullable=True)
+    accepted_at = db.Column(db.DateTime, nullable=True)
+    accepted_ip = db.Column(db.String(45), nullable=True)
+    accepted_name = db.Column(db.String(200), nullable=True)
+    # Storage
+    pdf_storage_key = db.Column(db.String(500), nullable=True)
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    estimate = db.relationship('Estimate', backref=db.backref('proposals', lazy='dynamic'))
+    client = db.relationship('Client', backref=db.backref('proposals', lazy='dynamic'))
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+
+    __table_args__ = (
+        Index('idx_proposal_client', 'client_id'),
+        Index('idx_proposal_token', 'share_token'),
+    )
+
+    @property
+    def is_expired(self):
+        if not self.created_at or not self.validity_days:
+            return False
+        from datetime import timedelta
+        return datetime.now(timezone.utc) > self.created_at.replace(tzinfo=timezone.utc) + timedelta(days=self.validity_days)
+
+    @property
+    def expires_on(self):
+        if not self.created_at or not self.validity_days:
+            return None
+        from datetime import timedelta
+        return (self.created_at + timedelta(days=self.validity_days)).date()
+
+
+class Contract(db.Model):
+    """Contract generated from an accepted proposal."""
+    __tablename__ = 'contracts'
+    id = db.Column(db.Integer, primary_key=True)
+    proposal_id = db.Column(db.Integer, db.ForeignKey('proposals.id'), nullable=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    estimate_id = db.Column(db.Integer, db.ForeignKey('estimates.id'), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='Draft')
+    share_token = db.Column(db.String(64), unique=True, nullable=False)
+    # Contract content
+    contract_number = db.Column(db.String(50), nullable=False)
+    scope_text = db.Column(db.Text, nullable=True)
+    terms_text = db.Column(db.Text, nullable=True)
+    total_price = db.Column(db.Numeric(12, 2), nullable=False)
+    # Signature
+    signed_at = db.Column(db.DateTime, nullable=True)
+    signed_ip = db.Column(db.String(45), nullable=True)
+    signed_name = db.Column(db.String(200), nullable=True)
+    signed_email = db.Column(db.String(200), nullable=True)
+    signature_data = db.Column(db.Text, nullable=True)  # Base64 canvas signature
+    # Storage
+    pdf_storage_key = db.Column(db.String(500), nullable=True)
+    signed_pdf_key = db.Column(db.String(500), nullable=True)
+    # PandaDoc (stub for future integration)
+    pandadoc_id = db.Column(db.String(100), nullable=True)
+    pandadoc_status = db.Column(db.String(50), nullable=True)
+    # Meta
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    proposal = db.relationship('Proposal', backref=db.backref('contract', uselist=False))
+    client = db.relationship('Client', backref=db.backref('contracts', lazy='dynamic'))
+    estimate = db.relationship('Estimate')
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+
+    __table_args__ = (
+        Index('idx_contract_client', 'client_id'),
+        Index('idx_contract_token', 'share_token'),
+    )
+
+    @property
+    def is_signed(self):
+        return self.signed_at is not None
+
+
+class DrawScheduleItem(db.Model):
+    """Payment/draw schedule line item on a contract."""
+    __tablename__ = 'draw_schedule_items'
+    id = db.Column(db.Integer, primary_key=True)
+    contract_id = db.Column(db.Integer, db.ForeignKey('contracts.id'), nullable=False)
+    milestone = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.String(500), nullable=True)
+    pct_of_total = db.Column(db.Numeric(5, 2), nullable=False, default=0)
+    amount = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    due_date = db.Column(db.Date, nullable=True)
+    paid_at = db.Column(db.DateTime, nullable=True)
+    paid_amount = db.Column(db.Numeric(12, 2), nullable=True)
+
+    contract = db.relationship('Contract', backref=db.backref(
+        'draw_schedule', lazy='dynamic', cascade='all, delete-orphan',
+        order_by='DrawScheduleItem.sort_order'))
+
+    __table_args__ = (
+        Index('idx_draw_contract', 'contract_id'),
+    )
 
 
 class TimeEntry(db.Model):

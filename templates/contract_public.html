@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contract {{ contract.contract_number }} - All Inclusive ADU</title>
+    <script src="https://cdn.tailwindcss.com/4"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        @media print { .no-print { display: none !important; } }
+        canvas { touch-action: none; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    {# Header bar #}
+    <div class="bg-white border-b border-gray-200 py-4 px-6 no-print">
+        <div class="max-w-4xl mx-auto flex items-center justify-between">
+            <div>
+                <h1 class="text-lg font-bold text-gray-900">All Inclusive ADU</h1>
+                <p class="text-sm text-gray-500">Construction Contract</p>
+            </div>
+            {% if contract.is_signed %}
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-emerald-50 text-emerald-700">Signed</span>
+            {% elif contract.status == 'Voided' %}
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-50 text-red-700">Voided</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="max-w-4xl mx-auto px-6 py-8">
+        {# Contract content #}
+        <div class="bg-white rounded-2xl shadow-lg p-8 mb-8">
+            <div class="mb-6">
+                <h2 class="text-2xl font-bold text-gray-900">Contract {{ contract.contract_number }}</h2>
+                <p class="text-gray-600 mt-1">Prepared for: <strong>{{ contract.client.name }}</strong></p>
+                {% if contract.client.address %}
+                <p class="text-gray-500 text-sm">{{ contract.client.address }}</p>
+                {% endif %}
+            </div>
+
+            <div class="border-t border-gray-200 pt-6 mb-6">
+                <div class="flex justify-between text-lg mb-4">
+                    <span class="font-bold text-gray-900">Contract Value</span>
+                    <span class="font-bold text-gray-900">${{ "{:,.2f}".format(contract.total_price|float) }}</span>
+                </div>
+            </div>
+
+            {% if contract.scope_text %}
+            <div class="mb-8">
+                <h3 class="text-base font-semibold text-gray-900 mb-2">Scope of Work</h3>
+                <div class="text-sm text-gray-600 whitespace-pre-wrap">{{ contract.scope_text }}</div>
+            </div>
+            {% endif %}
+
+            {# Draw / Payment Schedule #}
+            {% if draws %}
+            <div class="mb-8">
+                <h3 class="text-base font-semibold text-gray-900 mb-3">Payment Schedule</h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">#</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Milestone</th>
+                                <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">%</th>
+                                <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            {% for draw in draws %}
+                            <tr>
+                                <td class="px-4 py-2 text-sm text-gray-500">{{ loop.index }}</td>
+                                <td class="px-4 py-2 text-sm text-gray-900 font-medium">{{ draw.milestone }}</td>
+                                <td class="px-4 py-2 text-sm text-right text-gray-600">{{ draw.pct_of_total }}%</td>
+                                <td class="px-4 py-2 text-sm text-right font-medium text-gray-900">${{ "{:,.2f}".format(draw.amount|float) }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                        <tfoot class="bg-gray-50">
+                            <tr>
+                                <td colspan="2" class="px-4 py-2 text-sm font-semibold text-gray-900">Total</td>
+                                <td class="px-4 py-2 text-sm text-right font-semibold">100%</td>
+                                <td class="px-4 py-2 text-sm text-right font-bold text-gray-900">${{ "{:,.2f}".format(contract.total_price|float) }}</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+            {% endif %}
+
+            {% if contract.terms_text %}
+            <div class="mb-6">
+                <h3 class="text-base font-semibold text-gray-900 mb-2">Terms & Conditions</h3>
+                <div class="text-sm text-gray-600 whitespace-pre-wrap">{{ contract.terms_text }}</div>
+            </div>
+            {% endif %}
+        </div>
+
+        {# Signature form — only show if not yet signed and not voided #}
+        {% if not contract.is_signed and contract.status != 'Voided' %}
+        <div class="bg-white rounded-2xl shadow-lg p-8 no-print">
+            <h3 class="text-lg font-bold text-gray-900 mb-4">Sign This Contract</h3>
+            <p class="text-sm text-gray-600 mb-6">By signing below, you acknowledge that you have reviewed and agree to the scope of work, payment schedule, and terms outlined above.</p>
+
+            <form method="POST" action="{{ url_for('sign_contract_public', token=token) }}" id="signForm">
+                <div class="space-y-4 mb-6">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Full Name <span class="text-red-500">*</span></label>
+                        <input type="text" name="signed_name" required placeholder="Enter your full name"
+                               class="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/20">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                        <input type="email" name="signed_email" placeholder="your@email.com"
+                               class="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/20">
+                    </div>
+                </div>
+
+                {# Signature Pad #}
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Signature <span class="text-red-500">*</span></label>
+                    <div class="border-2 border-dashed border-gray-300 rounded-xl p-2 bg-white">
+                        <canvas id="signaturePad" width="600" height="200"
+                                class="w-full rounded-lg cursor-crosshair" style="height: 200px;"></canvas>
+                    </div>
+                    <div class="flex justify-between mt-2">
+                        <p class="text-xs text-gray-400">Draw your signature above</p>
+                        <button type="button" onclick="clearSignature()" class="text-xs text-gray-500 hover:text-gray-700 underline">Clear</button>
+                    </div>
+                    <input type="hidden" name="signature_data" id="signatureData">
+                </div>
+
+                <button type="submit" id="submitBtn"
+                        class="w-full px-6 py-3 bg-gray-900 text-white rounded-xl text-sm font-medium hover:bg-gray-800 transition-colors">
+                    Sign Contract
+                </button>
+            </form>
+        </div>
+
+        {% elif contract.is_signed %}
+        <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center">
+            <p class="text-emerald-800 font-semibold text-lg">Contract Signed</p>
+            <p class="text-emerald-600 text-sm mt-1">Signed by {{ contract.signed_name }} on {{ contract.signed_at.strftime('%B %d, %Y at %I:%M %p') if contract.signed_at else 'N/A' }}</p>
+            {% if contract.signature_data %}
+            <div class="mt-4 inline-block">
+                <img src="{{ contract.signature_data }}" alt="Signature" class="max-h-20 border border-emerald-200 rounded-lg bg-white p-2">
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="text-center text-xs text-gray-400 mt-8 no-print">
+            <button onclick="window.print()" class="text-gray-500 hover:text-gray-700 underline">Print this contract</button>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        const canvas = document.getElementById('signaturePad');
+        if (!canvas) return;
+
+        const ctx = canvas.getContext('2d');
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+        let hasSignature = false;
+
+        // Set canvas resolution to match display size
+        function resizeCanvas() {
+            const rect = canvas.getBoundingClientRect();
+            canvas.width = rect.width * 2;
+            canvas.height = rect.height * 2;
+            ctx.scale(2, 2);
+            ctx.strokeStyle = '#1a1a1a';
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+        }
+        resizeCanvas();
+
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return {
+                x: clientX - rect.left,
+                y: clientY - rect.top
+            };
+        }
+
+        function startDrawing(e) {
+            e.preventDefault();
+            isDrawing = true;
+            const pos = getPos(e);
+            lastX = pos.x;
+            lastY = pos.y;
+        }
+
+        function draw(e) {
+            e.preventDefault();
+            if (!isDrawing) return;
+            const pos = getPos(e);
+            ctx.beginPath();
+            ctx.moveTo(lastX, lastY);
+            ctx.lineTo(pos.x, pos.y);
+            ctx.stroke();
+            lastX = pos.x;
+            lastY = pos.y;
+            hasSignature = true;
+        }
+
+        function stopDrawing(e) {
+            if (e) e.preventDefault();
+            isDrawing = false;
+        }
+
+        // Mouse events
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', draw);
+        canvas.addEventListener('mouseup', stopDrawing);
+        canvas.addEventListener('mouseleave', stopDrawing);
+
+        // Touch events
+        canvas.addEventListener('touchstart', startDrawing);
+        canvas.addEventListener('touchmove', draw);
+        canvas.addEventListener('touchend', stopDrawing);
+
+        // Clear
+        window.clearSignature = function() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            hasSignature = false;
+            document.getElementById('signatureData').value = '';
+        };
+
+        // Form submit
+        document.getElementById('signForm').addEventListener('submit', function(e) {
+            if (!hasSignature) {
+                e.preventDefault();
+                alert('Please draw your signature before submitting.');
+                return;
+            }
+            document.getElementById('signatureData').value = canvas.toDataURL('image/png');
+        });
+    })();
+    </script>
+</body>
+</html>
