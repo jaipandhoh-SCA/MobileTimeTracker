@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, page_header, form_actions %}
+
+{% block title %}Notification Settings{% endblock %}
+
+{% block content %}
+{{ page_header("Notification Preferences", subtitle="Control which notifications you receive",
+               back_text="Settings", back_href=url_for('edit_profile')) }}
+
+<form method="POST">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {% call card(title="Task Notifications") %}
+    <div class="space-y-4">
+        <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="task_assigned" value="1"
+                   class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20 w-5 h-5"
+                   {{ 'checked' if prefs.task_assigned }}>
+            <div>
+                <div class="text-sm font-medium text-txt-primary">New task assigned</div>
+                <div class="text-xs text-txt-muted">Notify me when I'm assigned to a new task</div>
+            </div>
+        </label>
+
+        <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="task_changed" value="1"
+                   class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20 w-5 h-5"
+                   {{ 'checked' if prefs.task_changed }}>
+            <div>
+                <div class="text-sm font-medium text-txt-primary">Task updated</div>
+                <div class="text-xs text-txt-muted">Notify me when a task I'm assigned to is changed</div>
+            </div>
+        </label>
+
+        <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="task_reminder" value="1"
+                   class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20 w-5 h-5"
+                   {{ 'checked' if prefs.task_reminder }}>
+            <div>
+                <div class="text-sm font-medium text-txt-primary">Task reminders</div>
+                <div class="text-xs text-txt-muted">Remind me about upcoming task deadlines</div>
+            </div>
+        </label>
+    </div>
+    {% endcall %}
+
+    <div class="mt-6">
+        {{ form_actions(cancel_href=url_for('edit_profile'), submit_text="Save Preferences") }}
+    </div>
+</form>
+{% endblock %}

@@ -1,0 +1,473 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, status_badge, empty_state, page_header, modal, input, select %}
+
+{% block title %}Schedule — {{ client.name }}{% endblock %}
+
+{% block content %}
+{{ page_header(
+    "Schedule",
+    subtitle=client.name ~ " — " ~ project.name,
+    cta_text="+ Task",
+    cta_href=url_for('create_task', project_id=project.id),
+    back_text="Client",
+    back_href=url_for('edit_client', client_id=client.id)
+) }}
+
+{# ── View Tabs ────────────────────────────────────────────────── #}
+<div class="flex gap-2 mb-6">
+    <a href="{{ url_for('project_schedule', project_id=project.id, view='gantt') }}"
+       class="px-4 py-2 rounded-xl text-sm font-medium transition-colors duration-150
+              {{ 'bg-txt-primary text-white' if view == 'gantt' else 'bg-pill text-txt-secondary hover:bg-gray-200' }}">
+        Gantt
+    </a>
+    <a href="{{ url_for('project_schedule', project_id=project.id, view='list') }}"
+       class="px-4 py-2 rounded-xl text-sm font-medium transition-colors duration-150
+              {{ 'bg-txt-primary text-white' if view == 'list' else 'bg-pill text-txt-secondary hover:bg-gray-200' }}">
+        List
+    </a>
+    <a href="{{ url_for('project_schedule', project_id=project.id, view='calendar') }}"
+       class="px-4 py-2 rounded-xl text-sm font-medium transition-colors duration-150
+              {{ 'bg-txt-primary text-white' if view == 'calendar' else 'bg-pill text-txt-secondary hover:bg-gray-200' }}">
+        Calendar
+    </a>
+</div>
+
+{# ── Phase Management ────────────────────────────────────────── #}
+<div x-data="{ showPhases: false }" class="mb-6">
+    <button @click="showPhases = !showPhases"
+            class="text-sm font-medium text-txt-secondary hover:text-txt-primary flex items-center gap-1">
+        <svg class="w-4 h-4 transition-transform" :class="showPhases && 'rotate-90'" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+        Manage Phases ({{ phases|length }})
+    </button>
+    <div x-show="showPhases" x-collapse x-cloak class="mt-3">
+        {% call card() %}
+        <div class="space-y-3">
+            {% for phase in phases %}
+            <div class="flex items-center gap-3">
+                <span class="w-3 h-3 rounded-full flex-shrink-0" style="background: {{ phase.color }}"></span>
+                <span class="text-sm font-medium text-txt-primary flex-1">{{ phase.name }}</span>
+                <span class="text-xs text-txt-muted">{{ phase.tasks|length }} tasks</span>
+                <form method="POST" action="{{ url_for('manage_phases', project_id=project.id) }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="action" value="delete">
+                    <input type="hidden" name="phase_id" value="{{ phase.id }}">
+                    <button type="submit" class="text-xs text-neg hover:underline"
+                            onclick="return confirm('Delete phase? Tasks will move to unphased.')">Delete</button>
+                </form>
+            </div>
+            {% endfor %}
+            <form method="POST" action="{{ url_for('manage_phases', project_id=project.id) }}"
+                  class="flex items-end gap-3 pt-3 border-t border-hairline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="action" value="add">
+                <div class="flex-1">
+                    <input type="text" name="name" placeholder="New phase name" required
+                           class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                </div>
+                <input type="color" name="color" value="#6366f1" class="w-10 h-10 rounded-lg border border-hairline cursor-pointer">
+                {{ btn("Add Phase", type="submit", size="sm") }}
+            </form>
+        </div>
+        {% endcall %}
+    </div>
+</div>
+
+{# ── GANTT VIEW ──────────────────────────────────────────────── #}
+{% if view == 'gantt' %}
+<div id="gantt-wrapper" class="bg-white shadow-card rounded-2xl overflow-hidden mb-6">
+    {% if gantt_tasks %}
+    <div class="overflow-x-auto" id="gantt-container" style="min-height: 200px;">
+        <canvas id="ganttChart"></canvas>
+    </div>
+    {% else %}
+    {{ empty_state("No tasks with dates yet. Add tasks with start/end dates to see the Gantt chart.", icon="clock",
+                    cta_text="+ Add Task", cta_href=url_for('create_task', project_id=project.id)) }}
+    {% endif %}
+</div>
+{% endif %}
+
+{# ── CALENDAR VIEW ───────────────────────────────────────────── #}
+{% if view == 'calendar' %}
+<div x-data="calendarView()" class="mb-6">
+    <div class="bg-white shadow-card rounded-2xl overflow-hidden">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-hairline">
+            <button @click="prevMonth()" class="p-1 rounded-lg hover:bg-pill">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            </button>
+            <h2 class="text-base font-semibold text-txt-primary" x-text="monthLabel"></h2>
+            <button @click="nextMonth()" class="p-1 rounded-lg hover:bg-pill">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+            </button>
+        </div>
+        <div class="grid grid-cols-7 text-center text-xs font-medium text-txt-muted border-b border-hairline">
+            <template x-for="d in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']">
+                <div class="py-2" x-text="d"></div>
+            </template>
+        </div>
+        <div class="grid grid-cols-7 min-h-[400px]">
+            <template x-for="day in calendarDays" :key="day.key">
+                <div class="border-r border-b border-hairline p-1 min-h-[60px] md:min-h-[80px]"
+                     :class="day.isToday ? 'bg-blue-50/50' : (day.inMonth ? '' : 'bg-pill/50')">
+                    <div class="text-xs font-medium mb-0.5"
+                         :class="day.isToday ? 'text-blue-600' : (day.inMonth ? 'text-txt-secondary' : 'text-txt-muted')"
+                         x-text="day.num"></div>
+                    <template x-for="task in day.tasks" :key="task.id">
+                        <a :href="'{{ url_for('edit_task', project_id=project.id, task_id=0) }}'.replace('/0/', '/' + task.id + '/')"
+                           class="block text-[10px] leading-tight px-1 py-0.5 rounded truncate mb-0.5 text-white"
+                           :style="'background:' + task.color"
+                           :title="task.name"
+                           x-text="task.name"></a>
+                    </template>
+                </div>
+            </template>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{# ── LIST VIEW ───────────────────────────────────────────────── #}
+{% if view == 'list' %}
+{% for phase in phases %}
+<div class="mb-6">
+    <div class="flex items-center gap-2 mb-3">
+        <span class="w-3 h-3 rounded-full" style="background: {{ phase.color }}"></span>
+        <h3 class="text-sm font-semibold text-txt-primary">{{ phase.name }}</h3>
+        <span class="text-xs text-txt-muted">({{ phase.tasks|length }})</span>
+    </div>
+    {% if phase.tasks %}
+    {{ _task_table(phase.tasks, project) }}
+    {% else %}
+    <div class="bg-white shadow-card rounded-2xl px-6 py-8 text-center text-sm text-txt-muted">No tasks in this phase</div>
+    {% endif %}
+</div>
+{% endfor %}
+
+{% if unphased_tasks %}
+<div class="mb-6">
+    <h3 class="text-sm font-semibold text-txt-primary mb-3">Unphased Tasks</h3>
+    {{ _task_table(unphased_tasks, project) }}
+</div>
+{% endif %}
+
+{% if not phases and not unphased_tasks %}
+{{ empty_state("No tasks yet. Create your first task to start scheduling.", icon="clock",
+                cta_text="+ Add Task", cta_href=url_for('create_task', project_id=project.id)) }}
+{% endif %}
+{% endif %}
+
+{# ── TASK TABLE MACRO ────────────────────────────────────────── #}
+{% macro _task_table(tasks, project) %}
+<div class="bg-white shadow-card rounded-2xl overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-hairline">
+            <thead class="bg-pill">
+                <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-txt-muted uppercase">Task</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-txt-muted uppercase hidden md:table-cell">Dates</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-txt-muted uppercase hidden sm:table-cell">Assignees</th>
+                    <th class="px-4 py-3 text-center text-xs font-medium text-txt-muted uppercase">Status</th>
+                    <th class="px-4 py-3 text-right text-xs font-medium text-txt-muted uppercase">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-hairline">
+                {% for task in tasks %}
+                <tr class="hover:bg-pill transition-colors duration-150">
+                    <td class="px-4 py-3">
+                        <div class="text-sm font-medium text-txt-primary">{{ task.name }}</div>
+                        {% if task.cost_code %}
+                        <div class="text-xs text-txt-muted">{{ task.cost_code.code }} {{ task.cost_code.name }}</div>
+                        {% endif %}
+                        {% if task.is_overdue %}
+                        <span class="text-[10px] text-neg font-medium">OVERDUE</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-3 text-sm text-txt-secondary hidden md:table-cell whitespace-nowrap">
+                        {% if task.start_date and task.end_date %}
+                        {{ task.start_date.strftime('%m/%d') }} — {{ task.end_date.strftime('%m/%d/%y') }}
+                        <span class="text-xs text-txt-muted">({{ task.duration_days }}d)</span>
+                        {% elif task.start_date %}
+                        {{ task.start_date.strftime('%m/%d/%y') }}
+                        {% else %}
+                        <span class="text-txt-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-3 text-sm text-txt-secondary hidden sm:table-cell">
+                        {% for name in task.assignee_names %}
+                        <span class="inline-block bg-pill rounded-full px-2 py-0.5 text-xs mr-1 mb-0.5">{{ name }}</span>
+                        {% endfor %}
+                    </td>
+                    <td class="px-4 py-3 text-center" x-data>
+                        <select onchange="updateTaskStatus({{ task.id }}, this.value, {{ project.id }})"
+                                class="text-xs border border-hairline rounded-lg px-2 py-1 bg-white focus:outline-none
+                                       {% if task.status == 'Complete' %}text-pos
+                                       {% elif task.status == 'Blocked' %}text-neg
+                                       {% elif task.status == 'In Progress' %}text-blue-600
+                                       {% else %}text-txt-secondary{% endif %}">
+                            {% for s in task_statuses %}
+                            <option value="{{ s }}" {{ 'selected' if task.status == s }}>{{ s }}</option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td class="px-4 py-3 text-right">
+                        <a href="{{ url_for('edit_task', project_id=project.id, task_id=task.id) }}"
+                           class="text-xs text-txt-secondary hover:text-txt-primary hover:underline">Edit</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endmacro %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Inline status update
+function updateTaskStatus(taskId, status, projectId) {
+    const url = `/schedule/${projectId}/tasks/${taskId}/status`;
+    const token = document.querySelector('meta[name="csrf-token"]')?.content
+                  || '{{ csrf_token() }}';
+    const form = new FormData();
+    form.append('status', status);
+    form.append('csrf_token', token);
+    fetch(url, { method: 'POST', body: form, headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.ok) location.reload();
+        })
+        .catch(() => location.reload());
+}
+
+{% if view == 'gantt' and gantt_tasks %}
+// ── Simple Gantt Chart (Canvas) ──────────────────────────────────
+(function() {
+    const tasks = {{ gantt_tasks|tojson }};
+    if (!tasks.length) return;
+
+    const canvas = document.getElementById('ganttChart');
+    const ctx = canvas.getContext('2d');
+
+    const ROW_H = 36;
+    const LABEL_W = 200;
+    const PAD_TOP = 50;
+    const PAD_RIGHT = 20;
+    const DAY_W = 28;
+
+    // Date range
+    const dates = tasks.flatMap(t => [new Date(t.start), new Date(t.end)]);
+    let minDate = new Date(Math.min(...dates));
+    let maxDate = new Date(Math.max(...dates));
+    // Pad by a few days
+    minDate.setDate(minDate.getDate() - 2);
+    maxDate.setDate(maxDate.getDate() + 5);
+    const totalDays = Math.ceil((maxDate - minDate) / 86400000) + 1;
+
+    canvas.width = LABEL_W + totalDays * DAY_W + PAD_RIGHT;
+    canvas.height = PAD_TOP + tasks.length * ROW_H + 20;
+    canvas.style.width = canvas.width + 'px';
+    canvas.style.height = canvas.height + 'px';
+
+    // Header dates
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, canvas.width, PAD_TOP);
+    ctx.strokeStyle = '#eef2f6';
+    ctx.lineWidth = 1;
+
+    const today = new Date();
+    today.setHours(0,0,0,0);
+
+    for (let d = 0; d < totalDays; d++) {
+        const dt = new Date(minDate);
+        dt.setDate(dt.getDate() + d);
+        const x = LABEL_W + d * DAY_W;
+
+        // Weekend shading
+        if (dt.getDay() === 0 || dt.getDay() === 6) {
+            ctx.fillStyle = '#f1f5f9';
+            ctx.fillRect(x, PAD_TOP, DAY_W, canvas.height - PAD_TOP);
+        }
+
+        // Today line
+        if (dt.toDateString() === today.toDateString()) {
+            ctx.fillStyle = 'rgba(99, 102, 241, 0.08)';
+            ctx.fillRect(x, 0, DAY_W, canvas.height);
+            ctx.strokeStyle = '#6366f1';
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(x + DAY_W/2, 0);
+            ctx.lineTo(x + DAY_W/2, canvas.height);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.strokeStyle = '#eef2f6';
+        }
+
+        // Date labels (every 7th day or first of month)
+        if (d % 7 === 0 || dt.getDate() === 1) {
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = '10px system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(`${dt.getMonth()+1}/${dt.getDate()}`, x + DAY_W/2, 18);
+        }
+
+        // Grid line
+        ctx.beginPath();
+        ctx.moveTo(x, PAD_TOP);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+    }
+
+    // Rows
+    tasks.forEach((task, i) => {
+        const y = PAD_TOP + i * ROW_H;
+
+        // Row bg
+        if (i % 2 === 0) {
+            ctx.fillStyle = '#fafbfc';
+            ctx.fillRect(0, y, canvas.width, ROW_H);
+        }
+
+        // Row line
+        ctx.strokeStyle = '#eef2f6';
+        ctx.beginPath();
+        ctx.moveTo(0, y + ROW_H);
+        ctx.lineTo(canvas.width, y + ROW_H);
+        ctx.stroke();
+
+        // Label
+        ctx.fillStyle = '#0f172a';
+        ctx.font = '12px system-ui, sans-serif';
+        ctx.textAlign = 'left';
+        const label = task.name.length > 25 ? task.name.substring(0, 24) + '...' : task.name;
+        ctx.fillText(label, 8, y + ROW_H/2 + 4);
+
+        // Bar
+        const startDate = new Date(task.start);
+        const endDate = new Date(task.end);
+        const startDay = Math.ceil((startDate - minDate) / 86400000);
+        const duration = Math.ceil((endDate - startDate) / 86400000) + 1;
+        const barX = LABEL_W + startDay * DAY_W;
+        const barW = duration * DAY_W - 4;
+        const barY = y + 8;
+        const barH = ROW_H - 16;
+
+        // Color based on status
+        let color = task.color;
+        if (task.status === 'Complete') color = '#10b981';
+        else if (task.status === 'Blocked') color = '#ef4444';
+
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(barX, barY, barW, barH, 4);
+        ctx.fill();
+
+        // Progress for 'In Progress' — half fill
+        if (task.status === 'In Progress') {
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.beginPath();
+            ctx.roundRect(barX + barW/2, barY, barW/2, barH, [0, 4, 4, 0]);
+            ctx.fill();
+        }
+
+        // Assignee text on bar
+        if (task.assignees && barW > 60) {
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.font = '10px system-ui, sans-serif';
+            ctx.textAlign = 'left';
+            const aLabel = task.assignees.length > barW/6 ? task.assignees.substring(0, Math.floor(barW/6)) + '...' : task.assignees;
+            ctx.fillText(aLabel, barX + 6, barY + barH/2 + 3);
+        }
+    });
+
+    // Dependency arrows
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 1.5;
+    tasks.forEach((task, i) => {
+        if (!task.deps) return;
+        task.deps.forEach(depId => {
+            const depIdx = tasks.findIndex(t => t.id === depId);
+            if (depIdx < 0) return;
+            const dep = tasks[depIdx];
+
+            const fromEndDate = new Date(dep.end);
+            const fromDay = Math.ceil((fromEndDate - minDate) / 86400000) + 1;
+            const fromX = LABEL_W + fromDay * DAY_W;
+            const fromY = PAD_TOP + depIdx * ROW_H + ROW_H / 2;
+
+            const toStartDate = new Date(task.start);
+            const toDay = Math.ceil((toStartDate - minDate) / 86400000);
+            const toX = LABEL_W + toDay * DAY_W;
+            const toY = PAD_TOP + i * ROW_H + ROW_H / 2;
+
+            ctx.beginPath();
+            ctx.moveTo(fromX, fromY);
+            ctx.lineTo(fromX + 8, fromY);
+            ctx.lineTo(fromX + 8, toY);
+            ctx.lineTo(toX, toY);
+            ctx.stroke();
+
+            // Arrow head
+            ctx.beginPath();
+            ctx.moveTo(toX, toY);
+            ctx.lineTo(toX - 5, toY - 3);
+            ctx.lineTo(toX - 5, toY + 3);
+            ctx.closePath();
+            ctx.fillStyle = '#94a3b8';
+            ctx.fill();
+        });
+    });
+})();
+{% endif %}
+
+{% if view == 'calendar' %}
+function calendarView() {
+    const tasks = {{ gantt_tasks|tojson }};
+    const now = new Date();
+
+    return {
+        year: now.getFullYear(),
+        month: now.getMonth(),
+        get monthLabel() {
+            return new Date(this.year, this.month).toLocaleString('default', { month: 'long', year: 'numeric' });
+        },
+        prevMonth() { if (this.month === 0) { this.month = 11; this.year--; } else { this.month--; } },
+        nextMonth() { if (this.month === 11) { this.month = 0; this.year++; } else { this.month++; } },
+        get calendarDays() {
+            const first = new Date(this.year, this.month, 1);
+            const startDay = first.getDay();
+            const daysInMonth = new Date(this.year, this.month + 1, 0).getDate();
+            const prevMonthDays = new Date(this.year, this.month, 0).getDate();
+            const days = [];
+            const today = new Date();
+            today.setHours(0,0,0,0);
+
+            // Previous month fill
+            for (let i = startDay - 1; i >= 0; i--) {
+                const num = prevMonthDays - i;
+                const d = new Date(this.year, this.month - 1, num);
+                days.push({ key: 'p' + num, num, inMonth: false, isToday: false, tasks: this._tasksForDay(d) });
+            }
+            // Current month
+            for (let num = 1; num <= daysInMonth; num++) {
+                const d = new Date(this.year, this.month, num);
+                const isToday = d.getTime() === today.getTime();
+                days.push({ key: 'c' + num, num, inMonth: true, isToday, tasks: this._tasksForDay(d) });
+            }
+            // Next month fill
+            const remaining = 42 - days.length;
+            for (let num = 1; num <= remaining; num++) {
+                const d = new Date(this.year, this.month + 1, num);
+                days.push({ key: 'n' + num, num, inMonth: false, isToday: false, tasks: this._tasksForDay(d) });
+            }
+            return days;
+        },
+        _tasksForDay(d) {
+            const ds = d.toISOString().split('T')[0];
+            return tasks.filter(t => t.start <= ds && t.end >= ds);
+        }
+    };
+}
+{% endif %}
+</script>
+{% endblock %}

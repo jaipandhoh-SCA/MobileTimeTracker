@@ -19,6 +19,9 @@ from models import (
     Proposal, Contract, DrawScheduleItem, PROPOSAL_STATUSES, CONTRACT_STATUSES,
     Document, DocumentVersion, Permit,
     DOCUMENT_FOLDERS, DOCUMENT_FOLDER_KEYS, PERMIT_STATUSES, PERMIT_TYPES,
+    SchedulePhase, ScheduleTask, TaskDependency, TaskAssignment,
+    Notification, NotificationPreference, TASK_STATUSES, TASK_PRIORITIES,
+    DailyLog, DailyLogPhoto, WEATHER_CONDITIONS, DAILY_LOG_STATUSES,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -4821,3 +4824,1016 @@ def delete_permit(client_id, permit_id):
     db.session.commit()
     flash(f'{ptype} permit deleted.', 'success')
     return redirect(url_for('client_documents', client_id=client_id))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SCHEDULING
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _notify_task(task, notif_type, actor, extra_msg=''):
+    """Send in-app notification to task assignees (respecting preferences).
+
+    notif_type: 'task_assigned' | 'task_changed'
+    """
+    pref_field = notif_type  # column name matches type
+    for assignment in task.assignments:
+        uid = assignment.user_id
+        if not uid or uid == actor.id:
+            continue
+        prefs = NotificationPreference.query.filter_by(user_id=uid).first()
+        if prefs and not getattr(prefs, pref_field, True):
+            continue
+        client = task.project.client
+        title_map = {
+            'task_assigned': f'New task: {task.name}',
+            'task_changed': f'Task updated: {task.name}',
+        }
+        notif = Notification(
+            user_id=uid,
+            type=notif_type,
+            title=title_map.get(notif_type, task.name),
+            message=f'{client.name} — {extra_msg}' if extra_msg else client.name,
+            link=url_for('project_schedule', project_id=task.project_id),
+        )
+        db.session.add(notif)
+
+
+@app.route('/schedule/<int:project_id>')
+@require_login
+def project_schedule(project_id):
+    project = Project.query.get_or_404(project_id)
+    client = Client.query.get_or_404(project.client_id)
+    phases = SchedulePhase.query.filter_by(project_id=project_id).order_by(SchedulePhase.sort_order).all()
+    unphased_tasks = ScheduleTask.query.filter_by(project_id=project_id, phase_id=None).order_by(ScheduleTask.sort_order).all()
+    all_tasks = ScheduleTask.query.filter_by(project_id=project_id).order_by(ScheduleTask.start_date).all()
+    users = User.query.order_by(User.first_name).all()
+    cost_codes = CostCode.query.filter_by(is_active=True, parent_id=None).order_by(CostCode.sort_order).all()
+
+    # Build Gantt data
+    gantt_tasks = []
+    for t in all_tasks:
+        if t.start_date and t.end_date:
+            phase = t.phase
+            gantt_tasks.append({
+                'id': t.id,
+                'name': t.name,
+                'start': t.start_date.isoformat(),
+                'end': t.end_date.isoformat(),
+                'status': t.status,
+                'phase': phase.name if phase else 'Unphased',
+                'color': phase.color if phase else '#94a3b8',
+                'assignees': ', '.join(t.assignee_names),
+                'deps': [d.depends_on_id for d in t.predecessors],
+            })
+
+    view = request.args.get('view', 'gantt')
+    return render_template('schedule.html',
+                           project=project, client=client,
+                           phases=phases, unphased_tasks=unphased_tasks,
+                           all_tasks=all_tasks, gantt_tasks=gantt_tasks,
+                           users=users, cost_codes=cost_codes,
+                           task_statuses=TASK_STATUSES,
+                           task_priorities=TASK_PRIORITIES,
+                           view=view)
+
+
+@app.route('/schedule/<int:project_id>/phases', methods=['POST'])
+@require_login
+def manage_phases(project_id):
+    project = Project.query.get_or_404(project_id)
+    action = request.form.get('action')
+
+    if action == 'add':
+        name = request.form.get('name', '').strip()
+        color = request.form.get('color', '#6366f1').strip()
+        if not name:
+            flash('Phase name is required.', 'error')
+            return redirect(url_for('project_schedule', project_id=project_id))
+        max_order = db.session.query(func.max(SchedulePhase.sort_order)).filter_by(project_id=project_id).scalar() or 0
+        phase = SchedulePhase(project_id=project_id, name=name, color=color, sort_order=max_order + 1)
+        db.session.add(phase)
+        db.session.commit()
+        flash(f'Phase "{name}" added.', 'success')
+
+    elif action == 'delete':
+        phase_id = request.form.get('phase_id', type=int)
+        phase = SchedulePhase.query.filter_by(id=phase_id, project_id=project_id).first_or_404()
+        # Move tasks to unphased before deleting
+        ScheduleTask.query.filter_by(phase_id=phase_id).update({'phase_id': None})
+        db.session.delete(phase)
+        db.session.commit()
+        flash(f'Phase "{phase.name}" deleted. Tasks moved to unphased.', 'success')
+
+    elif action == 'rename':
+        phase_id = request.form.get('phase_id', type=int)
+        new_name = request.form.get('name', '').strip()
+        phase = SchedulePhase.query.filter_by(id=phase_id, project_id=project_id).first_or_404()
+        if new_name:
+            phase.name = new_name
+            phase.color = request.form.get('color', phase.color).strip()
+            db.session.commit()
+            flash(f'Phase updated.', 'success')
+
+    return redirect(url_for('project_schedule', project_id=project_id))
+
+
+@app.route('/schedule/<int:project_id>/tasks/create', methods=['GET', 'POST'])
+@require_login
+def create_task(project_id):
+    project = Project.query.get_or_404(project_id)
+    client = Client.query.get_or_404(project.client_id)
+
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        if not name:
+            flash('Task name is required.', 'error')
+            return redirect(url_for('create_task', project_id=project_id))
+
+        phase_id = request.form.get('phase_id', type=int) or None
+        cost_code_id = request.form.get('cost_code_id', type=int) or None
+        start_date = request.form.get('start_date') or None
+        end_date = request.form.get('end_date') or None
+
+        max_order = db.session.query(func.max(ScheduleTask.sort_order)).filter_by(project_id=project_id).scalar() or 0
+        task = ScheduleTask(
+            project_id=project_id,
+            phase_id=phase_id,
+            cost_code_id=cost_code_id,
+            name=name,
+            description=request.form.get('description', '').strip() or None,
+            start_date=date.fromisoformat(start_date) if start_date else None,
+            end_date=date.fromisoformat(end_date) if end_date else None,
+            status=request.form.get('status', 'Not Started'),
+            priority=request.form.get('priority', 'Medium'),
+            sort_order=max_order + 1,
+            created_by_user_id=current_user.id,
+        )
+        db.session.add(task)
+        db.session.flush()
+
+        # Assignees
+        _save_task_assignments(task, request.form)
+
+        # Dependencies
+        dep_ids = request.form.getlist('depends_on')
+        for did in dep_ids:
+            if did:
+                dep = TaskDependency(task_id=task.id, depends_on_id=int(did))
+                db.session.add(dep)
+
+        db.session.flush()
+        _notify_task(task, 'task_assigned', current_user)
+        db.session.commit()
+        flash(f'Task "{name}" created.', 'success')
+        return redirect(url_for('project_schedule', project_id=project_id))
+
+    phases = SchedulePhase.query.filter_by(project_id=project_id).order_by(SchedulePhase.sort_order).all()
+    cost_codes = CostCode.query.filter_by(is_active=True, parent_id=None).order_by(CostCode.sort_order).all()
+    users = User.query.order_by(User.first_name).all()
+    existing_tasks = ScheduleTask.query.filter_by(project_id=project_id).order_by(ScheduleTask.name).all()
+
+    return render_template('schedule_task_form.html',
+                           project=project, client=client,
+                           task=None, phases=phases,
+                           cost_codes=cost_codes, users=users,
+                           existing_tasks=existing_tasks,
+                           task_statuses=TASK_STATUSES,
+                           task_priorities=TASK_PRIORITIES)
+
+
+@app.route('/schedule/<int:project_id>/tasks/<int:task_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_task(project_id, task_id):
+    project = Project.query.get_or_404(project_id)
+    client = Client.query.get_or_404(project.client_id)
+    task = ScheduleTask.query.filter_by(id=task_id, project_id=project_id).first_or_404()
+
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        if not name:
+            flash('Task name is required.', 'error')
+            return redirect(url_for('edit_task', project_id=project_id, task_id=task_id))
+
+        old_status = task.status
+        task.name = name
+        task.phase_id = request.form.get('phase_id', type=int) or None
+        task.cost_code_id = request.form.get('cost_code_id', type=int) or None
+        task.description = request.form.get('description', '').strip() or None
+        sd = request.form.get('start_date') or None
+        ed = request.form.get('end_date') or None
+        task.start_date = date.fromisoformat(sd) if sd else None
+        task.end_date = date.fromisoformat(ed) if ed else None
+        task.status = request.form.get('status', task.status)
+        task.priority = request.form.get('priority', task.priority)
+
+        # Rebuild assignments
+        TaskAssignment.query.filter_by(task_id=task.id).delete()
+        db.session.flush()
+        _save_task_assignments(task, request.form)
+
+        # Rebuild dependencies
+        TaskDependency.query.filter_by(task_id=task.id).delete()
+        dep_ids = request.form.getlist('depends_on')
+        for did in dep_ids:
+            if did and int(did) != task.id:
+                dep = TaskDependency(task_id=task.id, depends_on_id=int(did))
+                db.session.add(dep)
+
+        db.session.flush()
+        changes = []
+        if task.status != old_status:
+            changes.append(f'Status: {old_status} → {task.status}')
+        _notify_task(task, 'task_changed', current_user, '; '.join(changes))
+        db.session.commit()
+        flash(f'Task "{name}" updated.', 'success')
+        return redirect(url_for('project_schedule', project_id=project_id))
+
+    phases = SchedulePhase.query.filter_by(project_id=project_id).order_by(SchedulePhase.sort_order).all()
+    cost_codes = CostCode.query.filter_by(is_active=True, parent_id=None).order_by(CostCode.sort_order).all()
+    users = User.query.order_by(User.first_name).all()
+    existing_tasks = ScheduleTask.query.filter_by(project_id=project_id).filter(ScheduleTask.id != task_id).order_by(ScheduleTask.name).all()
+
+    return render_template('schedule_task_form.html',
+                           project=project, client=client,
+                           task=task, phases=phases,
+                           cost_codes=cost_codes, users=users,
+                           existing_tasks=existing_tasks,
+                           task_statuses=TASK_STATUSES,
+                           task_priorities=TASK_PRIORITIES)
+
+
+@app.route('/schedule/<int:project_id>/tasks/<int:task_id>/status', methods=['POST'])
+@require_login
+def update_task_status(project_id, task_id):
+    task = ScheduleTask.query.filter_by(id=task_id, project_id=project_id).first_or_404()
+    old_status = task.status
+    new_status = request.form.get('status', task.status)
+    if new_status in TASK_STATUSES:
+        task.status = new_status
+        if new_status != old_status:
+            _notify_task(task, 'task_changed', current_user, f'Status: {old_status} → {new_status}')
+        db.session.commit()
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify(ok=True, status=task.status)
+    flash(f'Task status updated to {new_status}.', 'success')
+    return redirect(url_for('project_schedule', project_id=project_id))
+
+
+@app.route('/schedule/<int:project_id>/tasks/<int:task_id>/delete', methods=['POST'])
+@require_login
+def delete_task(project_id, task_id):
+    task = ScheduleTask.query.filter_by(id=task_id, project_id=project_id).first_or_404()
+    tname = task.name
+    db.session.delete(task)
+    db.session.commit()
+    flash(f'Task "{tname}" deleted.', 'success')
+    return redirect(url_for('project_schedule', project_id=project_id))
+
+
+def _save_task_assignments(task, form):
+    """Parse assignee fields from form and create TaskAssignment records."""
+    user_ids = form.getlist('assignee_user_ids')
+    sub_names = form.getlist('assignee_sub_names')
+    roles = form.getlist('assignee_roles')
+
+    for i in range(max(len(user_ids), len(sub_names))):
+        uid = user_ids[i] if i < len(user_ids) else ''
+        sname = sub_names[i].strip() if i < len(sub_names) else ''
+        role = roles[i].strip() if i < len(roles) else ''
+        if uid or sname:
+            a = TaskAssignment(
+                task_id=task.id,
+                user_id=uid if uid else None,
+                sub_name=sname if sname and not uid else None,
+                role=role or None,
+            )
+            db.session.add(a)
+
+
+# ── My Tasks (mobile "today / this week" view) ──────────────────────────────
+
+@app.route('/my-tasks')
+@require_login
+def my_tasks():
+    today = date.today()
+    week_end = today + timedelta(days=(6 - today.weekday()))  # end of this week (Sun)
+
+    # Tasks assigned to current user
+    my_task_ids = db.session.query(TaskAssignment.task_id).filter_by(user_id=current_user.id).subquery()
+
+    today_tasks = ScheduleTask.query.filter(
+        ScheduleTask.id.in_(my_task_ids),
+        ScheduleTask.start_date <= today,
+        ScheduleTask.end_date >= today,
+        ScheduleTask.status != 'Complete',
+    ).order_by(ScheduleTask.priority.desc(), ScheduleTask.end_date).all()
+
+    this_week_tasks = ScheduleTask.query.filter(
+        ScheduleTask.id.in_(my_task_ids),
+        ScheduleTask.start_date <= week_end,
+        ScheduleTask.end_date >= today,
+        ScheduleTask.status != 'Complete',
+    ).order_by(ScheduleTask.start_date, ScheduleTask.priority.desc()).all()
+
+    # Overdue
+    overdue_tasks = ScheduleTask.query.filter(
+        ScheduleTask.id.in_(my_task_ids),
+        ScheduleTask.end_date < today,
+        ScheduleTask.status.notin_(['Complete']),
+    ).order_by(ScheduleTask.end_date).all()
+
+    # Remove today duplicates from this_week
+    today_ids = {t.id for t in today_tasks}
+    this_week_tasks = [t for t in this_week_tasks if t.id not in today_ids]
+
+    return render_template('my_tasks.html',
+                           today_tasks=today_tasks,
+                           this_week_tasks=this_week_tasks,
+                           overdue_tasks=overdue_tasks,
+                           today=today,
+                           task_statuses=TASK_STATUSES)
+
+
+# ── Notifications API ────────────────────────────────────────────────────────
+
+@app.route('/api/notifications')
+@require_login
+def api_notifications():
+    notifs = Notification.query.filter_by(user_id=current_user.id, is_read=False)\
+        .order_by(Notification.created_at.desc()).limit(20).all()
+    return jsonify({
+        'count': len(notifs),
+        'items': [{
+            'id': n.id,
+            'type': n.type,
+            'title': n.title,
+            'message': n.message,
+            'link': n.link,
+            'created_at': n.created_at.isoformat() if n.created_at else None,
+        } for n in notifs],
+    })
+
+
+@app.route('/api/notifications/mark-read', methods=['POST'])
+@require_login
+def mark_notifications_read():
+    notif_ids = request.json.get('ids', []) if request.is_json else []
+    if notif_ids:
+        Notification.query.filter(
+            Notification.id.in_(notif_ids),
+            Notification.user_id == current_user.id,
+        ).update({'is_read': True}, synchronize_session=False)
+    else:
+        # Mark all as read
+        Notification.query.filter_by(user_id=current_user.id, is_read=False)\
+            .update({'is_read': True}, synchronize_session=False)
+    db.session.commit()
+    return jsonify(ok=True)
+
+
+@app.route('/settings/notifications', methods=['GET', 'POST'])
+@require_login
+def notification_settings():
+    prefs = NotificationPreference.query.filter_by(user_id=current_user.id).first()
+    if not prefs:
+        prefs = NotificationPreference(user_id=current_user.id)
+        db.session.add(prefs)
+        db.session.commit()
+
+    if request.method == 'POST':
+        prefs.task_assigned = 'task_assigned' in request.form
+        prefs.task_changed = 'task_changed' in request.form
+        prefs.task_reminder = 'task_reminder' in request.form
+        db.session.commit()
+        flash('Notification preferences saved.', 'success')
+        return redirect(url_for('notification_settings'))
+
+    return render_template('notification_settings.html', prefs=prefs)
+
+
+# Inject unread notification count into all templates
+@app.context_processor
+def inject_notification_count():
+    if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
+        count = Notification.query.filter_by(user_id=current_user.id, is_read=False).count()
+        return {'unread_notif_count': count}
+    return {'unread_notif_count': 0}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DAILY LOGS
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.route('/daily-logs')
+@require_login
+def daily_logs_list():
+    """List daily logs across all clients, filterable."""
+    client_id = request.args.get('client_id', type=int)
+    date_from = request.args.get('date_from')
+    date_to = request.args.get('date_to')
+
+    q = DailyLog.query
+    if client_id:
+        q = q.filter_by(client_id=client_id)
+    if date_from:
+        q = q.filter(DailyLog.log_date >= date.fromisoformat(date_from))
+    if date_to:
+        q = q.filter(DailyLog.log_date <= date.fromisoformat(date_to))
+
+    logs = q.order_by(DailyLog.log_date.desc(), DailyLog.created_at.desc()).limit(100).all()
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+
+    return render_template('daily_logs_list.html',
+                           logs=logs, clients=clients,
+                           filter_client_id=client_id,
+                           filter_date_from=date_from or '',
+                           filter_date_to=date_to or '')
+
+
+@app.route('/daily-logs/new', methods=['GET', 'POST'])
+@app.route('/daily-logs/new/<int:client_id>', methods=['GET', 'POST'])
+@require_login
+def create_daily_log(client_id=None):
+    if request.method == 'POST':
+        cid = request.form.get('client_id', type=int)
+        if not cid:
+            flash('Client is required.', 'error')
+            return redirect(url_for('create_daily_log'))
+
+        client = Client.query.get_or_404(cid)
+        log_date_str = request.form.get('log_date', '')
+        try:
+            log_date = date.fromisoformat(log_date_str) if log_date_str else date.today()
+        except ValueError:
+            log_date = date.today()
+
+        # Check for duplicate
+        existing = DailyLog.query.filter_by(
+            client_id=cid, log_date=log_date,
+            created_by_user_id=current_user.id).first()
+        if existing:
+            flash('A log already exists for this client/date. Editing it instead.', 'info')
+            return redirect(url_for('edit_daily_log', log_id=existing.id))
+
+        project = client.default_project()
+
+        log = DailyLog(
+            client_id=cid,
+            project_id=project.id if project else None,
+            log_date=log_date,
+            created_by_user_id=current_user.id,
+            client_uuid=request.form.get('client_uuid') or None,
+        )
+        _populate_daily_log(log, request.form)
+        db.session.add(log)
+        db.session.flush()
+
+        # Also create a ClientActivity for timeline integration
+        _create_log_activity(log, client)
+
+        db.session.commit()
+        flash('Daily log saved.', 'success')
+
+        # Redirect back to edit for photo uploads
+        return redirect(url_for('edit_daily_log', log_id=log.id))
+
+    # GET
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    cost_codes = CostCode.query.filter_by(is_active=True, parent_id=None).order_by(CostCode.sort_order).all()
+    preselected = Client.query.get(client_id) if client_id else None
+    return render_template('daily_log_form.html',
+                           log=None, clients=clients,
+                           cost_codes=cost_codes,
+                           preselected_client=preselected,
+                           weather_conditions=WEATHER_CONDITIONS,
+                           today=date.today())
+
+
+@app.route('/daily-logs/<int:log_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_daily_log(log_id):
+    log = DailyLog.query.get_or_404(log_id)
+    client = Client.query.get_or_404(log.client_id)
+
+    if request.method == 'POST':
+        _populate_daily_log(log, request.form)
+        db.session.commit()
+        flash('Daily log updated.', 'success')
+        return redirect(url_for('edit_daily_log', log_id=log.id))
+
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    cost_codes = CostCode.query.filter_by(is_active=True, parent_id=None).order_by(CostCode.sort_order).all()
+    return render_template('daily_log_form.html',
+                           log=log, client=client, clients=clients,
+                           cost_codes=cost_codes,
+                           preselected_client=client,
+                           weather_conditions=WEATHER_CONDITIONS,
+                           today=date.today())
+
+
+@app.route('/daily-logs/<int:log_id>/delete', methods=['POST'])
+@require_login
+def delete_daily_log(log_id):
+    log = DailyLog.query.get_or_404(log_id)
+    # Clean up R2 photos
+    from r2_storage_helper import delete_file as r2_delete
+    for photo in log.photos:
+        r2_delete(photo.storage_key)
+    db.session.delete(log)
+    db.session.commit()
+    flash('Daily log deleted.', 'success')
+    return redirect(url_for('daily_logs_list'))
+
+
+@app.route('/daily-logs/<int:log_id>/finalize', methods=['POST'])
+@require_login
+def finalize_daily_log(log_id):
+    log = DailyLog.query.get_or_404(log_id)
+    log.status = 'Final'
+    db.session.commit()
+    flash('Daily log finalized.', 'success')
+    return redirect(url_for('view_daily_log', log_id=log.id))
+
+
+def _populate_daily_log(log, form):
+    """Fill DailyLog fields from form data."""
+    log.crew_count = form.get('crew_count', type=int) or None
+    log.crew_names = form.get('crew_names', '').strip() or None
+    hrs_reg = form.get('hours_regular', '').strip()
+    hrs_ot = form.get('hours_overtime', '').strip()
+    log.hours_regular = Decimal(hrs_reg) if hrs_reg else Decimal('0')
+    log.hours_overtime = Decimal(hrs_ot) if hrs_ot else Decimal('0')
+    log.work_completed = form.get('work_completed', '').strip() or None
+    log.weather_condition = form.get('weather_condition', '').strip() or None
+    temp = form.get('weather_temp_f', '').strip()
+    log.weather_temp_f = int(temp) if temp else None
+    log.weather_notes = form.get('weather_notes', '').strip() or None
+    log.delays = form.get('delays', '').strip() or None
+    log.safety_incidents = form.get('safety_incidents', '').strip() or None
+    log.visitors = form.get('visitors', '').strip() or None
+    log.materials_delivered = form.get('materials_delivered', '').strip() or None
+    if form.get('status') in DAILY_LOG_STATUSES:
+        log.status = form.get('status')
+
+
+def _create_log_activity(log, client):
+    """Create a ClientActivity entry so the log appears in the timeline."""
+    summary_parts = []
+    if log.work_completed:
+        summary_parts.append(log.work_completed[:200])
+    if log.delays:
+        summary_parts.append(f"Delays: {log.delays[:100]}")
+    note = ' | '.join(summary_parts) or 'Daily log entry'
+
+    activity = ClientActivity(
+        client_id=client.id,
+        user_id=log.created_by_user_id,
+        activity_type='Daily Log',
+        note_text=f"[{log.log_date.strftime('%m/%d/%Y')}] {note}",
+        activity_date=log.created_at or datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+
+
+# ── Daily Log Photos ─────────────────────────────────────────────────────────
+
+@app.route('/daily-logs/<int:log_id>/photos', methods=['POST'])
+@require_login
+def upload_daily_log_photo(log_id):
+    """Upload photo(s) to a daily log. Returns JSON for AJAX."""
+    import mimetypes
+    from werkzeug.utils import secure_filename
+    from r2_storage_helper import upload_file as r2_upload, build_client_prefix
+
+    log = DailyLog.query.get_or_404(log_id)
+    client = Client.query.get_or_404(log.client_id)
+
+    if not client.storage_prefix:
+        client.storage_prefix = build_client_prefix(client.name, client.address)
+        db.session.flush()
+
+    uploaded = []
+    files = request.files.getlist('photos')
+    captions = request.form.getlist('captions')
+    cost_code_ids = request.form.getlist('cost_code_ids')
+
+    for i, f in enumerate(files):
+        if not f or not f.filename:
+            continue
+        filename = secure_filename(f.filename)
+        ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+        if ext not in {'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'}:
+            continue
+
+        ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        unique_name = f"log_{log.log_date.isoformat()}_{ts}_{i}_{filename}"
+        key = f"{client.storage_prefix}/daily-logs/{unique_name}"
+        mime = mimetypes.guess_type(filename)[0] or 'image/jpeg'
+
+        r2_upload(f.read(), key, mime)
+
+        caption = captions[i].strip() if i < len(captions) else ''
+        cc_id = int(cost_code_ids[i]) if i < len(cost_code_ids) and cost_code_ids[i] else None
+
+        photo = DailyLogPhoto(
+            daily_log_id=log.id,
+            client_id=client.id,
+            cost_code_id=cc_id,
+            storage_key=key,
+            file_name=filename,
+            caption=caption or None,
+            sort_order=len(log.photos) + i,
+            uploaded_by_user_id=current_user.id,
+        )
+        db.session.add(photo)
+        db.session.flush()
+        uploaded.append({'id': photo.id, 'file_name': filename, 'caption': caption})
+
+    db.session.commit()
+
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify(ok=True, photos=uploaded)
+    flash(f'{len(uploaded)} photo(s) uploaded.', 'success')
+    return redirect(url_for('edit_daily_log', log_id=log.id))
+
+
+@app.route('/daily-logs/photos/<int:photo_id>')
+@require_login
+def view_daily_log_photo(photo_id):
+    from flask import send_file
+    from r2_storage_helper import download_file
+    photo = DailyLogPhoto.query.get_or_404(photo_id)
+    import mimetypes
+    mime = mimetypes.guess_type(photo.file_name)[0] or 'image/jpeg'
+    content = download_file(photo.storage_key)
+    return send_file(
+        BytesIO(content),
+        mimetype=mime,
+        download_name=photo.file_name,
+    )
+
+
+@app.route('/daily-logs/photos/<int:photo_id>/delete', methods=['POST'])
+@require_login
+def delete_daily_log_photo(photo_id):
+    from r2_storage_helper import delete_file as r2_delete
+    photo = DailyLogPhoto.query.get_or_404(photo_id)
+    log_id = photo.daily_log_id
+    r2_delete(photo.storage_key)
+    db.session.delete(photo)
+    db.session.commit()
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify(ok=True)
+    flash('Photo deleted.', 'success')
+    return redirect(url_for('edit_daily_log', log_id=log_id))
+
+
+# ── Daily Log View (read-only) ──────────────────────────────────────────────
+
+@app.route('/daily-logs/<int:log_id>')
+@require_login
+def view_daily_log(log_id):
+    log = DailyLog.query.get_or_404(log_id)
+    client = Client.query.get_or_404(log.client_id)
+    return render_template('daily_log_view.html', log=log, client=client)
+
+
+# ── Weather Auto-Fetch ───────────────────────────────────────────────────────
+
+@app.route('/api/weather')
+@require_login
+def api_weather():
+    """Fetch weather for a client's address on a given date using Open-Meteo (free, no key)."""
+    import requests as http_requests
+
+    client_id = request.args.get('client_id', type=int)
+    log_date = request.args.get('date', '')
+
+    if not client_id:
+        return jsonify(ok=False, error='client_id required')
+
+    client = Client.query.get(client_id)
+    if not client or not client.address:
+        return jsonify(ok=False, error='Client has no address')
+
+    # Geocode address via Nominatim (free, no key)
+    geo_url = 'https://nominatim.openstreetmap.org/search'
+    try:
+        geo_resp = http_requests.get(geo_url, params={
+            'q': client.address, 'format': 'json', 'limit': 1,
+        }, headers={'User-Agent': 'ADUPortal/1.0'}, timeout=5)
+        geo_data = geo_resp.json()
+        if not geo_data:
+            return jsonify(ok=False, error='Could not geocode address')
+        lat = float(geo_data[0]['lat'])
+        lon = float(geo_data[0]['lon'])
+    except Exception:
+        return jsonify(ok=False, error='Geocoding failed')
+
+    # Fetch weather from Open-Meteo
+    try:
+        target = log_date or date.today().isoformat()
+        weather_url = 'https://api.open-meteo.com/v1/forecast'
+        w_resp = http_requests.get(weather_url, params={
+            'latitude': lat, 'longitude': lon,
+            'daily': 'temperature_2m_max,temperature_2m_min,weathercode',
+            'temperature_unit': 'fahrenheit',
+            'start_date': target, 'end_date': target,
+            'timezone': 'America/Los_Angeles',
+        }, timeout=5)
+        w_data = w_resp.json()
+
+        daily = w_data.get('daily', {})
+        if not daily.get('temperature_2m_max'):
+            return jsonify(ok=False, error='No weather data for date')
+
+        hi = round(daily['temperature_2m_max'][0])
+        lo = round(daily['temperature_2m_min'][0])
+        code = daily.get('weathercode', [0])[0]
+
+        # WMO weather code → condition text
+        wmo_map = {
+            0: 'Clear', 1: 'Partly Cloudy', 2: 'Partly Cloudy', 3: 'Cloudy',
+            45: 'Fog', 48: 'Fog',
+            51: 'Rain', 53: 'Rain', 55: 'Rain',
+            61: 'Rain', 63: 'Rain', 65: 'Heavy Rain',
+            71: 'Snow', 73: 'Snow', 75: 'Snow',
+            80: 'Rain', 81: 'Rain', 82: 'Heavy Rain',
+            95: 'Heavy Rain', 96: 'Heavy Rain', 99: 'Heavy Rain',
+        }
+        condition = wmo_map.get(code, 'Clear')
+
+        return jsonify(ok=True, condition=condition, temp_hi=hi, temp_lo=lo,
+                       notes=f"{condition}, Hi {hi}F / Lo {lo}F")
+    except Exception:
+        return jsonify(ok=False, error='Weather fetch failed')
+
+
+# ── Offline Sync API ─────────────────────────────────────────────────────────
+
+@app.route('/api/daily-logs/sync', methods=['POST'])
+@require_login
+@csrf.exempt
+def sync_daily_logs():
+    """Accept queued daily logs from offline-capable clients.
+
+    Expects JSON array of log objects with client_uuid for dedup.
+    """
+    if not request.is_json:
+        return jsonify(ok=False, error='JSON required'), 400
+
+    entries = request.json if isinstance(request.json, list) else [request.json]
+    results = []
+
+    for entry in entries:
+        client_uuid = entry.get('client_uuid')
+        if not client_uuid:
+            results.append({'client_uuid': None, 'status': 'error', 'error': 'missing client_uuid'})
+            continue
+
+        # Dedup by client_uuid
+        existing = DailyLog.query.filter_by(client_uuid=client_uuid).first()
+        if existing:
+            results.append({'client_uuid': client_uuid, 'status': 'duplicate', 'id': existing.id})
+            continue
+
+        cid = entry.get('client_id')
+        if not cid:
+            results.append({'client_uuid': client_uuid, 'status': 'error', 'error': 'missing client_id'})
+            continue
+
+        client = Client.query.get(cid)
+        if not client:
+            results.append({'client_uuid': client_uuid, 'status': 'error', 'error': 'client not found'})
+            continue
+
+        try:
+            log_date = date.fromisoformat(entry.get('log_date', date.today().isoformat()))
+        except ValueError:
+            log_date = date.today()
+
+        project = client.default_project()
+        log = DailyLog(
+            client_id=cid,
+            project_id=project.id if project else None,
+            log_date=log_date,
+            created_by_user_id=current_user.id,
+            client_uuid=client_uuid,
+        )
+        # Populate fields from entry dict
+        log.crew_count = entry.get('crew_count')
+        log.crew_names = entry.get('crew_names')
+        log.hours_regular = Decimal(str(entry.get('hours_regular', 0)))
+        log.hours_overtime = Decimal(str(entry.get('hours_overtime', 0)))
+        log.work_completed = entry.get('work_completed')
+        log.weather_condition = entry.get('weather_condition')
+        log.weather_temp_f = entry.get('weather_temp_f')
+        log.weather_notes = entry.get('weather_notes')
+        log.delays = entry.get('delays')
+        log.safety_incidents = entry.get('safety_incidents')
+        log.visitors = entry.get('visitors')
+        log.materials_delivered = entry.get('materials_delivered')
+        log.status = entry.get('status', 'Draft')
+
+        db.session.add(log)
+        db.session.flush()
+        _create_log_activity(log, client)
+        results.append({'client_uuid': client_uuid, 'status': 'created', 'id': log.id})
+
+    db.session.commit()
+    return jsonify(ok=True, results=results)
+
+
+# ── PDF Generation ───────────────────────────────────────────────────────────
+
+@app.route('/daily-logs/<int:log_id>/pdf')
+@require_login
+def daily_log_pdf(log_id):
+    """Generate a PDF for a single daily log."""
+    log = DailyLog.query.get_or_404(log_id)
+    client = Client.query.get_or_404(log.client_id)
+    pdf_bytes = _generate_daily_log_pdf([log], client,
+                                        title=f"Daily Log — {log.log_date.strftime('%m/%d/%Y')}")
+    return Response(pdf_bytes, mimetype='application/pdf',
+                    headers={'Content-Disposition':
+                             f'inline; filename="daily-log-{client.name}-{log.log_date.isoformat()}.pdf"'})
+
+
+@app.route('/daily-logs/weekly-pdf')
+@require_login
+def weekly_log_pdf():
+    """Generate a weekly summary PDF for a client."""
+    client_id = request.args.get('client_id', type=int)
+    if not client_id:
+        flash('Client is required.', 'error')
+        return redirect(url_for('daily_logs_list'))
+
+    client = Client.query.get_or_404(client_id)
+    week_of = request.args.get('week_of', '')
+    try:
+        ref = date.fromisoformat(week_of) if week_of else date.today()
+    except ValueError:
+        ref = date.today()
+
+    # Monday to Sunday of that week
+    monday = ref - timedelta(days=ref.weekday())
+    sunday = monday + timedelta(days=6)
+
+    logs = DailyLog.query.filter(
+        DailyLog.client_id == client_id,
+        DailyLog.log_date >= monday,
+        DailyLog.log_date <= sunday,
+    ).order_by(DailyLog.log_date).all()
+
+    if not logs:
+        flash('No logs found for that week.', 'warning')
+        return redirect(url_for('daily_logs_list', client_id=client_id))
+
+    title = f"Weekly Report — {monday.strftime('%m/%d')} to {sunday.strftime('%m/%d/%Y')}"
+    pdf_bytes = _generate_daily_log_pdf(logs, client, title=title)
+    return Response(pdf_bytes, mimetype='application/pdf',
+                    headers={'Content-Disposition':
+                             f'inline; filename="weekly-log-{client.name}-{monday.isoformat()}.pdf"'})
+
+
+def _generate_daily_log_pdf(logs, client, title='Daily Log'):
+    """Build a PDF from one or more DailyLog records using fpdf2."""
+    from fpdf import FPDF
+    from r2_storage_helper import download_file
+    import tempfile, os
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.set_font('Helvetica', size=10)
+
+    for log in logs:
+        pdf.add_page()
+
+        # Header
+        pdf.set_font('Helvetica', 'B', 16)
+        pdf.cell(0, 10, 'All Inclusive ADU', ln=True, align='C')
+        pdf.set_font('Helvetica', '', 10)
+        pdf.cell(0, 6, title, ln=True, align='C')
+        pdf.ln(4)
+
+        # Client info bar
+        pdf.set_fill_color(241, 245, 249)
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(95, 7, f'Client: {client.name}', fill=True)
+        pdf.cell(95, 7, f'Date: {log.log_date.strftime("%m/%d/%Y")}', fill=True, align='R', ln=True)
+        pdf.set_font('Helvetica', '', 9)
+        pdf.cell(95, 6, f'Address: {client.address or "N/A"}')
+        pdf.cell(95, 6, f'Status: {log.status}', align='R', ln=True)
+        pdf.ln(4)
+
+        # Section helper
+        def section(label, value):
+            if not value:
+                return
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_fill_color(241, 245, 249)
+            pdf.cell(0, 6, label, fill=True, ln=True)
+            pdf.set_font('Helvetica', '', 9)
+            pdf.multi_cell(0, 5, str(value))
+            pdf.ln(2)
+
+        # Weather
+        weather_parts = []
+        if log.weather_condition:
+            weather_parts.append(log.weather_condition)
+        if log.weather_temp_f is not None:
+            weather_parts.append(f'{log.weather_temp_f}°F')
+        if log.weather_notes:
+            weather_parts.append(log.weather_notes)
+        section('Weather', ' — '.join(weather_parts) if weather_parts else None)
+
+        # Crew
+        crew_parts = []
+        if log.crew_count:
+            crew_parts.append(f'{log.crew_count} on site')
+        if log.crew_names:
+            crew_parts.append(log.crew_names)
+        section('Crew', ' | '.join(crew_parts) if crew_parts else None)
+
+        # Hours
+        if log.hours_regular or log.hours_overtime:
+            section('Hours', f'Regular: {log.hours_regular or 0}  |  OT: {log.hours_overtime or 0}  |  Total: {log.total_hours}')
+
+        section('Work Completed', log.work_completed)
+        section('Materials Delivered', log.materials_delivered)
+        section('Delays / Issues', log.delays)
+        section('Safety Incidents', log.safety_incidents)
+        section('Visitors / Inspections', log.visitors)
+
+        # Photos
+        if log.photos:
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_fill_color(241, 245, 249)
+            pdf.cell(0, 6, f'Photos ({len(log.photos)})', fill=True, ln=True)
+            pdf.ln(2)
+
+            for photo in log.photos:
+                try:
+                    img_bytes = download_file(photo.storage_key)
+                    ext = photo.file_name.rsplit('.', 1)[-1].lower() if '.' in photo.file_name else 'jpg'
+                    if ext in ('jpg', 'jpeg', 'png', 'gif'):
+                        with tempfile.NamedTemporaryFile(suffix=f'.{ext}', delete=False) as tmp:
+                            tmp.write(img_bytes)
+                            tmp_path = tmp.name
+                        try:
+                            # Check if enough space for image
+                            if pdf.get_y() > 200:
+                                pdf.add_page()
+                            pdf.image(tmp_path, w=80)
+                        finally:
+                            os.unlink(tmp_path)
+                except Exception:
+                    pdf.set_font('Helvetica', 'I', 8)
+                    pdf.cell(0, 5, f'[Could not load: {photo.file_name}]', ln=True)
+
+                if photo.caption:
+                    pdf.set_font('Helvetica', 'I', 8)
+                    pdf.cell(0, 5, photo.caption, ln=True)
+                if photo.cost_code:
+                    pdf.set_font('Helvetica', '', 7)
+                    pdf.cell(0, 4, f'Cost Code: {photo.cost_code.code} {photo.cost_code.name}', ln=True)
+                pdf.ln(3)
+
+        # Footer
+        pdf.set_font('Helvetica', 'I', 7)
+        pdf.cell(0, 5, f'Generated {datetime.now(timezone.utc).strftime("%m/%d/%Y %I:%M %p")} UTC  |  Logged by {log.created_by.display_name}',
+                 ln=True, align='C')
+
+    return pdf.output()
+
+
+# ── Share token for client portal PDF ────────────────────────────────────────
+
+@app.route('/daily-logs/<int:log_id>/share')
+@require_login
+def share_daily_log(log_id):
+    """Generate a share link. Uses log_id + simple HMAC token."""
+    import hashlib, hmac
+    log = DailyLog.query.get_or_404(log_id)
+    secret = app.secret_key.encode() if isinstance(app.secret_key, str) else app.secret_key
+    token = hmac.new(secret, f'dailylog-{log.id}'.encode(), hashlib.sha256).hexdigest()[:16]
+    share_url = url_for('public_daily_log', log_id=log.id, token=token, _external=True)
+    return jsonify(ok=True, url=share_url)
+
+
+@app.route('/dl/<int:log_id>/<token>')
+@csrf.exempt
+def public_daily_log(log_id, token):
+    """Public view of a daily log PDF (no auth, token-protected)."""
+    import hashlib, hmac
+    log = DailyLog.query.get_or_404(log_id)
+    secret = app.secret_key.encode() if isinstance(app.secret_key, str) else app.secret_key
+    expected = hmac.new(secret, f'dailylog-{log.id}'.encode(), hashlib.sha256).hexdigest()[:16]
+    if not hmac.compare_digest(token, expected):
+        abort(403)
+    client = Client.query.get_or_404(log.client_id)
+    pdf_bytes = _generate_daily_log_pdf([log], client,
+                                        title=f"Daily Log — {log.log_date.strftime('%m/%d/%Y')}")
+    return Response(pdf_bytes, mimetype='application/pdf',
+                    headers={'Content-Disposition':
+                             f'inline; filename="daily-log-{log.log_date.isoformat()}.pdf"'})
