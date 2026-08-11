@@ -40,6 +40,7 @@ app.config['ALLOWED_EXTENSIONS'] = {'pdf', 'doc', 'docx', 'txt', 'jpg', 'jpeg', 
 # Needs Attention thresholds (days)
 app.config['STALE_AMBER_DAYS'] = 14
 app.config['STALE_RED_DAYS'] = 28
+app.config['ALLOW_DEV_LOGIN'] = os.environ.get('ALLOW_DEV_LOGIN', '') == 'true'
 
 db = SQLAlchemy(app, model_class=Base)
 csrf = CSRFProtect(app)
