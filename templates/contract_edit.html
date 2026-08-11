@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import input, textarea, select, btn, card, form_actions %}
+
+{% block title %}Edit Contract - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto">
+    {% call card(title="Edit Contract " ~ contract.contract_number) %}
+        <form method="POST" class="space-y-6">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+            {{ input("contract_number", label="Contract Number", value=contract.contract_number, required=true) }}
+            {{ select("status", label="Status", options=statuses|map('string')|zip(statuses)|list, selected=contract.status) }}
+            {{ textarea("scope_text", label="Scope of Work", value=contract.scope_text|default(''), rows=10) }}
+            {{ textarea("terms_text", label="Terms & Conditions", value=contract.terms_text|default(''), rows=12) }}
+
+            {{ form_actions(cancel_href=url_for('view_contract', contract_id=contract.id), submit_text="Save Changes") }}
+        </form>
+    {% endcall %}
+</div>
+{% endblock %}

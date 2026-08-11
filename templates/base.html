@@ -105,6 +105,11 @@
                                   {{ 'bg-pill text-txt-primary' if current_endpoint in ['clients', 'create_client', 'edit_client'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
                             Clients
                         </a>
+                        <a href="{{ url_for('estimates_list') }}"
+                           class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
+                                  {{ 'bg-pill text-txt-primary' if current_endpoint in ['estimates_list', 'create_estimate', 'edit_estimate', 'view_estimate'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
+                            Estimates
+                        </a>
                         <a href="{{ url_for('channel_spend') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
                                   {{ 'bg-pill text-txt-primary' if current_endpoint in ['channel_spend', 'roi_report'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
@@ -332,6 +337,11 @@
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
                           {{ 'bg-pill text-txt-primary' if current_endpoint in ['clients', 'create_client', 'edit_client'] else 'text-txt-muted hover:bg-pill' }}">
                     Clients
+                </a>
+                <a href="{{ url_for('estimates_list') }}"
+                   class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
+                          {{ 'bg-pill text-txt-primary' if current_endpoint in ['estimates_list', 'create_estimate', 'edit_estimate', 'view_estimate'] else 'text-txt-muted hover:bg-pill' }}">
+                    Estimates
                 </a>
                 <a href="{{ url_for('channel_spend') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150

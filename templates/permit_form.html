@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import input, select, textarea, btn, card, form_actions %}
+
+{% block title %}{{ 'Edit' if permit else 'New' }} Permit - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto">
+    {% call card(title=('Edit ' ~ permit.permit_type if permit else 'New Permit') ~ ' — ' ~ client.name) %}
+        <form method="POST" class="space-y-6">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {{ select("permit_type", label="Permit Type",
+                    options=permit_types|map('string')|zip(permit_types)|list,
+                    selected=permit.permit_type if permit else 'Building Permit') }}
+
+                {{ select("status", label="Status",
+                    options=permit_statuses|map('string')|zip(permit_statuses)|list,
+                    selected=permit.status if permit else 'Not Started') }}
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {{ input("jurisdiction", label="Jurisdiction / City", value=permit.jurisdiction if permit else '', placeholder="e.g. City of Los Angeles") }}
+                {{ input("permit_number", label="Permit Number", value=permit.permit_number if permit else '', placeholder="Will be assigned on approval") }}
+            </div>
+
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div>
+                    <label class="block text-sm font-semibold text-txt-secondary mb-1">Submitted</label>
+                    <input type="date" name="submitted_date" value="{{ permit.submitted_date.strftime('%Y-%m-%d') if permit and permit.submitted_date else '' }}"
+                           class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-txt-secondary mb-1">Approved</label>
+                    <input type="date" name="approved_date" value="{{ permit.approved_date.strftime('%Y-%m-%d') if permit and permit.approved_date else '' }}"
+                           class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-txt-secondary mb-1">Issued</label>
+                    <input type="date" name="issued_date" value="{{ permit.issued_date.strftime('%Y-%m-%d') if permit and permit.issued_date else '' }}"
+                           class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-txt-secondary mb-1">Expires</label>
+                    <input type="date" name="expiration_date" value="{{ permit.expiration_date.strftime('%Y-%m-%d') if permit and permit.expiration_date else '' }}"
+                           class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                </div>
+            </div>
+
+            {# Corrections section #}
+            <div class="border border-amber-200 rounded-xl p-4 bg-amber-50/30">
+                <h4 class="text-sm font-semibold text-amber-800 mb-2">Corrections (if applicable)</h4>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-semibold text-txt-secondary mb-1">Corrections Due</label>
+                        <input type="date" name="corrections_due_date" value="{{ permit.corrections_due_date.strftime('%Y-%m-%d') if permit and permit.corrections_due_date else '' }}"
+                               class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-semibold text-txt-secondary mb-1">Correction Notes</label>
+                        <input type="text" name="corrections_note" value="{{ permit.corrections_note or '' }}" placeholder="Plan check comments..."
+                               class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                    </div>
+                </div>
+            </div>
+
+            {# Fees #}
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {{ input("fee_amount", label="Fee Amount ($)", value=(permit.fee_amount|string if permit and permit.fee_amount else ''), placeholder="0.00") }}
+                <div class="flex items-end pb-2">
+                    <label class="inline-flex items-center gap-2 text-sm text-txt-secondary cursor-pointer">
+                        <input type="checkbox" name="fee_paid" {% if permit and permit.fee_paid %}checked{% endif %}
+                               class="w-4 h-4 rounded border-hairline text-pos focus:ring-pos/20">
+                        Fee Paid
+                    </label>
+                </div>
+            </div>
+
+            {{ textarea("notes", label="Notes", value=permit.notes if permit else '', rows=4, placeholder="Additional notes, inspector contact, etc.") }}
+
+            {{ form_actions(cancel_href=url_for('client_documents', client_id=client.id), submit_text='Save Permit') }}
+        </form>
+
+        {% if permit and current_user.role == 'supervisor' %}
+        <div class="border-t border-hairline mt-6 pt-4">
+            <form method="POST" action="{{ url_for('delete_permit', client_id=client.id, permit_id=permit.id) }}"
+                  onsubmit="return confirm('Delete this permit record?')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <button type="submit" class="text-xs text-red-600 hover:text-red-800 font-medium">Delete this permit</button>
+            </form>
+        </div>
+        {% endif %}
+    {% endcall %}
+</div>
+{% endblock %}

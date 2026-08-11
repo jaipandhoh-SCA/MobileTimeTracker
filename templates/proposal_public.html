@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proposal - All Inclusive ADU</title>
+    <script src="https://cdn.tailwindcss.com/4"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        @media print { .no-print { display: none !important; } }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    {# Header bar #}
+    <div class="bg-white border-b border-gray-200 py-4 px-6 no-print">
+        <div class="max-w-4xl mx-auto flex items-center justify-between">
+            <div>
+                <h1 class="text-lg font-bold text-gray-900">All Inclusive ADU</h1>
+                <p class="text-sm text-gray-500">Construction Proposal</p>
+            </div>
+            {% if proposal.status == 'Accepted' %}
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-emerald-50 text-emerald-700">Accepted</span>
+            {% elif proposal.is_expired %}
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-amber-50 text-amber-700">Expired</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="max-w-4xl mx-auto px-6 py-8">
+        {# Proposal content #}
+        <div class="bg-white rounded-2xl shadow-lg p-8 mb-8">
+            {% if proposal.cover_note %}
+            <div class="mb-8 text-gray-600 whitespace-pre-wrap">{{ proposal.cover_note }}</div>
+            <hr class="border-gray-200 my-6">
+            {% endif %}
+
+            <div class="mb-6">
+                <h2 class="text-2xl font-bold text-gray-900">{{ estimate.name }}</h2>
+                <p class="text-gray-600 mt-1">Prepared for: <strong>{{ estimate.client.name }}</strong></p>
+                {% if estimate.client.address %}
+                <p class="text-gray-500 text-sm">{{ estimate.client.address }}</p>
+                {% endif %}
+                {% if estimate.adu_type %}
+                <p class="text-gray-500 text-sm mt-1">{{ estimate.adu_type }}{% if estimate.sqft %} &middot; {{ estimate.sqft }} SF{% endif %}</p>
+                {% endif %}
+            </div>
+
+            {# Line items by category — client-facing (no unit costs) #}
+            {% for code_name, items in grouped.items() %}
+            <div class="mb-6">
+                <h3 class="text-sm font-semibold text-gray-900 mb-2 pb-1 border-b border-gray-200">{{ code_name }}</h3>
+                {% for li in items %}
+                <div class="flex justify-between py-1 text-sm">
+                    <span class="text-gray-700">{{ li.description }}</span>
+                    <span class="font-medium text-gray-900">${{ "{:,.2f}".format(li.extended_cost|float) }}</span>
+                </div>
+                {% endfor %}
+            </div>
+            {% endfor %}
+
+            {# Total #}
+            <div class="border-t-2 border-gray-900 pt-4 mt-8">
+                <div class="flex justify-between text-xl">
+                    <span class="font-bold text-gray-900">Total Investment</span>
+                    <span class="font-bold text-gray-900">${{ "{:,.2f}".format(estimate.total|float) }}</span>
+                </div>
+                {% if estimate.sqft %}
+                <div class="flex justify-between text-sm text-gray-500 mt-1">
+                    <span>Cost per square foot</span>
+                    <span>${{ "{:,.2f}".format((estimate.total / estimate.sqft)|float) }}/SF</span>
+                </div>
+                {% endif %}
+            </div>
+
+            {% if proposal.scope_text %}
+            <div class="mt-8">
+                <h3 class="text-base font-semibold text-gray-900 mb-2">Scope of Work</h3>
+                <div class="text-sm text-gray-600 whitespace-pre-wrap">{{ proposal.scope_text }}</div>
+            </div>
+            {% endif %}
+
+            {% if proposal.exclusions_text %}
+            <div class="mt-6">
+                <h3 class="text-base font-semibold text-gray-900 mb-2">Exclusions</h3>
+                <div class="text-sm text-gray-600 whitespace-pre-wrap">{{ proposal.exclusions_text }}</div>
+            </div>
+            {% endif %}
+
+            <div class="mt-8 text-xs text-gray-400">
+                Proposal valid for {{ proposal.validity_days }} days from {{ proposal.created_at.strftime('%B %d, %Y') }}{% if proposal.expires_on %} (expires {{ proposal.expires_on.strftime('%B %d, %Y') }}){% endif %}
+            </div>
+        </div>
+
+        {# Accept form — only show if still actionable #}
+        {% if proposal.status not in ('Accepted', 'Rejected', 'Expired') and not proposal.is_expired %}
+        <div class="bg-white rounded-2xl shadow-lg p-8 no-print">
+            <h3 class="text-lg font-bold text-gray-900 mb-4">Accept This Proposal</h3>
+            <p class="text-sm text-gray-600 mb-6">By entering your name below, you acknowledge that you have reviewed and accept the terms of this proposal.</p>
+            <form method="POST" action="{{ url_for('accept_proposal_public', token=token) }}">
+                <div class="flex flex-col sm:flex-row gap-3">
+                    <input type="text" name="accepted_name" required placeholder="Enter your full name"
+                           class="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/20">
+                    <button type="submit" class="px-6 py-3 bg-gray-900 text-white rounded-xl text-sm font-medium hover:bg-gray-800 transition-colors">
+                        Accept Proposal
+                    </button>
+                </div>
+            </form>
+        </div>
+        {% elif proposal.status == 'Accepted' %}
+        <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center">
+            <p class="text-emerald-800 font-semibold text-lg">Proposal Accepted</p>
+            <p class="text-emerald-600 text-sm mt-1">Accepted by {{ proposal.accepted_name }} on {{ proposal.accepted_at.strftime('%B %d, %Y at %I:%M %p') if proposal.accepted_at else 'N/A' }}</p>
+        </div>
+        {% endif %}
+
+        <div class="text-center text-xs text-gray-400 mt-8 no-print">
+            <button onclick="window.print()" class="text-gray-500 hover:text-gray-700 underline">Print this proposal</button>
+        </div>
+    </div>
+</body>
+</html>

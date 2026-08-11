@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, stat_card, table, tr, td, status_badge, empty_state, page_header, filter_bar %}
+
+{% block title %}Estimates - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto">
+
+    {{ page_header("Estimates", back_text="&larr; Hub", back_href=url_for('home')) }}
+
+    <div class="flex flex-wrap items-center gap-3 mb-6">
+        {{ btn("New Estimate", href=url_for('create_estimate'), variant="primary", size="sm") }}
+    </div>
+
+    {# Filters #}
+    {% call filter_bar(classes="mb-6") %}
+        <div>
+            <label class="block text-xs font-medium text-txt-muted mb-1">Client</label>
+            <select name="client_id"
+                    class="px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                <option value="">All Clients</option>
+                {% for c in clients %}
+                <option value="{{ c.id }}" {% if selected_client == c.id|string %}selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs font-medium text-txt-muted mb-1">Status</label>
+            <select name="status"
+                    class="px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                <option value="">All Statuses</option>
+                {% for s in statuses %}
+                <option value="{{ s }}" {% if selected_status == s %}selected{% endif %}>{{ s }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        {{ btn("Filter", type="submit") }}
+        {{ btn("Reset", href=url_for('estimates_list'), variant="secondary") }}
+    {% endcall %}
+
+    {% if estimates %}
+    {% call table(title="All Estimates", headers=[
+        {"text": "Estimate"},
+        {"text": "Client"},
+        {"text": "Type"},
+        {"text": "Status"},
+        {"text": "Total", "align": "right"},
+        {"text": "Updated"},
+        {"text": "Actions"}
+    ]) %}
+        {% for est in estimates %}
+        {% call tr() %}
+            {% call td() %}
+                <a href="{{ url_for('view_estimate', estimate_id=est.id) }}" class="font-medium text-txt-primary hover:underline">{{ est.name }}</a>
+            {% endcall %}
+            {% call td() %}<span class="text-txt-secondary">{{ est.client.name }}</span>{% endcall %}
+            {% call td() %}
+                {% if est.adu_type %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">{{ est.adu_type }}{% if est.sqft %} &middot; {{ est.sqft }}SF{% endif %}</span>
+                {% else %}
+                <span class="text-txt-muted text-xs">&mdash;</span>
+                {% endif %}
+            {% endcall %}
+            {% call td() %}
+                {% if est.status == 'Draft' %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-txt-secondary">Draft</span>
+                {% elif est.status == 'Sent' %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">Sent</span>
+                {% elif est.status == 'Accepted' %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-pos">Accepted</span>
+                {% elif est.status == 'Rejected' %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-neg">Rejected</span>
+                {% elif est.status == 'Expired' %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700">Expired</span>
+                {% endif %}
+            {% endcall %}
+            {% call td(align="right") %}<span class="font-medium text-txt-primary">${{ "{:,.2f}".format(est.total|float) }}</span>{% endcall %}
+            {% call td() %}<span class="text-txt-muted text-xs">{{ est.updated_at|format_date }}</span>{% endcall %}
+            {% call td() %}
+                <div class="flex gap-2">
+                    <a href="{{ url_for('edit_estimate', estimate_id=est.id) }}" class="text-txt-secondary hover:text-txt-primary text-sm hover:underline">Edit</a>
+                    <a href="{{ url_for('view_estimate', estimate_id=est.id) }}" class="text-txt-secondary hover:text-txt-primary text-sm hover:underline">View</a>
+                </div>
+            {% endcall %}
+        {% endcall %}
+        {% endfor %}
+    {% endcall %}
+    {% else %}
+    <div class="bg-white shadow-card rounded-2xl overflow-hidden">
+        {{ empty_state("No estimates found. Create your first estimate to get started.", icon="document") }}
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

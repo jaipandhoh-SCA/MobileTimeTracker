@@ -14,6 +14,11 @@ from models import (
     User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage,
     LeadSource, ClientStatusChange, ChannelSpend, AppSetting,
     Project, CostCode, Budget, CostEntry, COST_TYPES, COST_SOURCES,
+    AssemblyItem, EstimateTemplate, EstimateTemplateItem,
+    Estimate, EstimateLineItem, ADU_TYPES, ESTIMATE_STATUSES,
+    Proposal, Contract, DrawScheduleItem, PROPOSAL_STATUSES, CONTRACT_STATUSES,
+    Document, DocumentVersion, Permit,
+    DOCUMENT_FOLDERS, DOCUMENT_FOLDER_KEYS, PERMIT_STATUSES, PERMIT_TYPES,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -1323,10 +1328,24 @@ def update_client_status(client_id):
         )
         db.session.add(status_change)
 
+    # When status moves to Active, auto-carry accepted estimate into budget
+    estimate_carried = False
+    if old_status != new_status and new_status == 'Active':
+        accepted_est = Estimate.query.filter_by(
+            client_id=client.id, status='Accepted'
+        ).order_by(Estimate.accepted_at.desc()).first()
+        if accepted_est and not client.final_contract_value:
+            project = client.default_project()
+            project.contract_value = accepted_est.total
+            client.final_contract_value = accepted_est.total
+            estimate_carried = True
+
     db.session.commit()
 
     needs_final_value = (new_status == 'Completed' and client.final_contract_value is None)
-    return jsonify({'success': True, 'status': new_status, 'needs_final_value': needs_final_value})
+    return jsonify({'success': True, 'status': new_status,
+                    'needs_final_value': needs_final_value,
+                    'estimate_carried': estimate_carried})
 
 
 @app.route('/clients/<int:client_id>/update_final_value', methods=['POST'])
@@ -3434,6 +3453,847 @@ def roi_report_export():
     )
 
 
+# --- Estimating Routes ---
+
+@app.route('/estimates')
+@require_login
+def estimates_list():
+    client_id = request.args.get('client_id')
+    status_filter = request.args.get('status')
+    query = Estimate.query
+    if client_id:
+        query = query.filter_by(client_id=int(client_id))
+    if status_filter:
+        query = query.filter_by(status=status_filter)
+    estimates = query.order_by(Estimate.updated_at.desc()).all()
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    templates = EstimateTemplate.query.filter_by(is_active=True).order_by(EstimateTemplate.name).all()
+    return render_template('estimates_list.html', estimates=estimates, clients=clients,
+                         templates=templates, statuses=ESTIMATE_STATUSES,
+                         selected_client=client_id, selected_status=status_filter)
+
+
+@app.route('/estimates/create', methods=['GET', 'POST'])
+@require_login
+def create_estimate():
+    if request.method == 'GET':
+        clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+        templates = EstimateTemplate.query.filter_by(is_active=True).order_by(EstimateTemplate.name).all()
+        preselect_client = request.args.get('client_id')
+        preselect_template = request.args.get('template_id')
+        return render_template('estimate_create.html', clients=clients, templates=templates,
+                             adu_types=ADU_TYPES, preselect_client=preselect_client,
+                             preselect_template=preselect_template)
+
+    client_id = request.form.get('client_id')
+    template_id = request.form.get('template_id') or None
+    name = request.form.get('name', '').strip()
+    adu_type = request.form.get('adu_type', '').strip()
+    sqft = request.form.get('sqft', '').strip()
+
+    if not client_id or not name:
+        flash('Client and estimate name are required.', 'error')
+        return redirect(url_for('create_estimate'))
+
+    client = Client.query.get_or_404(int(client_id))
+
+    # Default from template if selected
+    markup, overhead, contingency = Decimal('15'), Decimal('10'), Decimal('5')
+    if template_id:
+        tpl = EstimateTemplate.query.get(int(template_id))
+        if tpl:
+            markup = tpl.default_markup_pct
+            overhead = tpl.default_overhead_pct
+            contingency = tpl.default_contingency_pct
+            if not adu_type:
+                adu_type = tpl.adu_type
+            if not sqft and tpl.default_sqft:
+                sqft = str(tpl.default_sqft)
+
+    # Pull ADU fields from client if not specified
+    if not adu_type and client.type_of_adu:
+        adu_type = client.type_of_adu
+    if not sqft and client.desired_adu_sqft:
+        sqft = client.desired_adu_sqft
+
+    estimate = Estimate(
+        client_id=client.id,
+        template_id=int(template_id) if template_id else None,
+        name=name,
+        adu_type=adu_type or None,
+        sqft=int(sqft) if sqft and sqft.isdigit() else None,
+        markup_pct=markup,
+        overhead_pct=overhead,
+        contingency_pct=contingency,
+        created_by_user_id=current_user.id,
+    )
+    db.session.add(estimate)
+    db.session.flush()
+
+    # Populate line items from template
+    if template_id:
+        tpl = EstimateTemplate.query.get(int(template_id))
+        if tpl:
+            est_sqft = estimate.sqft or tpl.default_sqft or 400
+            for ti in tpl.items.order_by(EstimateTemplateItem.sort_order).all():
+                ai = ti.assembly_item
+                # Scale qty for SF-based items
+                qty = float(ti.default_qty)
+                if ai.unit == 'SF' and est_sqft:
+                    qty = est_sqft  # SF items scale to building size
+                elif ai.unit == 'SQ':
+                    qty = max(1, est_sqft / 100)  # roofing squares
+                elif ai.unit == 'LF':
+                    qty = float(ti.default_qty)  # keep template default for linear items
+
+                li = EstimateLineItem(
+                    estimate_id=estimate.id,
+                    cost_code_id=ai.cost_code_id,
+                    assembly_item_id=ai.id,
+                    description=ai.name,
+                    unit=ai.unit,
+                    qty=Decimal(str(round(qty, 2))),
+                    unit_cost=ai.unit_cost,
+                    labor_pct=ai.labor_pct,
+                    material_pct=ai.material_pct,
+                    waste_pct=ai.waste_pct,
+                    sort_order=ti.sort_order,
+                )
+                db.session.add(li)
+
+    db.session.commit()
+    flash(f'Estimate "{name}" created.', 'success')
+    return redirect(url_for('edit_estimate', estimate_id=estimate.id))
+
+
+@app.route('/estimates/<int:estimate_id>')
+@require_login
+def view_estimate(estimate_id):
+    estimate = Estimate.query.get_or_404(estimate_id)
+    # Group line items by cost code
+    line_items = estimate.line_items.order_by(EstimateLineItem.sort_order).all()
+    grouped = defaultdict(list)
+    for li in line_items:
+        key = li.cost_code.code if li.cost_code else 'Other'
+        grouped[key].append(li)
+    show_internal = request.args.get('internal', '1') == '1'
+    return render_template('estimate_view.html', estimate=estimate,
+                         grouped=dict(grouped), line_items=line_items,
+                         show_internal=show_internal)
+
+
+@app.route('/estimates/<int:estimate_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_estimate(estimate_id):
+    estimate = Estimate.query.get_or_404(estimate_id)
+
+    if request.method == 'GET':
+        line_items = estimate.line_items.order_by(EstimateLineItem.sort_order).all()
+        cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+        assembly_items = AssemblyItem.query.filter_by(is_active=True).order_by(AssemblyItem.sort_order).all()
+        return render_template('estimate_edit.html', estimate=estimate,
+                             line_items=line_items, cost_codes=cost_codes,
+                             assembly_items=assembly_items, adu_types=ADU_TYPES,
+                             statuses=ESTIMATE_STATUSES)
+
+    # Update estimate header
+    estimate.name = request.form.get('name', estimate.name).strip()
+    estimate.adu_type = request.form.get('adu_type', '').strip() or None
+    sqft_str = request.form.get('sqft', '').strip()
+    estimate.sqft = int(sqft_str) if sqft_str and sqft_str.isdigit() else None
+    estimate.notes = request.form.get('notes', '').strip() or None
+
+    try:
+        estimate.markup_pct = Decimal(request.form.get('markup_pct', '15'))
+        estimate.overhead_pct = Decimal(request.form.get('overhead_pct', '10'))
+        estimate.contingency_pct = Decimal(request.form.get('contingency_pct', '5'))
+    except (InvalidOperation, ValueError):
+        pass
+
+    status = request.form.get('status', '').strip()
+    if status and status in ESTIMATE_STATUSES:
+        if status == 'Accepted' and estimate.status != 'Accepted':
+            estimate.accepted_at = datetime.now(timezone.utc)
+        estimate.status = status
+
+    db.session.commit()
+    flash('Estimate updated.', 'success')
+    return redirect(url_for('edit_estimate', estimate_id=estimate.id))
+
+
+@app.route('/estimates/<int:estimate_id>/line-items', methods=['POST'])
+@require_login
+def add_estimate_line_item(estimate_id):
+    estimate = Estimate.query.get_or_404(estimate_id)
+    cost_code_id = request.form.get('cost_code_id')
+    assembly_item_id = request.form.get('assembly_item_id') or None
+    description = request.form.get('description', '').strip()
+    unit = request.form.get('unit', 'EA').strip()
+
+    if not cost_code_id or not description:
+        flash('Cost code and description are required.', 'error')
+        return redirect(url_for('edit_estimate', estimate_id=estimate.id))
+
+    # Pre-fill from assembly item if selected
+    unit_cost, labor_pct, material_pct, waste_pct, qty = Decimal('0'), Decimal('50'), Decimal('50'), Decimal('5'), Decimal('1')
+    if assembly_item_id:
+        ai = AssemblyItem.query.get(int(assembly_item_id))
+        if ai:
+            unit_cost = ai.unit_cost
+            labor_pct = ai.labor_pct
+            material_pct = ai.material_pct
+            waste_pct = ai.waste_pct
+            unit = ai.unit
+            if not description:
+                description = ai.name
+
+    try:
+        qty = Decimal(request.form.get('qty', '1'))
+        unit_cost = Decimal(request.form.get('unit_cost', str(unit_cost)))
+    except (InvalidOperation, ValueError):
+        pass
+
+    max_sort = db.session.query(func.max(EstimateLineItem.sort_order)).filter_by(estimate_id=estimate.id).scalar() or 0
+
+    li = EstimateLineItem(
+        estimate_id=estimate.id,
+        cost_code_id=int(cost_code_id),
+        assembly_item_id=int(assembly_item_id) if assembly_item_id else None,
+        description=description,
+        unit=unit,
+        qty=qty,
+        unit_cost=unit_cost,
+        labor_pct=labor_pct,
+        material_pct=material_pct,
+        waste_pct=waste_pct,
+        sort_order=max_sort + 10,
+    )
+    db.session.add(li)
+    db.session.commit()
+    flash('Line item added.', 'success')
+    return redirect(url_for('edit_estimate', estimate_id=estimate.id))
+
+
+@app.route('/estimates/<int:estimate_id>/line-items/<int:item_id>/update', methods=['POST'])
+@require_login
+def update_estimate_line_item(estimate_id, item_id):
+    li = EstimateLineItem.query.get_or_404(item_id)
+    if li.estimate_id != estimate_id:
+        abort(404)
+    try:
+        li.description = request.form.get('description', li.description).strip()
+        li.qty = Decimal(request.form.get('qty', str(li.qty)))
+        li.unit_cost = Decimal(request.form.get('unit_cost', str(li.unit_cost)))
+        li.unit = request.form.get('unit', li.unit).strip()
+        li.waste_pct = Decimal(request.form.get('waste_pct', str(li.waste_pct)))
+        li.labor_pct = Decimal(request.form.get('labor_pct', str(li.labor_pct)))
+        li.material_pct = Decimal(request.form.get('material_pct', str(li.material_pct)))
+    except (InvalidOperation, ValueError):
+        flash('Invalid number format.', 'error')
+        return redirect(url_for('edit_estimate', estimate_id=estimate_id))
+    db.session.commit()
+    return redirect(url_for('edit_estimate', estimate_id=estimate_id))
+
+
+@app.route('/estimates/<int:estimate_id>/line-items/<int:item_id>/delete', methods=['POST'])
+@require_login
+def delete_estimate_line_item(estimate_id, item_id):
+    li = EstimateLineItem.query.get_or_404(item_id)
+    if li.estimate_id != estimate_id:
+        abort(404)
+    db.session.delete(li)
+    db.session.commit()
+    flash('Line item removed.', 'success')
+    return redirect(url_for('edit_estimate', estimate_id=estimate_id))
+
+
+@app.route('/estimates/<int:estimate_id>/duplicate', methods=['POST'])
+@require_login
+def duplicate_estimate(estimate_id):
+    orig = Estimate.query.get_or_404(estimate_id)
+    new_est = Estimate(
+        client_id=orig.client_id,
+        template_id=orig.template_id,
+        name=f"{orig.name} (Copy)",
+        adu_type=orig.adu_type,
+        sqft=orig.sqft,
+        markup_pct=orig.markup_pct,
+        overhead_pct=orig.overhead_pct,
+        contingency_pct=orig.contingency_pct,
+        notes=orig.notes,
+        created_by_user_id=current_user.id,
+    )
+    db.session.add(new_est)
+    db.session.flush()
+    for li in orig.line_items.all():
+        new_li = EstimateLineItem(
+            estimate_id=new_est.id,
+            cost_code_id=li.cost_code_id,
+            assembly_item_id=li.assembly_item_id,
+            description=li.description,
+            unit=li.unit,
+            qty=li.qty,
+            unit_cost=li.unit_cost,
+            labor_pct=li.labor_pct,
+            material_pct=li.material_pct,
+            waste_pct=li.waste_pct,
+            sort_order=li.sort_order,
+        )
+        db.session.add(new_li)
+    db.session.commit()
+    flash(f'Estimate duplicated as "{new_est.name}".', 'success')
+    return redirect(url_for('edit_estimate', estimate_id=new_est.id))
+
+
+@app.route('/estimates/<int:estimate_id>/accept', methods=['POST'])
+@require_supervisor
+def accept_estimate(estimate_id):
+    """Accept estimate: carry into Client budget by cost code, set contract value."""
+    estimate = Estimate.query.get_or_404(estimate_id)
+    client = estimate.client
+    project = client.default_project()
+
+    estimate.status = 'Accepted'
+    estimate.accepted_at = datetime.now(timezone.utc)
+    project.contract_value = estimate.total
+    client.final_contract_value = estimate.total
+
+    _carry_estimate_to_budget(estimate, project)
+    db.session.commit()
+
+    budget_count = Budget.query.filter_by(project_id=project.id).count()
+    flash(f'Estimate accepted. ${estimate.total:,.2f} contract value set. '
+          f'{budget_count} budget lines created for {client.name}.', 'success')
+    return redirect(url_for('view_estimate', estimate_id=estimate.id))
+
+
+@app.route('/estimates/<int:estimate_id>/delete', methods=['POST'])
+@require_supervisor
+def delete_estimate(estimate_id):
+    estimate = Estimate.query.get_or_404(estimate_id)
+    client_id = estimate.client_id
+    if estimate.status == 'Accepted':
+        flash('Cannot delete an accepted estimate.', 'error')
+        return redirect(url_for('view_estimate', estimate_id=estimate.id))
+    db.session.delete(estimate)
+    db.session.commit()
+    flash('Estimate deleted.', 'success')
+    return redirect(url_for('estimates_list', client_id=client_id))
+
+
+@app.route('/api/assembly-items/<int:item_id>')
+@require_login
+def api_assembly_item(item_id):
+    """Return assembly item details as JSON for dynamic form population."""
+    ai = AssemblyItem.query.get_or_404(item_id)
+    return jsonify({
+        'id': ai.id,
+        'name': ai.name,
+        'unit': ai.unit,
+        'unit_cost': float(ai.unit_cost),
+        'labor_pct': float(ai.labor_pct),
+        'material_pct': float(ai.material_pct),
+        'waste_pct': float(ai.waste_pct),
+        'cost_code_id': ai.cost_code_id,
+    })
+
+
+# Stub: PDF takeoff interface (not yet built)
+@app.route('/estimates/<int:estimate_id>/takeoff')
+@require_login
+def estimate_takeoff(estimate_id):
+    """Stub for future on-screen PDF takeoff interface."""
+    estimate = Estimate.query.get_or_404(estimate_id)
+    flash('PDF takeoff is coming soon. Use the estimate builder for now.', 'info')
+    return redirect(url_for('edit_estimate', estimate_id=estimate.id))
+
+
+# --- Proposals & Contracts ---
+
+def _generate_token():
+    import secrets
+    return secrets.token_urlsafe(32)
+
+
+def _default_scope(estimate):
+    """Generate default scope text from estimate line items."""
+    lines = []
+    items = estimate.line_items.order_by(EstimateLineItem.sort_order).all()
+    grouped = defaultdict(list)
+    for li in items:
+        key = li.cost_code.name if li.cost_code else 'Other'
+        grouped[key].append(li)
+    for code_name, lis in grouped.items():
+        lines.append(f"**{code_name}**")
+        for li in lis:
+            lines.append(f"- {li.description} ({li.qty} {li.unit})")
+    return '\n'.join(lines)
+
+
+def _default_terms():
+    return """1. **Payment Terms**: Payments due per the draw schedule outlined in this contract. Net 15 days from invoice date.
+
+2. **Change Orders**: Any changes to the scope of work must be agreed upon in writing. Change orders may affect the contract price and schedule.
+
+3. **Permits**: Contractor shall obtain all required building permits. Permit fees are included in the contract price unless otherwise noted.
+
+4. **Warranty**: Contractor warrants all work for a period of one (1) year from substantial completion against defects in workmanship. Manufacturer warranties on materials and equipment are passed through to the Owner.
+
+5. **Insurance**: Contractor shall maintain general liability insurance ($1M per occurrence) and workers' compensation insurance for the duration of the project.
+
+6. **Access**: Owner shall provide Contractor reasonable access to the property during normal working hours (7:00 AM - 5:00 PM, Monday through Saturday).
+
+7. **Dispute Resolution**: Any disputes shall first be addressed through good-faith negotiation, then mediation, before pursuing other legal remedies.
+
+8. **Cancellation**: Either party may cancel this contract with 30 days written notice. Owner shall pay for all work completed to date plus reasonable demobilization costs."""
+
+
+def _default_draw_schedule():
+    """Return default ADU draw schedule milestones."""
+    return [
+        ('Deposit / Mobilization', 10),
+        ('Foundation Complete', 15),
+        ('Framing & Roof Complete', 20),
+        ('Rough MEP Complete', 15),
+        ('Drywall & Interior Rough', 15),
+        ('Finishes & Fixtures', 15),
+        ('Final Completion & Punch List', 10),
+    ]
+
+
+@app.route('/estimates/<int:estimate_id>/proposal', methods=['GET', 'POST'])
+@require_login
+def create_proposal(estimate_id):
+    estimate = Estimate.query.get_or_404(estimate_id)
+
+    if request.method == 'GET':
+        scope = _default_scope(estimate)
+        return render_template('proposal_create.html', estimate=estimate,
+                             default_scope=scope, statuses=PROPOSAL_STATUSES)
+
+    cover_note = request.form.get('cover_note', '').strip()
+    scope_text = request.form.get('scope_text', '').strip()
+    exclusions_text = request.form.get('exclusions_text', '').strip()
+    validity_days = int(request.form.get('validity_days', '30'))
+
+    proposal = Proposal(
+        estimate_id=estimate.id,
+        client_id=estimate.client_id,
+        share_token=_generate_token(),
+        cover_note=cover_note or None,
+        scope_text=scope_text or None,
+        exclusions_text=exclusions_text or None,
+        validity_days=validity_days,
+        created_by_user_id=current_user.id,
+    )
+    db.session.add(proposal)
+    db.session.commit()
+    flash('Proposal created.', 'success')
+    return redirect(url_for('view_proposal', proposal_id=proposal.id))
+
+
+@app.route('/proposals/<int:proposal_id>')
+@require_login
+def view_proposal(proposal_id):
+    proposal = Proposal.query.get_or_404(proposal_id)
+    estimate = proposal.estimate
+    line_items = estimate.line_items.order_by(EstimateLineItem.sort_order).all()
+    grouped = defaultdict(list)
+    for li in line_items:
+        key = li.cost_code.code if li.cost_code else 'Other'
+        grouped[key].append(li)
+    return render_template('proposal_view.html', proposal=proposal, estimate=estimate,
+                         grouped=dict(grouped), line_items=line_items)
+
+
+@app.route('/proposals/<int:proposal_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_proposal(proposal_id):
+    proposal = Proposal.query.get_or_404(proposal_id)
+    if request.method == 'GET':
+        return render_template('proposal_edit.html', proposal=proposal,
+                             statuses=PROPOSAL_STATUSES)
+    proposal.cover_note = request.form.get('cover_note', '').strip() or None
+    proposal.scope_text = request.form.get('scope_text', '').strip() or None
+    proposal.exclusions_text = request.form.get('exclusions_text', '').strip() or None
+    proposal.validity_days = int(request.form.get('validity_days', '30'))
+    status = request.form.get('status', '')
+    if status in PROPOSAL_STATUSES:
+        proposal.status = status
+    db.session.commit()
+    flash('Proposal updated.', 'success')
+    return redirect(url_for('view_proposal', proposal_id=proposal.id))
+
+
+@app.route('/proposals/<int:proposal_id>/send', methods=['POST'])
+@require_login
+def send_proposal(proposal_id):
+    proposal = Proposal.query.get_or_404(proposal_id)
+    proposal.status = 'Sent'
+    db.session.commit()
+    share_url = url_for('public_proposal', token=proposal.share_token, _external=True)
+    flash(f'Proposal marked as sent. Share link: {share_url}', 'success')
+    return redirect(url_for('view_proposal', proposal_id=proposal.id))
+
+
+@app.route('/p/<token>')
+def public_proposal(token):
+    """Public (no auth) proposal view for clients."""
+    proposal = Proposal.query.filter_by(share_token=token).first_or_404()
+    if not proposal.viewed_at:
+        proposal.viewed_at = datetime.now(timezone.utc)
+        proposal.viewed_ip = request.remote_addr
+        if proposal.status == 'Sent':
+            proposal.status = 'Viewed'
+        db.session.commit()
+    estimate = proposal.estimate
+    line_items = estimate.line_items.order_by(EstimateLineItem.sort_order).all()
+    grouped = defaultdict(list)
+    for li in line_items:
+        key = li.cost_code.name if li.cost_code else 'Other'
+        grouped[key].append(li)
+    return render_template('proposal_public.html', proposal=proposal, estimate=estimate,
+                         grouped=dict(grouped), token=token)
+
+
+@app.route('/p/<token>/accept', methods=['POST'])
+def accept_proposal_public(token):
+    """Client accepts proposal — records name + IP as audit trail."""
+    proposal = Proposal.query.filter_by(share_token=token).first_or_404()
+    if proposal.status in ('Accepted', 'Rejected', 'Expired'):
+        flash('This proposal has already been responded to.', 'error')
+        return redirect(url_for('public_proposal', token=token))
+    if proposal.is_expired:
+        proposal.status = 'Expired'
+        db.session.commit()
+        flash('This proposal has expired.', 'error')
+        return redirect(url_for('public_proposal', token=token))
+
+    accepted_name = request.form.get('accepted_name', '').strip()
+    if not accepted_name:
+        flash('Please enter your name to accept.', 'error')
+        return redirect(url_for('public_proposal', token=token))
+
+    proposal.status = 'Accepted'
+    proposal.accepted_at = datetime.now(timezone.utc)
+    proposal.accepted_ip = request.remote_addr
+    proposal.accepted_name = accepted_name
+
+    # Also accept the underlying estimate
+    estimate = proposal.estimate
+    if estimate.status != 'Accepted':
+        estimate.status = 'Accepted'
+        estimate.accepted_at = datetime.now(timezone.utc)
+
+    # Log to ClientActivity
+    activity = ClientActivity(
+        client_id=proposal.client_id,
+        user_id=proposal.created_by_user_id,
+        activity_type='Proposal Accepted',
+        note_text=f'Proposal accepted by {accepted_name} (IP: {request.remote_addr})',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash('Proposal accepted! You will receive the contract for signature.', 'success')
+    return redirect(url_for('public_proposal', token=token))
+
+
+@app.route('/proposals/<int:proposal_id>/contract', methods=['GET', 'POST'])
+@require_login
+def create_contract(proposal_id):
+    proposal = Proposal.query.get_or_404(proposal_id)
+    estimate = proposal.estimate
+
+    if request.method == 'GET':
+        scope = proposal.scope_text or _default_scope(estimate)
+        terms = _default_terms()
+        draws = _default_draw_schedule()
+        # Generate contract number
+        count = Contract.query.count()
+        contract_num = f"ADU-{datetime.now().strftime('%Y')}-{count + 1:04d}"
+        return render_template('contract_create.html', proposal=proposal,
+                             estimate=estimate, default_scope=scope,
+                             default_terms=terms, default_draws=draws,
+                             contract_number=contract_num)
+
+    scope_text = request.form.get('scope_text', '').strip()
+    terms_text = request.form.get('terms_text', '').strip()
+    contract_number = request.form.get('contract_number', '').strip()
+
+    contract = Contract(
+        proposal_id=proposal.id,
+        client_id=proposal.client_id,
+        estimate_id=estimate.id,
+        share_token=_generate_token(),
+        contract_number=contract_number or f"ADU-{datetime.now().strftime('%Y')}-{Contract.query.count() + 1:04d}",
+        scope_text=scope_text or None,
+        terms_text=terms_text or None,
+        total_price=estimate.total,
+        created_by_user_id=current_user.id,
+    )
+    db.session.add(contract)
+    db.session.flush()
+
+    # Create draw schedule
+    milestones = request.form.getlist('milestone')
+    pcts = request.form.getlist('draw_pct')
+    for i, (milestone, pct_str) in enumerate(zip(milestones, pcts)):
+        if not milestone.strip():
+            continue
+        try:
+            pct = Decimal(pct_str)
+        except (InvalidOperation, ValueError):
+            pct = Decimal('0')
+        amount = (estimate.total * pct / 100).quantize(Decimal('0.01'))
+        db.session.add(DrawScheduleItem(
+            contract_id=contract.id,
+            milestone=milestone.strip(),
+            pct_of_total=pct,
+            amount=amount,
+            sort_order=(i + 1) * 10,
+        ))
+
+    # Log activity
+    activity = ClientActivity(
+        client_id=contract.client_id,
+        user_id=current_user.id,
+        activity_type='Contract Created',
+        note_text=f'Contract {contract.contract_number} created for ${estimate.total:,.2f}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+    flash(f'Contract {contract.contract_number} created.', 'success')
+    return redirect(url_for('view_contract', contract_id=contract.id))
+
+
+@app.route('/contracts/<int:contract_id>')
+@require_login
+def view_contract(contract_id):
+    contract = Contract.query.get_or_404(contract_id)
+    draws = contract.draw_schedule.order_by(DrawScheduleItem.sort_order).all()
+    return render_template('contract_view.html', contract=contract, draws=draws)
+
+
+@app.route('/contracts/<int:contract_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_contract(contract_id):
+    contract = Contract.query.get_or_404(contract_id)
+    if contract.status in ('Signed', 'Executed'):
+        flash('Cannot edit a signed contract.', 'error')
+        return redirect(url_for('view_contract', contract_id=contract.id))
+    if request.method == 'GET':
+        draws = contract.draw_schedule.order_by(DrawScheduleItem.sort_order).all()
+        return render_template('contract_edit.html', contract=contract, draws=draws,
+                             statuses=CONTRACT_STATUSES)
+
+    contract.scope_text = request.form.get('scope_text', '').strip() or None
+    contract.terms_text = request.form.get('terms_text', '').strip() or None
+    contract.contract_number = request.form.get('contract_number', contract.contract_number).strip()
+    status = request.form.get('status', '')
+    if status in CONTRACT_STATUSES and status not in ('Signed', 'Executed'):
+        contract.status = status
+    db.session.commit()
+    flash('Contract updated.', 'success')
+    return redirect(url_for('view_contract', contract_id=contract.id))
+
+
+@app.route('/contracts/<int:contract_id>/send', methods=['POST'])
+@require_login
+def send_contract(contract_id):
+    contract = Contract.query.get_or_404(contract_id)
+    contract.status = 'Sent'
+    db.session.commit()
+    share_url = url_for('public_contract', token=contract.share_token, _external=True)
+    flash(f'Contract sent. Share link: {share_url}', 'success')
+    return redirect(url_for('view_contract', contract_id=contract.id))
+
+
+@app.route('/c/<token>')
+def public_contract(token):
+    """Public contract view with signature pad."""
+    contract = Contract.query.filter_by(share_token=token).first_or_404()
+    draws = contract.draw_schedule.order_by(DrawScheduleItem.sort_order).all()
+    return render_template('contract_public.html', contract=contract, draws=draws, token=token)
+
+
+@app.route('/c/<token>/sign', methods=['POST'])
+def sign_contract_public(token):
+    """Client signs contract — audited signature with timestamp + IP."""
+    contract = Contract.query.filter_by(share_token=token).first_or_404()
+    if contract.is_signed:
+        flash('This contract has already been signed.', 'info')
+        return redirect(url_for('public_contract', token=token))
+
+    signed_name = request.form.get('signed_name', '').strip()
+    signed_email = request.form.get('signed_email', '').strip()
+    signature_data = request.form.get('signature_data', '').strip()
+
+    if not signed_name or not signature_data:
+        flash('Name and signature are required.', 'error')
+        return redirect(url_for('public_contract', token=token))
+
+    now = datetime.now(timezone.utc)
+    contract.signed_at = now
+    contract.signed_ip = request.remote_addr
+    contract.signed_name = signed_name
+    contract.signed_email = signed_email or None
+    contract.signature_data = signature_data
+    contract.status = 'Signed'
+
+    # Store signed record in R2
+    client = contract.client
+    try:
+        if not client.storage_prefix:
+            from r2_storage_helper import build_client_prefix
+            client.storage_prefix = build_client_prefix(client.name, client.address)
+
+        from r2_storage_helper import upload_file as r2_upload
+        # Store signature audit log as JSON
+        import json
+        audit = {
+            'contract_id': contract.id,
+            'contract_number': contract.contract_number,
+            'signed_name': signed_name,
+            'signed_email': signed_email,
+            'signed_at': now.isoformat(),
+            'signed_ip': request.remote_addr,
+            'user_agent': request.headers.get('User-Agent', ''),
+            'total_price': str(contract.total_price),
+        }
+        audit_key = f"{client.storage_prefix}/contracts/{contract.contract_number}_signature_audit.json"
+        r2_upload(json.dumps(audit, indent=2).encode(), audit_key, 'application/json')
+        contract.signed_pdf_key = audit_key
+    except Exception as e:
+        # Don't fail the signature if R2 upload fails
+        current_app.logger.error(f'R2 upload failed for contract signature: {e}')
+
+    # Accept the estimate + carry into budget if not already done
+    estimate = contract.estimate
+    if estimate.status != 'Accepted':
+        estimate.status = 'Accepted'
+        estimate.accepted_at = now
+    proposal = contract.proposal
+    if proposal.status != 'Accepted':
+        proposal.status = 'Accepted'
+        proposal.accepted_at = now
+        proposal.accepted_name = signed_name
+        proposal.accepted_ip = request.remote_addr
+
+    # Set contract value on client/project
+    project = client.default_project()
+    project.contract_value = contract.total_price
+    client.final_contract_value = contract.total_price
+
+    # Carry estimate into budget (same logic as accept_estimate)
+    _carry_estimate_to_budget(estimate, project)
+
+    # Log to ClientActivity
+    activity = ClientActivity(
+        client_id=contract.client_id,
+        user_id=contract.created_by_user_id,
+        activity_type='Contract Signed',
+        note_text=f'Contract {contract.contract_number} signed by {signed_name} '
+                  f'(IP: {request.remote_addr}) for ${contract.total_price:,.2f}',
+        activity_date=now,
+        file_path=contract.signed_pdf_key,
+        file_name=f'{contract.contract_number}_signature_audit.json',
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash('Contract signed successfully! Thank you.', 'success')
+    return redirect(url_for('public_contract', token=token))
+
+
+def _carry_estimate_to_budget(estimate, project):
+    """Carry estimate line items into Budget by cost code (Labor + Material)."""
+    code_labor = defaultdict(Decimal)
+    code_material = defaultdict(Decimal)
+    for li in estimate.line_items.all():
+        code_labor[li.cost_code_id] += li.labor_amount
+        code_material[li.cost_code_id] += li.material_amount
+
+    subtotal = estimate.subtotal
+    multiplier = estimate.total / subtotal if subtotal > 0 else Decimal('1')
+
+    for cc_id, labor_amt in code_labor.items():
+        scaled = (labor_amt * multiplier).quantize(Decimal('0.01'))
+        existing = Budget.query.filter_by(project_id=project.id, cost_code_id=cc_id, cost_type='Labor').first()
+        if existing:
+            existing.amount = scaled
+            existing.notes = f'From estimate #{estimate.id}'
+        else:
+            db.session.add(Budget(
+                project_id=project.id, cost_code_id=cc_id,
+                cost_type='Labor', amount=scaled,
+                notes=f'From estimate #{estimate.id}',
+            ))
+
+    for cc_id, mat_amt in code_material.items():
+        scaled = (mat_amt * multiplier).quantize(Decimal('0.01'))
+        existing = Budget.query.filter_by(project_id=project.id, cost_code_id=cc_id, cost_type='Material').first()
+        if existing:
+            existing.amount = scaled
+            existing.notes = f'From estimate #{estimate.id}'
+        else:
+            db.session.add(Budget(
+                project_id=project.id, cost_code_id=cc_id,
+                cost_type='Material', amount=scaled,
+                notes=f'From estimate #{estimate.id}',
+            ))
+
+
+# --- Assembly Item Management ---
+
+@app.route('/settings/assembly-items')
+@require_supervisor
+def assembly_items_settings():
+    items = AssemblyItem.query.order_by(AssemblyItem.sort_order).all()
+    cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+    return render_template('assembly_items_settings.html', items=items, cost_codes=cost_codes)
+
+
+@app.route('/settings/assembly-items/add', methods=['POST'])
+@require_supervisor
+def add_assembly_item():
+    name = request.form.get('name', '').strip()
+    cost_code_id = request.form.get('cost_code_id')
+    if not name or not cost_code_id:
+        flash('Name and cost code are required.', 'error')
+        return redirect(url_for('assembly_items_settings'))
+    try:
+        ai = AssemblyItem(
+            cost_code_id=int(cost_code_id),
+            name=name,
+            description=request.form.get('description', '').strip() or None,
+            unit=request.form.get('unit', 'EA').strip(),
+            unit_cost=Decimal(request.form.get('unit_cost', '0')),
+            labor_pct=Decimal(request.form.get('labor_pct', '50')),
+            material_pct=Decimal(request.form.get('material_pct', '50')),
+            waste_pct=Decimal(request.form.get('waste_pct', '5')),
+            sort_order=int(request.form.get('sort_order', '0')),
+        )
+        db.session.add(ai)
+        db.session.commit()
+        flash(f'Assembly item "{name}" added.', 'success')
+    except (InvalidOperation, ValueError) as e:
+        flash(f'Invalid input: {e}', 'error')
+    return redirect(url_for('assembly_items_settings'))
+
+
+@app.route('/settings/assembly-items/<int:item_id>/toggle', methods=['POST'])
+@require_supervisor
+def toggle_assembly_item(item_id):
+    ai = AssemblyItem.query.get_or_404(item_id)
+    ai.is_active = not ai.is_active
+    db.session.commit()
+    flash(f'Assembly item "{ai.name}" {"activated" if ai.is_active else "deactivated"}.', 'success')
+    return redirect(url_for('assembly_items_settings'))
+
+
 @app.route('/api/search')
 @require_login
 def global_search():
@@ -3479,3 +4339,485 @@ def global_search():
         })
 
     return jsonify(results)
+
+
+# ── Document Management ──────────────────────────────────────────────
+
+def _ensure_storage_prefix(client):
+    if not client.storage_prefix:
+        from r2_storage_helper import build_client_prefix
+        client.storage_prefix = build_client_prefix(client.name, client.address)
+        db.session.commit()
+
+
+def _can_view_document(doc, user):
+    """Role-based visibility check."""
+    if doc.visibility == 'team':
+        return True
+    if doc.visibility == 'supervisor':
+        return user.role == 'supervisor'
+    return True  # 'client' visibility = everyone
+
+
+@app.route('/clients/<int:client_id>/documents')
+@require_login
+def client_documents(client_id):
+    client = Client.query.get_or_404(client_id)
+    folder = request.args.get('folder', '')
+    q = Document.query.filter_by(client_id=client_id, is_superseded=False)
+    if folder and folder in DOCUMENT_FOLDER_KEYS:
+        q = q.filter_by(folder=folder)
+    # Role-based filtering
+    if current_user.role != 'supervisor':
+        q = q.filter(Document.visibility != 'supervisor')
+    documents = q.order_by(Document.folder, Document.updated_at.desc()).all()
+    # Group by folder
+    by_folder = defaultdict(list)
+    for doc in documents:
+        by_folder[doc.folder].append(doc)
+    permits = Permit.query.filter_by(client_id=client_id).order_by(Permit.updated_at.desc()).all()
+    return render_template('client_documents.html', client=client,
+                           documents=documents, by_folder=by_folder,
+                           folders=DOCUMENT_FOLDERS, active_folder=folder,
+                           permits=permits, permit_statuses=PERMIT_STATUSES,
+                           permit_types=PERMIT_TYPES)
+
+
+@app.route('/clients/<int:client_id>/documents/upload', methods=['POST'])
+@require_login
+def upload_document(client_id):
+    from werkzeug.utils import secure_filename
+    import mimetypes
+
+    client = Client.query.get_or_404(client_id)
+    _ensure_storage_prefix(client)
+
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if not file or not file.filename:
+        return jsonify({'success': False, 'error': 'No file selected'}), 400
+
+    filename = secure_filename(file.filename)
+    if not filename:
+        return jsonify({'success': False, 'error': 'Invalid filename'}), 400
+
+    folder = request.form.get('folder', 'other')
+    if folder not in DOCUMENT_FOLDER_KEYS:
+        folder = 'other'
+
+    title = request.form.get('title', '').strip() or filename
+    description = request.form.get('description', '').strip() or None
+    visibility = request.form.get('visibility', 'team')
+    if visibility not in ('team', 'supervisor', 'client'):
+        visibility = 'team'
+
+    file_content = file.read()
+    file_size = len(file_content)
+    mime = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    key = f"{client.storage_prefix}/{folder}/{timestamp}_v1_{filename}"
+
+    try:
+        from r2_storage_helper import upload_file as r2_upload
+        r2_upload(file_content, key, mime)
+
+        doc = Document(
+            client_id=client_id,
+            folder=folder,
+            title=title,
+            description=description,
+            file_name=filename,
+            mime_type=mime,
+            visibility=visibility,
+            uploaded_by_user_id=current_user.id,
+        )
+        db.session.add(doc)
+        db.session.flush()  # get doc.id
+
+        version = DocumentVersion(
+            document_id=doc.id,
+            version_number=1,
+            storage_key=key,
+            file_name=filename,
+            file_size=file_size,
+            mime_type=mime,
+            change_note='Initial upload',
+            uploaded_by_user_id=current_user.id,
+        )
+        db.session.add(version)
+        db.session.flush()
+
+        doc.current_version_id = version.id
+
+        # Audit trail
+        activity = ClientActivity(
+            client_id=client_id,
+            user_id=current_user.id,
+            activity_type='Document uploaded',
+            note_text=f'Uploaded "{title}" to {folder}',
+            activity_date=datetime.now(timezone.utc),
+            file_path=key,
+            file_name=filename,
+        )
+        db.session.add(activity)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'document_id': doc.id,
+            'title': doc.title,
+            'redirect': url_for('client_documents', client_id=client_id, folder=folder),
+        })
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f'Document upload failed: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/revise', methods=['POST'])
+@require_login
+def revise_document(client_id, doc_id):
+    """Upload a new revision of an existing document. Never overwrites."""
+    from werkzeug.utils import secure_filename
+    import mimetypes
+
+    client = Client.query.get_or_404(client_id)
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    _ensure_storage_prefix(client)
+
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if not file or not file.filename:
+        return jsonify({'success': False, 'error': 'No file selected'}), 400
+
+    filename = secure_filename(file.filename)
+    if not filename:
+        return jsonify({'success': False, 'error': 'Invalid filename'}), 400
+
+    change_note = request.form.get('change_note', '').strip() or None
+
+    file_content = file.read()
+    file_size = len(file_content)
+    mime = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+
+    # Next version number
+    max_ver = db.session.query(func.max(DocumentVersion.version_number)).filter_by(
+        document_id=doc.id).scalar() or 0
+    next_ver = max_ver + 1
+
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    key = f"{client.storage_prefix}/{doc.folder}/{timestamp}_v{next_ver}_{filename}"
+
+    try:
+        from r2_storage_helper import upload_file as r2_upload
+        r2_upload(file_content, key, mime)
+
+        version = DocumentVersion(
+            document_id=doc.id,
+            version_number=next_ver,
+            storage_key=key,
+            file_name=filename,
+            file_size=file_size,
+            mime_type=mime,
+            change_note=change_note,
+            uploaded_by_user_id=current_user.id,
+        )
+        db.session.add(version)
+        db.session.flush()
+
+        doc.current_version_id = version.id
+        doc.file_name = filename
+        doc.mime_type = mime
+        doc.updated_at = datetime.now(timezone.utc)
+
+        activity = ClientActivity(
+            client_id=client_id,
+            user_id=current_user.id,
+            activity_type='Document revised',
+            note_text=f'Uploaded revision v{next_ver} of "{doc.title}"'
+                      + (f' — {change_note}' if change_note else ''),
+            activity_date=datetime.now(timezone.utc),
+            file_path=key,
+            file_name=filename,
+        )
+        db.session.add(activity)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'version_number': next_ver,
+            'redirect': url_for('view_document', client_id=client_id, doc_id=doc.id),
+        })
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f'Document revision failed: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/supersede', methods=['POST'])
+@require_login
+def supersede_document(client_id, doc_id):
+    """Mark a document as superseded by a new one (for drawings)."""
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    new_doc_id = request.form.get('new_document_id', type=int)
+    doc.is_superseded = True
+    note = f'"{doc.title}" marked as superseded'
+    if new_doc_id:
+        new_doc = Document.query.filter_by(id=new_doc_id, client_id=client_id).first_or_404()
+        doc.superseded_by_id = new_doc.id
+        note = f'"{doc.title}" superseded by "{new_doc.title}"'
+    activity = ClientActivity(
+        client_id=client_id,
+        user_id=current_user.id,
+        activity_type='Document superseded',
+        note_text=note,
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+    flash(f'"{doc.title}" marked as superseded.', 'success')
+    return redirect(url_for('client_documents', client_id=client_id, folder=doc.folder))
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>')
+@require_login
+def view_document(client_id, doc_id):
+    """Document detail page with version history."""
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    if not _can_view_document(doc, current_user):
+        abort(403)
+    client = Client.query.get_or_404(client_id)
+    versions = doc.versions.all()
+    # Other non-superseded docs in same folder for supersede picker
+    folder_docs = Document.query.filter(
+        Document.client_id == client_id,
+        Document.folder == doc.folder,
+        Document.id != doc.id,
+        Document.is_superseded == False,
+    ).order_by(Document.title).all()
+    return render_template('document_view.html', client=client, doc=doc,
+                           versions=versions, folder_docs=folder_docs,
+                           folders=DOCUMENT_FOLDERS)
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/edit', methods=['POST'])
+@require_login
+def edit_document(client_id, doc_id):
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    doc.title = request.form.get('title', doc.title).strip()
+    doc.description = request.form.get('description', '').strip() or None
+    doc.folder = request.form.get('folder', doc.folder)
+    visibility = request.form.get('visibility', doc.visibility)
+    if visibility in ('team', 'supervisor', 'client'):
+        doc.visibility = visibility
+    db.session.commit()
+    flash('Document updated.', 'success')
+    return redirect(url_for('view_document', client_id=client_id, doc_id=doc.id))
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/delete', methods=['POST'])
+@require_supervisor
+def delete_document(client_id, doc_id):
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    folder = doc.folder
+    title = doc.title
+    # Don't delete R2 objects — keep for audit trail
+    db.session.delete(doc)
+    activity = ClientActivity(
+        client_id=client_id,
+        user_id=current_user.id,
+        activity_type='Document deleted',
+        note_text=f'Deleted document "{title}" from {folder}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+    flash(f'Document "{title}" deleted.', 'success')
+    return redirect(url_for('client_documents', client_id=client_id, folder=folder))
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/download')
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/download/<int:version_id>')
+@require_login
+def download_document(client_id, doc_id, version_id=None):
+    """Serve a document via presigned URL (or direct download as fallback)."""
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    if not _can_view_document(doc, current_user):
+        abort(403)
+
+    if version_id:
+        version = DocumentVersion.query.filter_by(id=version_id, document_id=doc.id).first_or_404()
+    else:
+        version = doc.current_version
+        if not version:
+            abort(404)
+
+    try:
+        from r2_storage_helper import generate_presigned_url
+        url = generate_presigned_url(version.storage_key, expiration=3600)
+        return redirect(url)
+    except Exception as e:
+        current_app.logger.error(f'Presigned URL failed: {e}')
+        # Fallback: stream from R2
+        from r2_storage_helper import download_file
+        from flask import send_file
+        content = download_file(version.storage_key)
+        return send_file(
+            BytesIO(content),
+            download_name=version.file_name,
+            mimetype=version.mime_type or 'application/octet-stream',
+        )
+
+
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/view-pdf')
+@app.route('/clients/<int:client_id>/documents/<int:doc_id>/view-pdf/<int:version_id>')
+@require_login
+def view_pdf(client_id, doc_id, version_id=None):
+    """PDF viewer page with basic markup tools."""
+    doc = Document.query.filter_by(id=doc_id, client_id=client_id).first_or_404()
+    if not _can_view_document(doc, current_user):
+        abort(403)
+    client = Client.query.get_or_404(client_id)
+
+    if version_id:
+        version = DocumentVersion.query.filter_by(id=version_id, document_id=doc.id).first_or_404()
+    else:
+        version = doc.current_version
+
+    # Get presigned URL for the PDF
+    try:
+        from r2_storage_helper import generate_presigned_url
+        pdf_url = generate_presigned_url(version.storage_key, expiration=3600)
+    except Exception:
+        pdf_url = url_for('download_document', client_id=client_id, doc_id=doc.id,
+                          version_id=version.id if version else None)
+
+    return render_template('pdf_viewer.html', client=client, doc=doc,
+                           version=version, pdf_url=pdf_url)
+
+
+# ── Permit Tracking ──────────────────────────────────────────────────
+
+@app.route('/clients/<int:client_id>/permits/new', methods=['GET', 'POST'])
+@require_login
+def create_permit(client_id):
+    client = Client.query.get_or_404(client_id)
+
+    if request.method == 'GET':
+        return render_template('permit_form.html', client=client, permit=None,
+                               permit_types=PERMIT_TYPES, permit_statuses=PERMIT_STATUSES)
+
+    permit = Permit(
+        client_id=client_id,
+        permit_type=request.form.get('permit_type', 'Building Permit'),
+        jurisdiction=request.form.get('jurisdiction', '').strip() or None,
+        permit_number=request.form.get('permit_number', '').strip() or None,
+        status=request.form.get('status', 'Not Started'),
+        notes=request.form.get('notes', '').strip() or None,
+        created_by_user_id=current_user.id,
+    )
+
+    # Parse dates
+    for field in ('submitted_date', 'approved_date', 'issued_date',
+                  'expiration_date', 'corrections_due_date'):
+        val = request.form.get(field, '').strip()
+        if val:
+            try:
+                setattr(permit, field, datetime.strptime(val, '%Y-%m-%d').date())
+            except ValueError:
+                pass
+
+    fee = request.form.get('fee_amount', '').strip().replace(',', '').replace('$', '')
+    if fee:
+        try:
+            permit.fee_amount = Decimal(fee)
+        except (ValueError, InvalidOperation):
+            pass
+    permit.fee_paid = request.form.get('fee_paid') == 'on'
+    permit.corrections_note = request.form.get('corrections_note', '').strip() or None
+
+    db.session.add(permit)
+
+    activity = ClientActivity(
+        client_id=client_id,
+        user_id=current_user.id,
+        activity_type='Permit created',
+        note_text=f'{permit.permit_type} — {permit.status}'
+                  + (f' ({permit.jurisdiction})' if permit.jurisdiction else ''),
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'{permit.permit_type} permit created.', 'success')
+    return redirect(url_for('client_documents', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/permits/<int:permit_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_permit(client_id, permit_id):
+    client = Client.query.get_or_404(client_id)
+    permit = Permit.query.filter_by(id=permit_id, client_id=client_id).first_or_404()
+
+    if request.method == 'GET':
+        return render_template('permit_form.html', client=client, permit=permit,
+                               permit_types=PERMIT_TYPES, permit_statuses=PERMIT_STATUSES)
+
+    old_status = permit.status
+    permit.permit_type = request.form.get('permit_type', permit.permit_type)
+    permit.jurisdiction = request.form.get('jurisdiction', '').strip() or None
+    permit.permit_number = request.form.get('permit_number', '').strip() or None
+    permit.status = request.form.get('status', permit.status)
+    permit.notes = request.form.get('notes', '').strip() or None
+    permit.corrections_note = request.form.get('corrections_note', '').strip() or None
+
+    for field in ('submitted_date', 'approved_date', 'issued_date',
+                  'expiration_date', 'corrections_due_date'):
+        val = request.form.get(field, '').strip()
+        if val:
+            try:
+                setattr(permit, field, datetime.strptime(val, '%Y-%m-%d').date())
+            except ValueError:
+                pass
+        else:
+            setattr(permit, field, None)
+
+    fee = request.form.get('fee_amount', '').strip().replace(',', '').replace('$', '')
+    if fee:
+        try:
+            permit.fee_amount = Decimal(fee)
+        except (ValueError, InvalidOperation):
+            pass
+    else:
+        permit.fee_amount = None
+    permit.fee_paid = request.form.get('fee_paid') == 'on'
+
+    if permit.status != old_status:
+        activity = ClientActivity(
+            client_id=client_id,
+            user_id=current_user.id,
+            activity_type='Permit status changed',
+            note_text=f'{permit.permit_type}: {old_status} → {permit.status}',
+            activity_date=datetime.now(timezone.utc),
+        )
+        db.session.add(activity)
+
+    db.session.commit()
+    flash(f'{permit.permit_type} permit updated.', 'success')
+    return redirect(url_for('client_documents', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/permits/<int:permit_id>/delete', methods=['POST'])
+@require_supervisor
+def delete_permit(client_id, permit_id):
+    permit = Permit.query.filter_by(id=permit_id, client_id=client_id).first_or_404()
+    ptype = permit.permit_type
+    db.session.delete(permit)
+    db.session.commit()
+    flash(f'{ptype} permit deleted.', 'success')
+    return redirect(url_for('client_documents', client_id=client_id))

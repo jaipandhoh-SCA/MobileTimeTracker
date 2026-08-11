@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from decimal import Decimal
 from app import db
 from flask_login import UserMixin
@@ -26,7 +26,8 @@ class User(UserMixin, db.Model):
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
     last_login = db.Column(db.DateTime, nullable=True)
 
-    time_entries = db.relationship('TimeEntry', backref='user', lazy='dynamic')
+    time_entries = db.relationship('TimeEntry', backref='user', lazy='dynamic',
+                                   foreign_keys='TimeEntry.user_id')
     active_clock = db.relationship('ActiveClock', backref='user', uselist=False)
 
     def effective_burden_multiplier(self):
@@ -147,6 +148,11 @@ class Client(db.Model):
 COST_TYPES = ['Labor', 'Material', 'Subcontractor', 'Equipment', 'Other']
 PROJECT_STATUSES = ['Planning', 'Permitted', 'In Progress', 'Completed', 'On Hold']
 COST_SOURCES = ['time', 'payroll', 'po', 'invoice', 'manual']
+
+ADU_TYPES = ['Studio', '1BR', '2BR', 'Detached', 'Garage Conversion']
+ESTIMATE_STATUSES = ['Draft', 'Sent', 'Accepted', 'Rejected', 'Expired']
+PROPOSAL_STATUSES = ['Draft', 'Sent', 'Viewed', 'Accepted', 'Rejected', 'Expired']
+CONTRACT_STATUSES = ['Draft', 'Sent', 'Signed', 'Executed', 'Voided']
 
 
 class Project(db.Model):
@@ -299,6 +305,312 @@ class CostEntry(db.Model):
         return f'<CostEntry {self.id} - {self.source} ${self.amount}>'
 
 
+class AssemblyItem(db.Model):
+    """Maintainable cost/assembly database — unit costs for ADU construction."""
+    __tablename__ = 'assembly_items'
+    id = db.Column(db.Integer, primary_key=True)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=False)
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.String(500), nullable=True)
+    unit = db.Column(db.String(20), nullable=False, default='EA')
+    unit_cost = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+    labor_pct = db.Column(db.Numeric(5, 2), nullable=False, default=50)
+    material_pct = db.Column(db.Numeric(5, 2), nullable=False, default=50)
+    waste_pct = db.Column(db.Numeric(5, 2), nullable=False, default=5)
+    default_qty = db.Column(db.Numeric(10, 2), nullable=True)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    cost_code = db.relationship('CostCode')
+
+    __table_args__ = (
+        Index('idx_assembly_cost_code', 'cost_code_id'),
+    )
+
+    @property
+    def labor_cost(self):
+        return (self.unit_cost * self.labor_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def material_cost(self):
+        return (self.unit_cost * self.material_pct / 100).quantize(Decimal('0.01'))
+
+
+class EstimateTemplate(db.Model):
+    """Reusable ADU estimate templates (Studio, 1BR, etc.)."""
+    __tablename__ = 'estimate_templates'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    adu_type = db.Column(db.String(50), nullable=False)
+    description = db.Column(db.String(500), nullable=True)
+    default_sqft = db.Column(db.Integer, nullable=True)
+    default_markup_pct = db.Column(db.Numeric(5, 2), nullable=False, default=15)
+    default_overhead_pct = db.Column(db.Numeric(5, 2), nullable=False, default=10)
+    default_contingency_pct = db.Column(db.Numeric(5, 2), nullable=False, default=5)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    items = db.relationship('EstimateTemplateItem', backref='template',
+                            lazy='dynamic', cascade='all, delete-orphan',
+                            order_by='EstimateTemplateItem.sort_order')
+
+
+class EstimateTemplateItem(db.Model):
+    """Line items preloaded into a template."""
+    __tablename__ = 'estimate_template_items'
+    id = db.Column(db.Integer, primary_key=True)
+    template_id = db.Column(db.Integer, db.ForeignKey('estimate_templates.id'), nullable=False)
+    assembly_item_id = db.Column(db.Integer, db.ForeignKey('assembly_items.id'), nullable=False)
+    default_qty = db.Column(db.Numeric(10, 2), nullable=False, default=1)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    assembly_item = db.relationship('AssemblyItem')
+
+    __table_args__ = (
+        Index('idx_eti_template', 'template_id'),
+    )
+
+
+class Estimate(db.Model):
+    """A concrete estimate for a client."""
+    __tablename__ = 'estimates'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    template_id = db.Column(db.Integer, db.ForeignKey('estimate_templates.id'), nullable=True)
+    name = db.Column(db.String(200), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='Draft')
+    adu_type = db.Column(db.String(50), nullable=True)
+    sqft = db.Column(db.Integer, nullable=True)
+    markup_pct = db.Column(db.Numeric(5, 2), nullable=False, default=15)
+    overhead_pct = db.Column(db.Numeric(5, 2), nullable=False, default=10)
+    contingency_pct = db.Column(db.Numeric(5, 2), nullable=False, default=5)
+    notes = db.Column(db.Text, nullable=True)
+    accepted_at = db.Column(db.DateTime, nullable=True)
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('estimates', lazy='dynamic'))
+    template = db.relationship('EstimateTemplate')
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+    line_items = db.relationship('EstimateLineItem', backref='estimate',
+                                lazy='dynamic', cascade='all, delete-orphan',
+                                order_by='EstimateLineItem.sort_order')
+
+    __table_args__ = (
+        Index('idx_estimate_client', 'client_id'),
+    )
+
+    @property
+    def subtotal(self):
+        """Sum of all line item extended costs (with waste)."""
+        total = Decimal('0')
+        for li in self.line_items.all():
+            total += li.extended_cost
+        return total
+
+    @property
+    def overhead_amount(self):
+        return (self.subtotal * self.overhead_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def markup_amount(self):
+        return (self.subtotal * self.markup_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def contingency_amount(self):
+        return (self.subtotal * self.contingency_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def total(self):
+        return self.subtotal + self.overhead_amount + self.markup_amount + self.contingency_amount
+
+    @property
+    def internal_cost(self):
+        """Cost before markup — what it actually costs us."""
+        return self.subtotal + self.overhead_amount + self.contingency_amount
+
+    def labor_subtotal(self):
+        total = Decimal('0')
+        for li in self.line_items.all():
+            total += li.labor_amount
+        return total
+
+    def material_subtotal(self):
+        total = Decimal('0')
+        for li in self.line_items.all():
+            total += li.material_amount
+        return total
+
+
+class EstimateLineItem(db.Model):
+    """A single line item on an estimate."""
+    __tablename__ = 'estimate_line_items'
+    id = db.Column(db.Integer, primary_key=True)
+    estimate_id = db.Column(db.Integer, db.ForeignKey('estimates.id'), nullable=False)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=False)
+    assembly_item_id = db.Column(db.Integer, db.ForeignKey('assembly_items.id'), nullable=True)
+    description = db.Column(db.String(300), nullable=False)
+    unit = db.Column(db.String(20), nullable=False, default='EA')
+    qty = db.Column(db.Numeric(10, 2), nullable=False, default=1)
+    unit_cost = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+    labor_pct = db.Column(db.Numeric(5, 2), nullable=False, default=50)
+    material_pct = db.Column(db.Numeric(5, 2), nullable=False, default=50)
+    waste_pct = db.Column(db.Numeric(5, 2), nullable=False, default=5)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    cost_code = db.relationship('CostCode')
+    assembly_item = db.relationship('AssemblyItem')
+
+    __table_args__ = (
+        Index('idx_eli_estimate', 'estimate_id'),
+    )
+
+    @property
+    def base_extended(self):
+        """qty * unit_cost."""
+        return (self.qty * self.unit_cost).quantize(Decimal('0.01'))
+
+    @property
+    def waste_amount(self):
+        return (self.base_extended * self.waste_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def extended_cost(self):
+        """qty * unit_cost * (1 + waste_pct/100)."""
+        return self.base_extended + self.waste_amount
+
+    @property
+    def labor_amount(self):
+        return (self.extended_cost * self.labor_pct / 100).quantize(Decimal('0.01'))
+
+    @property
+    def material_amount(self):
+        return (self.extended_cost * self.material_pct / 100).quantize(Decimal('0.01'))
+
+
+class Proposal(db.Model):
+    """Client-facing branded proposal generated from an estimate."""
+    __tablename__ = 'proposals'
+    id = db.Column(db.Integer, primary_key=True)
+    estimate_id = db.Column(db.Integer, db.ForeignKey('estimates.id'), nullable=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='Draft')
+    share_token = db.Column(db.String(64), unique=True, nullable=False)
+    # Content overrides (if None, pulled from estimate/client)
+    cover_note = db.Column(db.Text, nullable=True)
+    scope_text = db.Column(db.Text, nullable=True)
+    exclusions_text = db.Column(db.Text, nullable=True)
+    validity_days = db.Column(db.Integer, nullable=False, default=30)
+    # Tracking
+    viewed_at = db.Column(db.DateTime, nullable=True)
+    viewed_ip = db.Column(db.String(45), nullable=True)
+    accepted_at = db.Column(db.DateTime, nullable=True)
+    accepted_ip = db.Column(db.String(45), nullable=True)
+    accepted_name = db.Column(db.String(200), nullable=True)
+    # Storage
+    pdf_storage_key = db.Column(db.String(500), nullable=True)
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    estimate = db.relationship('Estimate', backref=db.backref('proposals', lazy='dynamic'))
+    client = db.relationship('Client', backref=db.backref('proposals', lazy='dynamic'))
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+
+    __table_args__ = (
+        Index('idx_proposal_client', 'client_id'),
+        Index('idx_proposal_token', 'share_token'),
+    )
+
+    @property
+    def is_expired(self):
+        if not self.created_at or not self.validity_days:
+            return False
+        from datetime import timedelta
+        return datetime.now(timezone.utc) > self.created_at.replace(tzinfo=timezone.utc) + timedelta(days=self.validity_days)
+
+    @property
+    def expires_on(self):
+        if not self.created_at or not self.validity_days:
+            return None
+        from datetime import timedelta
+        return (self.created_at + timedelta(days=self.validity_days)).date()
+
+
+class Contract(db.Model):
+    """Contract generated from an accepted proposal."""
+    __tablename__ = 'contracts'
+    id = db.Column(db.Integer, primary_key=True)
+    proposal_id = db.Column(db.Integer, db.ForeignKey('proposals.id'), nullable=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    estimate_id = db.Column(db.Integer, db.ForeignKey('estimates.id'), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='Draft')
+    share_token = db.Column(db.String(64), unique=True, nullable=False)
+    # Contract content
+    contract_number = db.Column(db.String(50), nullable=False)
+    scope_text = db.Column(db.Text, nullable=True)
+    terms_text = db.Column(db.Text, nullable=True)
+    total_price = db.Column(db.Numeric(12, 2), nullable=False)
+    # Signature
+    signed_at = db.Column(db.DateTime, nullable=True)
+    signed_ip = db.Column(db.String(45), nullable=True)
+    signed_name = db.Column(db.String(200), nullable=True)
+    signed_email = db.Column(db.String(200), nullable=True)
+    signature_data = db.Column(db.Text, nullable=True)  # Base64 canvas signature
+    # Storage
+    pdf_storage_key = db.Column(db.String(500), nullable=True)
+    signed_pdf_key = db.Column(db.String(500), nullable=True)
+    # PandaDoc (stub for future integration)
+    pandadoc_id = db.Column(db.String(100), nullable=True)
+    pandadoc_status = db.Column(db.String(50), nullable=True)
+    # Meta
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    proposal = db.relationship('Proposal', backref=db.backref('contract', uselist=False))
+    client = db.relationship('Client', backref=db.backref('contracts', lazy='dynamic'))
+    estimate = db.relationship('Estimate')
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+
+    __table_args__ = (
+        Index('idx_contract_client', 'client_id'),
+        Index('idx_contract_token', 'share_token'),
+    )
+
+    @property
+    def is_signed(self):
+        return self.signed_at is not None
+
+
+class DrawScheduleItem(db.Model):
+    """Payment/draw schedule line item on a contract."""
+    __tablename__ = 'draw_schedule_items'
+    id = db.Column(db.Integer, primary_key=True)
+    contract_id = db.Column(db.Integer, db.ForeignKey('contracts.id'), nullable=False)
+    milestone = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.String(500), nullable=True)
+    pct_of_total = db.Column(db.Numeric(5, 2), nullable=False, default=0)
+    amount = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    due_date = db.Column(db.Date, nullable=True)
+    paid_at = db.Column(db.DateTime, nullable=True)
+    paid_amount = db.Column(db.Numeric(12, 2), nullable=True)
+
+    contract = db.relationship('Contract', backref=db.backref(
+        'draw_schedule', lazy='dynamic', cascade='all, delete-orphan',
+        order_by='DrawScheduleItem.sort_order'))
+
+    __table_args__ = (
+        Index('idx_draw_contract', 'contract_id'),
+    )
+
+
 class TimeEntry(db.Model):
     __tablename__ = 'time_entries'
     id = db.Column(db.Integer, primary_key=True)
@@ -443,6 +755,152 @@ class AuthorizedUser(db.Model):
     
     def __repr__(self):
         return f'<AuthorizedUser {self.email}>'
+
+
+DOCUMENT_FOLDERS = [
+    ('plans', 'Plans & Drawings'),
+    ('permits', 'Permits'),
+    ('specs', 'Specs & Engineering'),
+    ('contracts', 'Contracts'),
+    ('photos', 'Photos'),
+    ('other', 'Other'),
+]
+
+DOCUMENT_FOLDER_KEYS = [k for k, _ in DOCUMENT_FOLDERS]
+
+PERMIT_STATUSES = [
+    'Not Started', 'In Preparation', 'Submitted', 'In Review',
+    'Corrections Required', 'Approved', 'Issued', 'Expired', 'Denied',
+]
+
+PERMIT_TYPES = [
+    'Building Permit', 'Grading Permit', 'Electrical Permit',
+    'Plumbing Permit', 'Mechanical Permit', 'Demolition Permit',
+    'Encroachment Permit', 'School Fee', 'Utility Connection',
+    'HOA Approval', 'Other',
+]
+
+
+class Document(db.Model):
+    """A managed file belonging to a client, organized into folders."""
+    __tablename__ = 'documents'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    folder = db.Column(db.String(30), nullable=False, default='other')
+    title = db.Column(db.String(300), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    file_name = db.Column(db.String(255), nullable=False)
+    mime_type = db.Column(db.String(100), nullable=True)
+    current_version_id = db.Column(db.Integer, nullable=True)  # FK added after DocumentVersion
+    is_superseded = db.Column(db.Boolean, default=False)
+    superseded_by_id = db.Column(db.Integer, db.ForeignKey('documents.id'), nullable=True)
+    visibility = db.Column(db.String(20), nullable=False, default='team')  # team, supervisor, client
+    uploaded_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('documents', lazy='dynamic'))
+    uploaded_by = db.relationship('User', foreign_keys=[uploaded_by_user_id])
+    superseded_by = db.relationship('Document', remote_side='Document.id', foreign_keys=[superseded_by_id])
+    versions = db.relationship('DocumentVersion', backref='document',
+                               lazy='dynamic', cascade='all, delete-orphan',
+                               order_by='DocumentVersion.version_number.desc()')
+
+    __table_args__ = (
+        Index('idx_doc_client_folder', 'client_id', 'folder'),
+    )
+
+    @property
+    def current_version(self):
+        if self.current_version_id:
+            return DocumentVersion.query.get(self.current_version_id)
+        return self.versions.first()
+
+    @property
+    def version_count(self):
+        return self.versions.count()
+
+    @property
+    def is_drawing(self):
+        return self.folder == 'plans'
+
+    @property
+    def is_pdf(self):
+        return self.file_name.lower().endswith('.pdf') if self.file_name else False
+
+
+class DocumentVersion(db.Model):
+    """A specific version/revision of a document. Never overwritten."""
+    __tablename__ = 'document_versions'
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('documents.id'), nullable=False)
+    version_number = db.Column(db.Integer, nullable=False, default=1)
+    storage_key = db.Column(db.String(500), nullable=False)
+    file_name = db.Column(db.String(255), nullable=False)
+    file_size = db.Column(db.Integer, nullable=True)
+    mime_type = db.Column(db.String(100), nullable=True)
+    change_note = db.Column(db.String(500), nullable=True)
+    uploaded_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    uploaded_by = db.relationship('User', foreign_keys=[uploaded_by_user_id])
+
+    __table_args__ = (
+        UniqueConstraint('document_id', 'version_number', name='uq_doc_version'),
+        Index('idx_docver_doc', 'document_id'),
+    )
+
+
+class Permit(db.Model):
+    """Permit tracking for a client's ADU project."""
+    __tablename__ = 'permits'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    permit_type = db.Column(db.String(50), nullable=False)
+    jurisdiction = db.Column(db.String(200), nullable=True)
+    permit_number = db.Column(db.String(100), nullable=True)
+    status = db.Column(db.String(30), nullable=False, default='Not Started')
+    # Key dates
+    submitted_date = db.Column(db.Date, nullable=True)
+    approved_date = db.Column(db.Date, nullable=True)
+    issued_date = db.Column(db.Date, nullable=True)
+    expiration_date = db.Column(db.Date, nullable=True)
+    # Corrections
+    corrections_due_date = db.Column(db.Date, nullable=True)
+    corrections_note = db.Column(db.Text, nullable=True)
+    # Fees
+    fee_amount = db.Column(db.Numeric(10, 2), nullable=True)
+    fee_paid = db.Column(db.Boolean, default=False)
+    # Notes / docs
+    notes = db.Column(db.Text, nullable=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('documents.id'), nullable=True)
+    # Meta
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('permits', lazy='dynamic'))
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+    document = db.relationship('Document')
+
+    __table_args__ = (
+        Index('idx_permit_client', 'client_id'),
+        Index('idx_permit_status', 'status'),
+    )
+
+    @property
+    def is_overdue(self):
+        if self.corrections_due_date and self.status == 'Corrections Required':
+            return self.corrections_due_date < date.today()
+        if self.expiration_date and self.status == 'Issued':
+            return self.expiration_date < date.today()
+        return False
+
+    @property
+    def days_in_review(self):
+        if self.submitted_date and self.status in ('Submitted', 'In Review'):
+            return (date.today() - self.submitted_date).days
+        return None
 
 
 class AppSetting(db.Model):

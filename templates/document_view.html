@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, page_header %}
+
+{% block title %}{{ doc.title }} - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto" x-data="{ reviseOpen: false, editOpen: false, supersedeOpen: false }">
+
+    {{ page_header(doc.title,
+        subtitle=client.name ~ " &middot; " ~ (dict(folders).get(doc.folder, doc.folder)),
+        back_text="&larr; Documents", back_href=url_for('client_documents', client_id=client.id, folder=doc.folder)) }}
+
+    {# Status badges #}
+    <div class="flex flex-wrap items-center gap-2 mb-6">
+        {% if doc.is_superseded %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700">
+            Superseded{% if doc.superseded_by %} by {{ doc.superseded_by.title }}{% endif %}
+        </span>
+        {% endif %}
+        {% if doc.visibility == 'supervisor' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-700">Supervisor only</span>
+        {% endif %}
+        <span class="text-xs text-txt-muted">{{ doc.version_count }} version{{ 's' if doc.version_count != 1 }} &middot; Uploaded by {{ doc.uploaded_by.display_name }}</span>
+    </div>
+
+    {# Actions #}
+    <div class="flex flex-wrap gap-3 mb-6">
+        <a href="{{ url_for('download_document', client_id=client.id, doc_id=doc.id) }}"
+           class="inline-flex items-center gap-2 px-4 py-2 bg-txt-primary text-white rounded-xl text-sm font-medium hover:bg-txt-primary/80 transition-colors">
+            Download Current
+        </a>
+        {% if doc.is_pdf %}
+        {{ btn("View PDF", href=url_for('view_pdf', client_id=client.id, doc_id=doc.id), variant="secondary", size="sm") }}
+        {% endif %}
+        <button @click="reviseOpen = true"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-xl text-sm font-medium hover:bg-amber-600 transition-colors">
+            Upload New Revision
+        </button>
+        <button @click="editOpen = true" class="px-3 py-2 text-sm text-txt-secondary hover:text-txt-primary font-medium">Edit Details</button>
+        {% if doc.folder == 'plans' and not doc.is_superseded %}
+        <button @click="supersedeOpen = true" class="px-3 py-2 text-sm text-amber-700 hover:text-amber-900 font-medium">Mark Superseded</button>
+        {% endif %}
+    </div>
+
+    {# Current version info #}
+    {% set cv = doc.current_version %}
+    {% if cv %}
+    <div class="bg-white shadow-card rounded-2xl p-6 mb-6">
+        <h3 class="text-sm font-semibold text-txt-primary mb-3">Current Version (v{{ cv.version_number }})</h3>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+            <div>
+                <p class="text-txt-muted text-xs">File</p>
+                <p class="text-txt-primary font-medium">{{ cv.file_name }}</p>
+            </div>
+            <div>
+                <p class="text-txt-muted text-xs">Size</p>
+                <p class="text-txt-primary">{% if cv.file_size %}{{ "%.1f"|format(cv.file_size / 1048576) }} MB{% else %}—{% endif %}</p>
+            </div>
+            <div>
+                <p class="text-txt-muted text-xs">Uploaded</p>
+                <p class="text-txt-primary">{{ cv.created_at|format_datetime }}</p>
+            </div>
+            <div>
+                <p class="text-txt-muted text-xs">By</p>
+                <p class="text-txt-primary">{{ cv.uploaded_by.display_name }}</p>
+            </div>
+        </div>
+        {% if cv.change_note %}
+        <p class="mt-3 text-sm text-txt-secondary"><strong>Note:</strong> {{ cv.change_note }}</p>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {# Description #}
+    {% if doc.description %}
+    <div class="bg-white shadow-card rounded-2xl p-6 mb-6">
+        <h3 class="text-sm font-semibold text-txt-primary mb-2">Description</h3>
+        <p class="text-sm text-txt-secondary whitespace-pre-wrap">{{ doc.description }}</p>
+    </div>
+    {% endif %}
+
+    {# Version History #}
+    <div class="bg-white shadow-card rounded-2xl overflow-hidden mb-6">
+        <div class="px-6 py-3 bg-pill border-b border-hairline">
+            <h3 class="text-sm font-semibold text-txt-primary">Version History</h3>
+        </div>
+        <div class="divide-y divide-hairline">
+            {% for v in versions %}
+            <div class="px-6 py-3 flex items-center gap-4 {% if v.id == doc.current_version_id %}bg-emerald-50/50{% endif %}">
+                <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold
+                    {% if v.id == doc.current_version_id %}bg-emerald-100 text-emerald-700{% else %}bg-gray-100 text-txt-muted{% endif %}">
+                    v{{ v.version_number }}
+                </div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm text-txt-primary">
+                        {{ v.file_name }}
+                        {% if v.id == doc.current_version_id %}<span class="text-xs text-emerald-600 font-medium ml-1">Current</span>{% endif %}
+                    </p>
+                    <p class="text-xs text-txt-muted">
+                        {{ v.created_at|format_datetime }} &middot; {{ v.uploaded_by.display_name }}
+                        {% if v.file_size %} &middot; {{ "%.1f"|format(v.file_size / 1048576) }} MB{% endif %}
+                    </p>
+                    {% if v.change_note %}<p class="text-xs text-txt-secondary mt-0.5">{{ v.change_note }}</p>{% endif %}
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                    {% if doc.is_pdf or v.file_name.lower().endswith('.pdf') %}
+                    <a href="{{ url_for('view_pdf', client_id=client.id, doc_id=doc.id, version_id=v.id) }}" class="text-xs text-accent hover:text-accent/80 font-medium">View</a>
+                    {% endif %}
+                    <a href="{{ url_for('download_document', client_id=client.id, doc_id=doc.id, version_id=v.id) }}" class="text-xs text-txt-secondary hover:text-txt-primary font-medium">Download</a>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    {# Danger zone #}
+    {% if current_user.role == 'supervisor' %}
+    <div class="border border-red-200 rounded-2xl p-4 mb-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <p class="text-sm font-semibold text-red-700">Delete Document</p>
+                <p class="text-xs text-red-500">This removes the database record. R2 files are preserved for audit.</p>
+            </div>
+            <form method="POST" action="{{ url_for('delete_document', client_id=client.id, doc_id=doc.id) }}"
+                  onsubmit="return confirm('Delete this document and all its versions?')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <button type="submit" class="text-xs text-red-600 hover:text-red-800 font-medium px-3 py-1.5 border border-red-300 rounded-lg">Delete</button>
+            </form>
+        </div>
+    </div>
+    {% endif %}
+
+    {# Revise modal #}
+    <div x-show="reviseOpen" x-cloak class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" @keydown.escape.window="reviseOpen = false">
+        <div class="bg-white rounded-2xl shadow-xl max-w-md w-full p-6" @click.outside="reviseOpen = false">
+            <h3 class="text-lg font-semibold text-txt-primary mb-4">Upload New Revision</h3>
+            <p class="text-sm text-txt-secondary mb-4">This creates version <strong>v{{ doc.version_count + 1 }}</strong>. The previous version is preserved.</p>
+            <form id="reviseForm" enctype="multipart/form-data" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">File</label>
+                    <input type="file" name="file" required id="reviseFileInput"
+                           class="w-full text-sm text-txt-secondary file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-medium file:bg-pill file:text-txt-primary hover:file:bg-gray-200">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Change Note</label>
+                    <input type="text" name="change_note" placeholder="What changed in this revision?"
+                           class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                </div>
+                <div id="reviseStatus" class="hidden text-sm p-2 rounded-lg"></div>
+                <div class="flex gap-3">
+                    <button type="button" @click="reviseOpen = false" class="flex-1 bg-pill hover:bg-gray-200 text-txt-primary font-medium py-2 px-4 rounded-xl transition-colors text-sm">Cancel</button>
+                    <button type="submit" id="reviseBtn" class="flex-1 bg-amber-500 text-white py-2 px-4 rounded-xl hover:bg-amber-600 transition-colors font-medium text-sm">Upload Revision</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    {# Edit modal #}
+    <div x-show="editOpen" x-cloak class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" @keydown.escape.window="editOpen = false">
+        <div class="bg-white rounded-2xl shadow-xl max-w-md w-full p-6" @click.outside="editOpen = false">
+            <h3 class="text-lg font-semibold text-txt-primary mb-4">Edit Document Details</h3>
+            <form method="POST" action="{{ url_for('edit_document', client_id=client.id, doc_id=doc.id) }}" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Title</label>
+                    <input type="text" name="title" value="{{ doc.title }}" required
+                           class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Folder</label>
+                    <select name="folder" class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                        {% for key, label in folders %}
+                        <option value="{{ key }}" {% if key == doc.folder %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Visibility</label>
+                    <select name="visibility" class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                        <option value="team" {% if doc.visibility == 'team' %}selected{% endif %}>Team (everyone)</option>
+                        <option value="supervisor" {% if doc.visibility == 'supervisor' %}selected{% endif %}>Supervisor only</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Description</label>
+                    <textarea name="description" rows="3" class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">{{ doc.description or '' }}</textarea>
+                </div>
+                <div class="flex gap-3">
+                    <button type="button" @click="editOpen = false" class="flex-1 bg-pill hover:bg-gray-200 text-txt-primary font-medium py-2 px-4 rounded-xl transition-colors text-sm">Cancel</button>
+                    <button type="submit" class="flex-1 bg-txt-primary text-white py-2 px-4 rounded-xl hover:bg-txt-primary/80 transition-colors font-medium text-sm">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    {# Supersede modal #}
+    {% if doc.folder == 'plans' and not doc.is_superseded %}
+    <div x-show="supersedeOpen" x-cloak class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" @keydown.escape.window="supersedeOpen = false">
+        <div class="bg-white rounded-2xl shadow-xl max-w-md w-full p-6" @click.outside="supersedeOpen = false">
+            <h3 class="text-lg font-semibold text-amber-700 mb-4">Mark as Superseded</h3>
+            <p class="text-sm text-txt-secondary mb-4">This drawing will be marked as superseded. It remains accessible in history but will no longer appear as current.</p>
+            <form method="POST" action="{{ url_for('supersede_document', client_id=client.id, doc_id=doc.id) }}" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                {% if folder_docs %}
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Superseded by (optional)</label>
+                    <select name="new_document_id" class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                        <option value="">— No replacement selected —</option>
+                        {% for fd in folder_docs %}
+                        <option value="{{ fd.id }}">{{ fd.title }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                {% endif %}
+                <div class="flex gap-3">
+                    <button type="button" @click="supersedeOpen = false" class="flex-1 bg-pill hover:bg-gray-200 text-txt-primary font-medium py-2 px-4 rounded-xl transition-colors text-sm">Cancel</button>
+                    <button type="submit" class="flex-1 bg-amber-500 text-white py-2 px-4 rounded-xl hover:bg-amber-600 transition-colors font-medium text-sm">Mark Superseded</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('reviseForm')?.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('reviseBtn');
+    const status = document.getElementById('reviseStatus');
+
+    btn.disabled = true;
+    btn.textContent = 'Uploading...';
+    status.textContent = 'Uploading revision...';
+    status.className = 'text-sm p-2 rounded-lg bg-blue-50 text-blue-700';
+    status.classList.remove('hidden');
+
+    const formData = new FormData(this);
+    try {
+        const resp = await fetch('{{ url_for("revise_document", client_id=client.id, doc_id=doc.id) }}', {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await resp.json();
+        if (data.success) {
+            status.textContent = `Revision v${data.version_number} uploaded!`;
+            status.className = 'text-sm p-2 rounded-lg bg-emerald-50 text-emerald-700';
+            setTimeout(() => { window.location.href = data.redirect || window.location.href; }, 500);
+        } else {
+            status.textContent = data.error || 'Upload failed.';
+            status.className = 'text-sm p-2 rounded-lg bg-red-50 text-red-700';
+            btn.disabled = false;
+            btn.textContent = 'Upload Revision';
+        }
+    } catch (err) {
+        status.textContent = 'Network error.';
+        status.className = 'text-sm p-2 rounded-lg bg-red-50 text-red-700';
+        btn.disabled = false;
+        btn.textContent = 'Upload Revision';
+    }
+});
+</script>
+{% endblock %}

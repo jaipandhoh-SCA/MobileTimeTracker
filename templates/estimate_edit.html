@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import input, select, textarea, btn, card, form_actions %}
+
+{% block title %}Edit: {{ estimate.name }} - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto" x-data="estimateEditor()">
+
+    {# Header #}
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div>
+            <a href="{{ url_for('estimates_list') }}" class="text-sm text-txt-muted hover:text-txt-primary">&larr; Estimates</a>
+            <h1 class="text-xl font-bold text-txt-primary mt-1">{{ estimate.name }}</h1>
+            <p class="text-sm text-txt-secondary">{{ estimate.client.name }}{% if estimate.adu_type %} &middot; {{ estimate.adu_type }}{% endif %}{% if estimate.sqft %} &middot; {{ estimate.sqft }}SF{% endif %}</p>
+        </div>
+        <div class="flex gap-2">
+            {{ btn("View", href=url_for('view_estimate', estimate_id=estimate.id), variant="secondary", size="sm") }}
+            {{ btn("Client View", href=url_for('view_estimate', estimate_id=estimate.id, internal='0'), variant="secondary", size="sm") }}
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        {# Left: Estimate Settings #}
+        <div class="lg:col-span-1 space-y-6">
+            {% call card(title="Estimate Settings") %}
+                <form method="POST" class="space-y-4">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+                    {{ input("name", label="Name", value=estimate.name, required=true) }}
+
+                    {{ select("adu_type", label="ADU Type", options=[("", "Select...")] + (adu_types|map('string')|zip(adu_types)|list), selected=estimate.adu_type|default('')) }}
+
+                    {{ input("sqft", label="Square Footage", type="number", value=estimate.sqft|default(''), attrs='min="100" max="2000"') }}
+
+                    {{ select("status", label="Status", options=statuses|map('string')|zip(statuses)|list, selected=estimate.status) }}
+
+                    <div class="grid grid-cols-3 gap-3">
+                        {{ input("markup_pct", label="Markup %", type="number", value=estimate.markup_pct, attrs='step="0.5" min="0" max="100"') }}
+                        {{ input("overhead_pct", label="Overhead %", type="number", value=estimate.overhead_pct, attrs='step="0.5" min="0" max="100"') }}
+                        {{ input("contingency_pct", label="Contingency %", type="number", value=estimate.contingency_pct, attrs='step="0.5" min="0" max="100"') }}
+                    </div>
+
+                    {{ textarea("notes", label="Notes", value=estimate.notes|default(''), rows=3) }}
+
+                    {{ form_actions(submit_text="Save Settings") }}
+                </form>
+            {% endcall %}
+
+            {# Live Totals #}
+            <div class="bg-white shadow-card rounded-2xl p-6">
+                <h3 class="text-sm font-semibold text-txt-primary mb-3">Totals</h3>
+                <div class="space-y-2 text-sm">
+                    <div class="flex justify-between">
+                        <span class="text-txt-secondary">Direct Cost</span>
+                        <span class="font-medium">${{ "{:,.2f}".format(estimate.subtotal|float) }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-txt-secondary">Overhead ({{ estimate.overhead_pct }}%)</span>
+                        <span>${{ "{:,.2f}".format(estimate.overhead_amount|float) }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-txt-secondary">Contingency ({{ estimate.contingency_pct }}%)</span>
+                        <span>${{ "{:,.2f}".format(estimate.contingency_amount|float) }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-txt-secondary">Markup ({{ estimate.markup_pct }}%)</span>
+                        <span>${{ "{:,.2f}".format(estimate.markup_amount|float) }}</span>
+                    </div>
+                    <div class="border-t border-hairline pt-2 mt-2 flex justify-between text-base">
+                        <span class="font-semibold text-txt-primary">Client Total</span>
+                        <span class="font-bold text-txt-primary">${{ "{:,.2f}".format(estimate.total|float) }}</span>
+                    </div>
+                    {% if estimate.sqft %}
+                    <div class="flex justify-between text-txt-muted">
+                        <span>$/SF</span>
+                        <span>${{ "{:,.2f}".format((estimate.total / estimate.sqft)|float) }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        {# Right: Line Items #}
+        <div class="lg:col-span-2 space-y-4">
+
+            {# Add Line Item #}
+            <div class="bg-white shadow-card rounded-2xl overflow-hidden" x-data="{ showAdd: false }">
+                <div class="px-6 py-4 border-b border-hairline flex items-center justify-between">
+                    <h2 class="text-sm font-semibold text-txt-primary">Line Items ({{ line_items|length }})</h2>
+                    {{ btn("+ Add Item", attrs='@click="showAdd = !showAdd"', size="sm") }}
+                </div>
+
+                <div x-show="showAdd" x-cloak class="px-6 py-4 bg-pill border-b border-hairline">
+                    <form method="POST" action="{{ url_for('add_estimate_line_item', estimate_id=estimate.id) }}" class="space-y-3">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-xs font-medium text-txt-muted mb-1">Assembly Item (optional)</label>
+                                <select name="assembly_item_id" @change="fillFromAssembly($event)"
+                                        class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                                    <option value="">-- Custom item --</option>
+                                    {% for ai in assembly_items %}
+                                    <option value="{{ ai.id }}" data-cost-code="{{ ai.cost_code_id }}">{{ ai.cost_code.code }} | {{ ai.name }} (${{ ai.unit_cost }}/{{ ai.unit }})</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-txt-muted mb-1">Cost Code</label>
+                                <select name="cost_code_id" x-ref="addCostCode"
+                                        class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target" required>
+                                    <option value="">Select...</option>
+                                    {% for cc in cost_codes %}
+                                    <option value="{{ cc.id }}">{{ cc.code }} - {{ cc.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            <div class="col-span-2">
+                                <label class="block text-xs font-medium text-txt-muted mb-1">Description</label>
+                                <input type="text" name="description" x-ref="addDesc" required
+                                       class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-txt-muted mb-1">Qty</label>
+                                <input type="number" name="qty" value="1" step="0.01" min="0" x-ref="addQty"
+                                       class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-txt-muted mb-1">Unit Cost ($)</label>
+                                <input type="number" name="unit_cost" value="0" step="0.01" min="0" x-ref="addCost"
+                                       class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                            </div>
+                        </div>
+                        <div class="flex justify-end gap-2">
+                            {{ btn("Cancel", variant="secondary", size="sm", attrs='@click="showAdd = false" type="button"') }}
+                            {{ btn("Add Line Item", type="submit", size="sm") }}
+                        </div>
+                    </form>
+                </div>
+
+                {# Existing Line Items #}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-hairline">
+                        <thead class="bg-white">
+                            <tr>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">Code</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">Description</th>
+                                <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Qty</th>
+                                <th class="px-4 py-2 text-center text-xs font-medium text-txt-muted uppercase">Unit</th>
+                                <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">$/Unit</th>
+                                <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Waste%</th>
+                                <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Extended</th>
+                                <th class="px-4 py-2 text-center text-xs font-medium text-txt-muted uppercase"></th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-hairline">
+                            {% for li in line_items %}
+                            <tr class="hover:bg-pill transition-colors duration-150" x-data="{ editing: false }">
+                                {# View mode #}
+                                <template x-if="!editing">
+                                    <td class="px-4 py-2 text-xs text-blue-700" colspan="1">
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 font-medium">{{ li.cost_code.code if li.cost_code else '?' }}</span>
+                                    </td>
+                                </template>
+                                <template x-if="!editing">
+                                    <td class="px-4 py-2 text-sm text-txt-primary">{{ li.description }}</td>
+                                </template>
+                                <template x-if="!editing">
+                                    <td class="px-4 py-2 text-sm text-right text-txt-secondary">{{ "{:.1f}".format(li.qty|float) }}</td>
+                                </template>
+                                <template x-if="!editing">
+                                    <td class="px-4 py-2 text-sm text-center text-txt-muted">{{ li.unit }}</td>
+                                </template>
+                                <template x-if="!editing">
+                                    <td class="px-4 py-2 text-sm text-right text-txt-secondary">${{ "{:,.2f}".format(li.unit_cost|float) }}</td>
+                                </template>
+                                <template x-if="!editing">
+                                    <td class="px-4 py-2 text-sm text-right text-txt-muted">{{ "{:.0f}".format(li.waste_pct|float) }}%</td>
+                                </template>
+                                <template x-if="!editing">
+                                    <td class="px-4 py-2 text-sm text-right font-medium text-txt-primary">${{ "{:,.2f}".format(li.extended_cost|float) }}</td>
+                                </template>
+                                <template x-if="!editing">
+                                    <td class="px-4 py-2 text-center">
+                                        <div class="flex gap-1 justify-center">
+                                            <button @click="editing = true" class="text-txt-muted hover:text-txt-primary text-xs">Edit</button>
+                                            <form method="POST" action="{{ url_for('delete_estimate_line_item', estimate_id=estimate.id, item_id=li.id) }}"
+                                                  onsubmit="return confirm('Remove this item?')" class="inline">
+                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                                                <button type="submit" class="text-neg/60 hover:text-neg text-xs">Del</button>
+                                            </form>
+                                        </div>
+                                    </td>
+                                </template>
+
+                                {# Edit mode — inline form #}
+                                <template x-if="editing">
+                                    <td colspan="8" class="px-4 py-2">
+                                        <form method="POST" action="{{ url_for('update_estimate_line_item', estimate_id=estimate.id, item_id=li.id) }}"
+                                              class="flex flex-wrap gap-2 items-end">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                                            <div class="flex-1 min-w-[200px]">
+                                                <label class="text-[10px] text-txt-muted">Description</label>
+                                                <input type="text" name="description" value="{{ li.description }}"
+                                                       class="w-full px-2 py-1.5 border border-hairline rounded-lg text-sm">
+                                            </div>
+                                            <div class="w-20">
+                                                <label class="text-[10px] text-txt-muted">Qty</label>
+                                                <input type="number" name="qty" value="{{ li.qty }}" step="0.01"
+                                                       class="w-full px-2 py-1.5 border border-hairline rounded-lg text-sm text-right">
+                                            </div>
+                                            <div class="w-16">
+                                                <label class="text-[10px] text-txt-muted">Unit</label>
+                                                <input type="text" name="unit" value="{{ li.unit }}"
+                                                       class="w-full px-2 py-1.5 border border-hairline rounded-lg text-sm text-center">
+                                            </div>
+                                            <div class="w-24">
+                                                <label class="text-[10px] text-txt-muted">$/Unit</label>
+                                                <input type="number" name="unit_cost" value="{{ li.unit_cost }}" step="0.01"
+                                                       class="w-full px-2 py-1.5 border border-hairline rounded-lg text-sm text-right">
+                                            </div>
+                                            <div class="w-16">
+                                                <label class="text-[10px] text-txt-muted">Waste%</label>
+                                                <input type="number" name="waste_pct" value="{{ li.waste_pct }}" step="0.5"
+                                                       class="w-full px-2 py-1.5 border border-hairline rounded-lg text-sm text-right">
+                                            </div>
+                                            <div class="w-16">
+                                                <label class="text-[10px] text-txt-muted">Labor%</label>
+                                                <input type="number" name="labor_pct" value="{{ li.labor_pct }}" step="1"
+                                                       class="w-full px-2 py-1.5 border border-hairline rounded-lg text-sm text-right">
+                                            </div>
+                                            <div class="w-16">
+                                                <label class="text-[10px] text-txt-muted">Mat%</label>
+                                                <input type="number" name="material_pct" value="{{ li.material_pct }}" step="1"
+                                                       class="w-full px-2 py-1.5 border border-hairline rounded-lg text-sm text-right">
+                                            </div>
+                                            <div class="flex gap-1">
+                                                <button type="submit" class="px-3 py-1.5 bg-txt-primary text-white rounded-lg text-xs font-medium">Save</button>
+                                                <button type="button" @click="editing = false" class="px-3 py-1.5 bg-pill text-txt-primary rounded-lg text-xs font-medium">Cancel</button>
+                                            </div>
+                                        </form>
+                                    </td>
+                                </template>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                        <tfoot class="bg-pill">
+                            <tr>
+                                <td colspan="6" class="px-4 py-3 text-sm font-semibold text-txt-primary text-right">Subtotal</td>
+                                <td class="px-4 py-3 text-sm font-bold text-txt-primary text-right">${{ "{:,.2f}".format(estimate.subtotal|float) }}</td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function estimateEditor() {
+    return {
+        fillFromAssembly(event) {
+            const id = event.target.value;
+            if (!id) return;
+            fetch(`/api/assembly-items/${id}`)
+                .then(r => r.json())
+                .then(data => {
+                    this.$refs.addDesc.value = data.name;
+                    this.$refs.addCost.value = data.unit_cost;
+                    this.$refs.addCostCode.value = data.cost_code_id;
+                });
+        }
+    };
+}
+</script>
+{% endblock %}

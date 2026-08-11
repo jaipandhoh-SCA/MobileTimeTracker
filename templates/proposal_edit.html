@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import input, textarea, select, btn, card, form_actions %}
+
+{% block title %}Edit Proposal - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto">
+    {% call card(title="Edit Proposal") %}
+        <form method="POST" class="space-y-6">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+            {{ select("status", label="Status", options=statuses|map('string')|zip(statuses)|list, selected=proposal.status) }}
+
+            {{ textarea("cover_note", label="Cover Note", value=proposal.cover_note|default(''), rows=4) }}
+            {{ textarea("scope_text", label="Scope of Work", value=proposal.scope_text|default(''), rows=12) }}
+            {{ textarea("exclusions_text", label="Exclusions", value=proposal.exclusions_text|default(''), rows=4) }}
+            {{ input("validity_days", label="Valid For (days)", type="number", value=proposal.validity_days, attrs='min="7" max="180"') }}
+
+            {{ form_actions(cancel_href=url_for('view_proposal', proposal_id=proposal.id), submit_text="Save Changes") }}
+        </form>
+    {% endcall %}
+</div>
+{% endblock %}
