@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, page_header %}
+
+{% block title %}{{ co.co_number }} — {{ co.title }}{% endblock %}
+
+{% block content %}
+{{ page_header(
+    co.co_number ~ " — " ~ co.title,
+    subtitle=co.client.name,
+    back_text="Change Orders",
+    back_href=url_for('change_orders_list')
+) }}
+
+{# ── Status & Actions ────────────────────────────────────────── #}
+<div class="flex flex-wrap gap-2 mb-6">
+    {% if co.status == 'Approved' %}
+    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-pos/10 text-pos border border-pos/20">Approved</span>
+    {% elif co.status == 'Sent' %}
+    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 border border-blue-200">Sent</span>
+    {% elif co.status == 'Rejected' %}
+    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-neg/10 text-neg border border-neg/20">Rejected</span>
+    {% else %}
+    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-pill text-txt-muted">Draft</span>
+    {% endif %}
+
+    {% if co.status == 'Approved' and not co.billed %}
+    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 border border-amber-200">Unbilled</span>
+    {% elif co.billed %}
+    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-pos/10 text-pos border border-pos/20">Billed</span>
+    {% endif %}
+
+    {% if co.status == 'Draft' %}
+    {{ btn("Edit", href=url_for('edit_change_order', co_id=co.id), variant="secondary", size="sm") }}
+    <form method="POST" action="{{ url_for('send_change_order', co_id=co.id) }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        {{ btn("Send to Client", type="submit", size="sm") }}
+    </form>
+    {% endif %}
+
+    {% if co.status in ('Draft', 'Sent') %}
+    <form method="POST" action="{{ url_for('approve_change_order_internal', co_id=co.id) }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        {{ btn("Approve (Internal)", type="submit", variant="secondary", size="sm") }}
+    </form>
+    <form method="POST" action="{{ url_for('reject_change_order', co_id=co.id) }}" class="inline"
+          onsubmit="return confirm('Reject this change order?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <button type="submit" class="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-medium text-neg bg-neg/10 hover:bg-neg/20 transition-colors touch-target">Reject</button>
+    </form>
+    {% endif %}
+
+    {% if co.status == 'Sent' or co.share_token %}
+    <button type="button" onclick="copyShareLink()"
+            class="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium bg-pill text-txt-secondary hover:bg-gray-200 transition-colors touch-target">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z"/></svg>
+        Share Link
+    </button>
+    {% endif %}
+
+    {% if co.status == 'Approved' and not co.billed %}
+    <form method="POST" action="{{ url_for('mark_change_order_billed', co_id=co.id) }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        {{ btn("Mark Billed", type="submit", variant="secondary", size="sm") }}
+    </form>
+    {% endif %}
+</div>
+
+{# ── Details ──────────────────────────────────────────────────── #}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    {% call card(title="Price to Client") %}
+    <div class="text-2xl font-semibold text-txt-primary">${{ co.price_to_client|round(2) }}</div>
+    {% endcall %}
+
+    {% call card(title="Cost Breakdown Total") %}
+    <div class="text-2xl font-semibold text-txt-primary">${{ co.item_total|round(2) }}</div>
+    {% endcall %}
+
+    {% call card(title="Margin") %}
+    {% set margin = co.price_to_client - co.item_total %}
+    <div class="text-2xl font-semibold {% if margin >= 0 %}text-pos{% else %}text-neg{% endif %}">${{ margin|round(2) }}</div>
+    {% endcall %}
+</div>
+
+{% if co.description %}
+{% call card(title="Description") %}
+<div class="text-sm text-txt-secondary whitespace-pre-line">{{ co.description }}</div>
+{% endcall %}
+{% endif %}
+
+{# ── Line Items ───────────────────────────────────────────────── #}
+{% set items = co.items.all() %}
+{% if items %}
+{% call card(title="Cost Breakdown") %}
+<div class="overflow-x-auto -mx-4 sm:mx-0">
+    <table class="w-full text-sm">
+        <thead>
+            <tr class="border-b border-hairline text-left">
+                <th class="px-4 py-2 text-xs font-medium text-txt-muted">Description</th>
+                <th class="px-4 py-2 text-xs font-medium text-txt-muted">Cost Code</th>
+                <th class="px-4 py-2 text-xs font-medium text-txt-muted">Type</th>
+                <th class="px-4 py-2 text-xs font-medium text-txt-muted text-right">Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr class="border-b border-hairline/50">
+                <td class="px-4 py-2 text-txt-primary">{{ item.description }}</td>
+                <td class="px-4 py-2 text-txt-secondary">{{ item.cost_code.code ~ ' ' ~ item.cost_code.name if item.cost_code else '—' }}</td>
+                <td class="px-4 py-2 text-txt-secondary">{{ item.cost_type }}</td>
+                <td class="px-4 py-2 text-txt-primary text-right font-medium">${{ item.amount|round(2) }}</td>
+            </tr>
+            {% endfor %}
+            <tr class="font-semibold">
+                <td class="px-4 py-2" colspan="3">Total</td>
+                <td class="px-4 py-2 text-right">${{ co.item_total|round(2) }}</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% endcall %}
+{% endif %}
+
+{# ── Approval Info ────────────────────────────────────────────── #}
+{% if co.approved_at %}
+{% call card(title="Approval Details") %}
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+    <div><span class="text-txt-muted">Approved by:</span> <span class="text-txt-primary font-medium">{{ co.approved_name }}</span></div>
+    {% if co.approved_email %}<div><span class="text-txt-muted">Email:</span> {{ co.approved_email }}</div>{% endif %}
+    <div><span class="text-txt-muted">Date:</span> {{ co.approved_at.strftime('%m/%d/%Y %I:%M %p') }} UTC</div>
+    {% if co.approved_ip %}<div><span class="text-txt-muted">IP:</span> {{ co.approved_ip }}</div>{% endif %}
+</div>
+{% if co.signature_data %}
+<div class="mt-3 border-t border-hairline pt-3">
+    <div class="text-xs text-txt-muted mb-1">Signature</div>
+    <img src="{{ co.signature_data }}" alt="Signature" class="max-w-xs border border-hairline rounded-lg">
+</div>
+{% endif %}
+{% endcall %}
+{% endif %}
+
+{# ── Meta ─────────────────────────────────────────────────────── #}
+<div class="text-xs text-txt-muted text-center mt-6">
+    Created by {{ co.created_by.display_name }}
+    {% if co.created_at %} on {{ co.created_at.strftime('%m/%d/%Y %I:%M %p') }} UTC{% endif %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function copyShareLink() {
+    fetch('{{ url_for("change_order_share_link", co_id=co.id) }}')
+        .then(r => r.json())
+        .then(data => {
+            if (data.ok && navigator.clipboard) {
+                navigator.clipboard.writeText(data.url);
+                alert('Share link copied to clipboard!');
+            } else if (data.ok) {
+                prompt('Share link:', data.url);
+            }
+        });
+}
+</script>
+{% endblock %}

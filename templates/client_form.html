@@ -489,6 +489,55 @@
                 </div>
             </div>
 
+            {# Schedule quick access #}
+            {% set default_project = client.default_project() %}
+            {% set task_count = default_project.tasks.count() if default_project else 0 %}
+            <div class="bg-white rounded-2xl shadow-card p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-sm font-semibold text-txt-primary">Schedule</h3>
+                        <p class="text-xs text-txt-muted mt-0.5">{{ task_count }} task{{ 's' if task_count != 1 else '' }}</p>
+                    </div>
+                    <a href="{{ url_for('project_schedule', project_id=default_project.id) }}"
+                       class="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-medium bg-txt-primary text-white hover:bg-txt-primary/80 transition-colors touch-target">View</a>
+                </div>
+            </div>
+
+            {# Change Orders quick access #}
+            {% set co_count = client.change_orders.count() if client.change_orders else 0 %}
+            {% set co_unbilled = client.change_orders.filter_by(status='Approved', billed=false).count() if client.change_orders else 0 %}
+            <div class="bg-white rounded-2xl shadow-card p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-sm font-semibold text-txt-primary">Change Orders</h3>
+                        <p class="text-xs text-txt-muted mt-0.5">{{ co_count }} CO{{ 's' if co_count != 1 else '' }}{% if co_unbilled %} · <span class="text-amber-600 font-medium">{{ co_unbilled }} unbilled</span>{% endif %}</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <a href="{{ url_for('change_orders_list', client_id=client.id) }}"
+                           class="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-medium bg-pill text-txt-secondary hover:bg-gray-200 transition-colors touch-target">View</a>
+                        <a href="{{ url_for('create_change_order', client_id=client.id) }}"
+                           class="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-medium bg-txt-primary text-white hover:bg-txt-primary/80 transition-colors touch-target">+ CO</a>
+                    </div>
+                </div>
+            </div>
+
+            {# Daily Log quick access #}
+            {% set log_count = client.daily_logs.count() if client.daily_logs else 0 %}
+            <div class="bg-white rounded-2xl shadow-card p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-sm font-semibold text-txt-primary">Daily Logs</h3>
+                        <p class="text-xs text-txt-muted mt-0.5">{{ log_count }} log{{ 's' if log_count != 1 else '' }}</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <a href="{{ url_for('daily_logs_list', client_id=client.id) }}"
+                           class="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-medium bg-pill text-txt-secondary hover:bg-gray-200 transition-colors touch-target">View</a>
+                        <a href="{{ url_for('create_daily_log', client_id=client.id) }}"
+                           class="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-medium bg-txt-primary text-white hover:bg-txt-primary/80 transition-colors touch-target">+ Log</a>
+                    </div>
+                </div>
+            </div>
+
             <div class="bg-white rounded-2xl shadow-card">
                 <div class="px-4 py-3 bg-pill rounded-t-2xl">
                     <h2 class="text-base font-semibold text-txt-primary">Client Status</h2>

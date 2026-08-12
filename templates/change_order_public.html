@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Change Order {{ co.co_number }} — {{ co.client.name }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@4" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .sig-canvas { touch-action: none; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="max-w-2xl mx-auto px-4 py-8">
+
+        {# ── Header ─────────────────────────────────────────────── #}
+        <div class="text-center mb-8">
+            <h1 class="text-2xl font-bold text-gray-900">Change Order {{ co.co_number }}</h1>
+            <p class="text-gray-500 mt-1">{{ co.client.name }}</p>
+            {% if co.status == 'Approved' %}
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800 mt-3">Approved</span>
+            {% elif co.status == 'Rejected' %}
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800 mt-3">Rejected</span>
+            {% elif co.status == 'Sent' %}
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800 mt-3">Awaiting Approval</span>
+            {% endif %}
+        </div>
+
+        {# ── Flash messages ──────────────────────────────────────── #}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        {% for category, message in messages %}
+        <div class="mb-4 p-3 rounded-xl text-sm {% if category == 'error' %}bg-red-100 text-red-800{% else %}bg-green-100 text-green-800{% endif %}">
+            {{ message }}
+        </div>
+        {% endfor %}
+        {% endif %}
+        {% endwith %}
+
+        {# ── Details ─────────────────────────────────────────────── #}
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+            <h2 class="text-lg font-semibold text-gray-900 mb-2">{{ co.title }}</h2>
+            {% if co.description %}
+            <p class="text-gray-600 text-sm whitespace-pre-line mb-4">{{ co.description }}</p>
+            {% endif %}
+
+            <div class="border-t border-gray-100 pt-4">
+                <div class="text-center">
+                    <div class="text-sm text-gray-500">Price</div>
+                    <div class="text-3xl font-bold text-gray-900">${{ '{:,.2f}'.format(co.price_to_client) }}</div>
+                </div>
+            </div>
+        </div>
+
+        {# ── Cost Breakdown ──────────────────────────────────────── #}
+        {% set items = co.items.all() %}
+        {% if items %}
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+            <h3 class="text-sm font-semibold text-gray-900 mb-3">Cost Breakdown</h3>
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="border-b border-gray-100">
+                        <th class="text-left py-2 text-xs text-gray-500 font-medium">Item</th>
+                        <th class="text-right py-2 text-xs text-gray-500 font-medium">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in items %}
+                    <tr class="border-b border-gray-50">
+                        <td class="py-2 text-gray-700">{{ item.description }}{% if item.cost_code %} <span class="text-gray-400 text-xs">({{ item.cost_code.code }})</span>{% endif %}</td>
+                        <td class="py-2 text-right text-gray-900 font-medium">${{ '{:,.2f}'.format(item.amount) }}</td>
+                    </tr>
+                    {% endfor %}
+                    <tr class="font-semibold">
+                        <td class="py-2">Total</td>
+                        <td class="py-2 text-right">${{ '{:,.2f}'.format(co.item_total) }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        {# ── Approval Info (if already approved) ─────────────────── #}
+        {% if co.approved_at %}
+        <div class="bg-green-50 border border-green-200 rounded-2xl p-6 mb-6">
+            <h3 class="text-sm font-semibold text-green-800 mb-2">Approved</h3>
+            <div class="text-sm text-green-700 space-y-1">
+                <div>By: {{ co.approved_name }}</div>
+                <div>Date: {{ co.approved_at.strftime('%m/%d/%Y %I:%M %p') }} UTC</div>
+            </div>
+            {% if co.signature_data %}
+            <div class="mt-3">
+                <img src="{{ co.signature_data }}" alt="Signature" class="max-w-[200px] border border-green-200 rounded-lg bg-white p-1">
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {# ── Approval Form (only if Sent) ────────────────────────── #}
+        {% if co.status == 'Sent' %}
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Approve This Change Order</h3>
+            <form method="POST" id="approveForm">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Your Name *</label>
+                        <input type="text" name="name" required
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                               placeholder="Full name">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                        <input type="email" name="email"
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                               placeholder="email@example.com">
+                    </div>
+
+                    {# Signature Canvas #}
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Signature</label>
+                        <canvas id="sigCanvas" class="sig-canvas w-full h-32 border border-gray-300 rounded-lg bg-white cursor-crosshair"></canvas>
+                        <input type="hidden" name="signature_data" id="signatureData">
+                        <button type="button" onclick="clearSignature()"
+                                class="mt-1 text-xs text-gray-500 hover:text-gray-700 underline">Clear signature</button>
+                    </div>
+
+                    <div class="text-xs text-gray-500">
+                        By clicking "Approve", you agree to this change order and the associated costs.
+                        Your IP address and timestamp will be recorded.
+                    </div>
+
+                    <button type="submit"
+                            class="w-full py-3 px-4 bg-green-600 text-white font-semibold rounded-xl hover:bg-green-700 transition-colors">
+                        Approve Change Order — ${{ '{:,.2f}'.format(co.price_to_client) }}
+                    </button>
+                </div>
+            </form>
+        </div>
+        {% endif %}
+
+        <div class="text-center text-xs text-gray-400 mt-8">
+            {{ co.co_number }} &middot; Generated {{ co.created_at.strftime('%m/%d/%Y') if co.created_at }}
+        </div>
+    </div>
+
+    {% if co.status == 'Sent' %}
+    <script>
+    // Signature canvas
+    const canvas = document.getElementById('sigCanvas');
+    const ctx = canvas.getContext('2d');
+    let drawing = false;
+
+    function resizeCanvas() {
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+        ctx.strokeStyle = '#1a1a1a';
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+    }
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    function getPos(e) {
+        const rect = canvas.getBoundingClientRect();
+        const touch = e.touches ? e.touches[0] : e;
+        return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+    }
+
+    canvas.addEventListener('mousedown', e => { drawing = true; ctx.beginPath(); const p = getPos(e); ctx.moveTo(p.x, p.y); });
+    canvas.addEventListener('mousemove', e => { if (!drawing) return; const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); });
+    canvas.addEventListener('mouseup', () => { drawing = false; });
+    canvas.addEventListener('mouseleave', () => { drawing = false; });
+
+    canvas.addEventListener('touchstart', e => { e.preventDefault(); drawing = true; ctx.beginPath(); const p = getPos(e); ctx.moveTo(p.x, p.y); });
+    canvas.addEventListener('touchmove', e => { e.preventDefault(); if (!drawing) return; const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); });
+    canvas.addEventListener('touchend', () => { drawing = false; });
+
+    function clearSignature() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    document.getElementById('approveForm').addEventListener('submit', function() {
+        document.getElementById('signatureData').value = canvas.toDataURL('image/png');
+    });
+    </script>
+    {% endif %}
+</body>
+</html>

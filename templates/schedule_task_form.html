@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, input, select, textarea, form_actions, page_header %}
+
+{% block title %}{{ "Edit" if task else "New" }} Task — {{ client.name }}{% endblock %}
+
+{% block content %}
+{{ page_header(
+    ("Edit Task" if task else "New Task"),
+    subtitle=client.name ~ " — " ~ project.name,
+    back_text="Schedule",
+    back_href=url_for('project_schedule', project_id=project.id)
+) }}
+
+<form method="POST" class="space-y-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {# ── Basic Info ──────────────────────────────────────────────── #}
+    {% call card(title="Task Details") %}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {{ input("name", label="Task Name", value=task.name if task else '', required=true, placeholder="e.g. Pour foundation slab") }}
+
+        {{ select("phase_id", label="Phase", selected=task.phase_id|string if task and task.phase_id else '',
+                  options=[('', '— No Phase —')] + [(p.id, p.name) for p in phases]) }}
+
+        {{ select("cost_code_id", label="Cost Code", selected=task.cost_code_id|string if task and task.cost_code_id else '',
+                  options=[('', '— None —')] + [(c.id, c.code ~ ' ' ~ c.name) for c in cost_codes]) }}
+
+        {{ select("priority", label="Priority", selected=task.priority if task else 'Medium',
+                  options=[(p, p) for p in task_priorities]) }}
+
+        {{ input("start_date", label="Start Date", type="date", value=task.start_date.isoformat() if task and task.start_date else '') }}
+
+        {{ input("end_date", label="End Date", type="date", value=task.end_date.isoformat() if task and task.end_date else '') }}
+
+        {{ select("status", label="Status", selected=task.status if task else 'Not Started',
+                  options=[(s, s) for s in task_statuses]) }}
+    </div>
+
+    <div class="mt-4">
+        {{ textarea("description", label="Description", value=task.description if task and task.description else '',
+                    placeholder="Optional details, notes, or instructions", rows=3) }}
+    </div>
+    {% endcall %}
+
+    {# ── Assignees ───────────────────────────────────────────────── #}
+    {% call card(title="Assignees") %}
+    <div x-data="assigneeManager()" class="space-y-3">
+        <template x-for="(a, idx) in assignees" :key="idx">
+            <div class="flex items-end gap-3 border-b border-hairline pb-3">
+                <div class="flex-1">
+                    <label class="block text-xs font-semibold text-txt-secondary mb-1">Crew Member</label>
+                    <select :name="'assignee_user_ids'" x-model="a.user_id"
+                            class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                        <option value="">— Select or use Sub name —</option>
+                        {% for u in users %}
+                        <option value="{{ u.id }}">{{ u.display_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="flex-1">
+                    <label class="block text-xs font-semibold text-txt-secondary mb-1">Sub Name</label>
+                    <input type="text" name="assignee_sub_names" x-model="a.sub_name" placeholder="e.g. ABC Plumbing"
+                           class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                </div>
+                <div class="w-28">
+                    <label class="block text-xs font-semibold text-txt-secondary mb-1">Role</label>
+                    <input type="text" name="assignee_roles" x-model="a.role" placeholder="Lead"
+                           class="w-full px-3 py-2.5 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                </div>
+                <button type="button" @click="assignees.splice(idx, 1)" class="p-2 text-neg hover:bg-red-50 rounded-lg touch-target" title="Remove">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+        </template>
+        <button type="button" @click="addAssignee()"
+                class="text-sm text-txt-secondary hover:text-txt-primary hover:underline">
+            + Add Assignee
+        </button>
+    </div>
+    {% endcall %}
+
+    {# ── Dependencies ────────────────────────────────────────────── #}
+    {% if existing_tasks %}
+    {% call card(title="Dependencies") %}
+    <p class="text-xs text-txt-muted mb-3">Select tasks that must finish before this one can start (Finish-to-Start).</p>
+    <div class="space-y-2 max-h-48 overflow-y-auto">
+        {% for et in existing_tasks %}
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="depends_on" value="{{ et.id }}"
+                   class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20"
+                   {% if task and et.id in (task.predecessors|map(attribute='depends_on_id')|list) %}checked{% endif %}>
+            <span class="text-txt-primary">{{ et.name }}</span>
+            {% if et.phase %}
+            <span class="text-xs text-txt-muted">({{ et.phase.name }})</span>
+            {% endif %}
+        </label>
+        {% endfor %}
+    </div>
+    {% endcall %}
+    {% endif %}
+
+    {# ── Actions ─────────────────────────────────────────────────── #}
+    <div class="flex items-center justify-between">
+        <div>
+            {% if task %}
+            <form method="POST" action="{{ url_for('delete_task', project_id=project.id, task_id=task.id) }}" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                {{ btn("Delete Task", variant="danger", size="sm", type="submit", attrs='onclick="return confirm(\'Delete this task?\')"') }}
+            </form>
+            {% endif %}
+        </div>
+        <div class="flex items-center gap-3">
+            {{ btn("Cancel", href=url_for('project_schedule', project_id=project.id), variant="secondary") }}
+            {{ btn("Save Task" if task else "Create Task", variant="primary", type="submit") }}
+        </div>
+    </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function assigneeManager() {
+    const existing = {{ (task.assignments|map(attribute='user_id')|list)|tojson if task else '[]' }};
+    const existingSubs = {{ (task.assignments|map(attribute='sub_name')|list)|tojson if task else '[]' }};
+    const existingRoles = {{ (task.assignments|map(attribute='role')|list)|tojson if task else '[]' }};
+
+    const assignees = [];
+    if (existing.length) {
+        for (let i = 0; i < existing.length; i++) {
+            assignees.push({
+                user_id: existing[i] || '',
+                sub_name: existingSubs[i] || '',
+                role: existingRoles[i] || '',
+            });
+        }
+    }
+    if (!assignees.length) {
+        assignees.push({ user_id: '', sub_name: '', role: '' });
+    }
+
+    return {
+        assignees,
+        addAssignee() {
+            this.assignees.push({ user_id: '', sub_name: '', role: '' });
+        }
+    };
+}
+</script>
+{% endblock %}

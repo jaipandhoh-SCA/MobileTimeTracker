@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, stat_card, page_header %}
+
+{% block title %}Invoice {{ invoice.invoice_number }}{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto" x-data="{ paymentOpen: false }">
+
+    {{ page_header("Invoice " ~ invoice.invoice_number,
+        subtitle=contract.client.name ~ " &middot; " ~ contract.contract_number,
+        back_text="&larr; Billing", back_href=url_for('contract_billing', contract_id=contract.id)) }}
+
+    {# Status + Actions #}
+    <div class="flex flex-wrap items-center gap-3 mb-6">
+        {% if invoice.status == 'Draft' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-txt-secondary">Draft</span>
+        {% elif invoice.status == 'Sent' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-50 text-blue-700">Sent{% if invoice.is_overdue %} — <span class="text-red-600 font-bold">OVERDUE</span>{% endif %}</span>
+        {% elif invoice.status == 'Partial' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-amber-50 text-amber-700">Partial Payment</span>
+        {% elif invoice.status == 'Paid' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-emerald-50 text-pos">Paid in Full</span>
+        {% elif invoice.status == 'Voided' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-50 text-neg">Voided</span>
+        {% endif %}
+
+        {% if invoice.status == 'Draft' %}
+        <form method="POST" action="{{ url_for('send_invoice', invoice_id=invoice.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            {{ btn("Send Invoice", type="submit", variant="primary", size="sm") }}
+        </form>
+        {% endif %}
+
+        {% if invoice.status in ('Sent', 'Partial', 'Viewed') %}
+        <button @click="paymentOpen = true" class="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-700 transition-colors">
+            Record Payment
+        </button>
+        {% endif %}
+
+        {% if invoice.status not in ('Paid', 'Voided') %}
+        <form method="POST" action="{{ url_for('void_invoice', invoice_id=invoice.id) }}" class="inline"
+              onsubmit="return confirm('Void this invoice?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <button type="submit" class="text-xs text-red-600 hover:text-red-800 font-medium px-3 py-2">Void</button>
+        </form>
+        {% endif %}
+
+        {# Share link #}
+        {% if invoice.status != 'Draft' %}
+        <div class="flex items-center gap-2">
+            <input type="text" readonly value="{{ url_for('public_invoice', token=invoice.share_token, _external=True) }}"
+                   id="invUrl" class="text-xs px-3 py-2 border border-hairline rounded-lg w-64 bg-pill">
+            <button onclick="navigator.clipboard.writeText(document.getElementById('invUrl').value); this.textContent='Copied!'; setTimeout(() => this.textContent='Copy', 2000)"
+                    class="text-xs text-txt-secondary hover:text-txt-primary font-medium">Copy</button>
+        </div>
+        {% endif %}
+    </div>
+
+    {# Summary cards #}
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        {{ stat_card("Subtotal", "${:,.2f}".format(invoice.subtotal|float)) }}
+        {% if invoice.retainage_amount > 0 %}
+        {{ stat_card("Retainage (" ~ invoice.retainage_pct ~ "%)", "${:,.2f}".format(invoice.retainage_amount|float)) }}
+        {% endif %}
+        {{ stat_card("Total Due", "${:,.2f}".format(invoice.total_due|float)) }}
+        <div class="{% if invoice.balance_due > 0 %}bg-amber-50 border border-amber-200{% else %}bg-emerald-50 border border-emerald-200{% endif %} rounded-2xl p-4">
+            <p class="text-xs font-medium {% if invoice.balance_due > 0 %}text-amber-600{% else %}text-emerald-600{% endif %}">Balance Due</p>
+            <p class="text-2xl font-bold {% if invoice.balance_due > 0 %}text-amber-700{% else %}text-emerald-700{% endif %} mt-1">${{ "{:,.2f}".format(invoice.balance_due|float) }}</p>
+        </div>
+    </div>
+
+    {# Line Items #}
+    <div class="bg-white shadow-card rounded-2xl overflow-hidden mb-6">
+        <div class="px-6 py-3 bg-pill border-b border-hairline">
+            <h3 class="text-sm font-semibold text-txt-primary">Line Items</h3>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-hairline">
+                <thead class="bg-white">
+                    <tr>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">Description</th>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">Type</th>
+                        <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">% Complete</th>
+                        <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Amount</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-hairline">
+                    {% for li in line_items %}
+                    <tr class="hover:bg-pill">
+                        <td class="px-4 py-2 text-sm text-txt-primary font-medium">{{ li.description }}</td>
+                        <td class="px-4 py-2 text-sm text-txt-muted">
+                            {% if li.source_type == 'draw' %}Draw{% elif li.source_type == 'change_order' %}Change Order{% else %}{{ li.source_type }}{% endif %}
+                        </td>
+                        <td class="px-4 py-2 text-sm text-right text-txt-secondary">{{ li.pct_complete|string ~ '%' if li.pct_complete else '—' }}</td>
+                        <td class="px-4 py-2 text-sm text-right font-medium text-txt-primary">${{ "{:,.2f}".format(li.amount|float) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot class="bg-pill">
+                    <tr>
+                        <td colspan="3" class="px-4 py-2 text-sm font-semibold text-txt-primary">Subtotal</td>
+                        <td class="px-4 py-2 text-sm text-right font-bold text-txt-primary">${{ "{:,.2f}".format(invoice.subtotal|float) }}</td>
+                    </tr>
+                    {% if invoice.retainage_amount > 0 %}
+                    <tr>
+                        <td colspan="3" class="px-4 py-2 text-sm text-txt-secondary">Less Retainage ({{ invoice.retainage_pct }}%)</td>
+                        <td class="px-4 py-2 text-sm text-right text-txt-secondary">-${{ "{:,.2f}".format(invoice.retainage_amount|float) }}</td>
+                    </tr>
+                    {% endif %}
+                    <tr class="border-t-2 border-txt-primary">
+                        <td colspan="3" class="px-4 py-2 text-base font-bold text-txt-primary">Total Due</td>
+                        <td class="px-4 py-2 text-base text-right font-bold text-txt-primary">${{ "{:,.2f}".format(invoice.total_due|float) }}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </div>
+
+    {# Invoice details #}
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+        <div class="bg-white shadow-card rounded-2xl p-6">
+            <h3 class="text-sm font-semibold text-txt-primary mb-3">Details</h3>
+            <div class="space-y-2 text-sm">
+                <div class="flex justify-between"><span class="text-txt-muted">Issued</span><span class="text-txt-primary">{{ invoice.issued_date.strftime('%m/%d/%Y') if invoice.issued_date else '—' }}</span></div>
+                <div class="flex justify-between"><span class="text-txt-muted">Due</span><span class="text-txt-primary {% if invoice.is_overdue %}text-red-600 font-bold{% endif %}">{{ invoice.due_date.strftime('%m/%d/%Y') if invoice.due_date else '—' }}</span></div>
+                {% if invoice.notes %}<div class="pt-2 border-t border-hairline"><p class="text-txt-secondary">{{ invoice.notes }}</p></div>{% endif %}
+            </div>
+        </div>
+
+        {# Stripe info #}
+        {% if has_stripe and invoice.stripe_payment_url %}
+        <div class="bg-white shadow-card rounded-2xl p-6">
+            <h3 class="text-sm font-semibold text-txt-primary mb-3">Online Payment</h3>
+            <p class="text-sm text-txt-secondary mb-3">Stripe checkout link created for this invoice.</p>
+            <div class="flex items-center gap-2">
+                <input type="text" readonly value="{{ invoice.stripe_payment_url }}"
+                       id="stripeUrl" class="text-xs px-3 py-2 border border-hairline rounded-lg flex-1 bg-pill">
+                <button onclick="navigator.clipboard.writeText(document.getElementById('stripeUrl').value); this.textContent='Copied!'; setTimeout(() => this.textContent='Copy', 2000)"
+                        class="text-xs text-txt-secondary hover:text-txt-primary font-medium">Copy</button>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    {# Payment History #}
+    {% if payments %}
+    <div class="bg-white shadow-card rounded-2xl overflow-hidden mb-6">
+        <div class="px-6 py-3 bg-pill border-b border-hairline">
+            <h3 class="text-sm font-semibold text-txt-primary">Payments</h3>
+        </div>
+        <div class="divide-y divide-hairline">
+            {% for p in payments %}
+            <div class="px-6 py-3 flex items-center gap-4">
+                <div class="flex-1">
+                    <p class="text-sm font-medium text-txt-primary">
+                        ${{ "{:,.2f}".format(p.amount|float) }}
+                        <span class="text-txt-muted font-normal">via {{ p.method }}</span>
+                        {% if p.is_deposit %}<span class="text-xs text-blue-600 font-medium ml-1">Deposit</span>{% endif %}
+                    </p>
+                    <p class="text-xs text-txt-muted">
+                        {{ p.received_date.strftime('%m/%d/%Y') if p.received_date else p.created_at|format_date }}
+                        {% if p.reference %} &middot; Ref: {{ p.reference }}{% endif %}
+                        {% if p.note %} &middot; {{ p.note }}{% endif %}
+                    </p>
+                </div>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                    {% if p.status == 'succeeded' %}bg-emerald-50 text-emerald-700{% elif p.status == 'refunded' %}bg-red-50 text-red-700{% else %}bg-gray-100 text-txt-muted{% endif %}">
+                    {{ p.status }}
+                </span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {# Record Payment Modal #}
+    <div x-show="paymentOpen" x-cloak class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" @keydown.escape.window="paymentOpen = false">
+        <div class="bg-white rounded-2xl shadow-xl max-w-md w-full p-6" @click.outside="paymentOpen = false">
+            <h3 class="text-lg font-semibold text-txt-primary mb-4">Record Payment</h3>
+            <form method="POST" action="{{ url_for('record_payment', invoice_id=invoice.id) }}" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-txt-secondary mb-1">Amount ($)</label>
+                        <input type="text" name="amount" value="{{ '{:,.2f}'.format(invoice.balance_due|float) }}" required
+                               class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-txt-secondary mb-1">Method</label>
+                        <select name="method" class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                            <option value="check">Check</option>
+                            <option value="wire">Wire Transfer</option>
+                            <option value="cash">Cash</option>
+                            <option value="stripe">Stripe</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-txt-secondary mb-1">Date Received</label>
+                        <input type="date" name="received_date" value="{{ today_str }}"
+                               class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-txt-secondary mb-1">Reference #</label>
+                        <input type="text" name="reference" placeholder="Check #, wire ref..."
+                               class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                    </div>
+                </div>
+                <label class="inline-flex items-center gap-2 text-sm text-txt-secondary cursor-pointer">
+                    <input type="checkbox" name="is_deposit" class="w-4 h-4 rounded border-hairline text-pos focus:ring-pos/20">
+                    This is a deposit
+                </label>
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Note</label>
+                    <input type="text" name="note" placeholder="Optional note"
+                           class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                </div>
+                <div class="flex gap-3">
+                    <button type="button" @click="paymentOpen = false" class="flex-1 bg-pill hover:bg-gray-200 text-txt-primary font-medium py-2 px-4 rounded-xl transition-colors text-sm">Cancel</button>
+                    <button type="submit" class="flex-1 bg-emerald-600 text-white py-2 px-4 rounded-xl hover:bg-emerald-700 transition-colors font-medium text-sm">Record Payment</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

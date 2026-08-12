@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, empty_state, page_header %}
+
+{% block title %}My Tasks{% endblock %}
+
+{% block content %}
+{{ page_header("My Tasks", subtitle="Today is " ~ today.strftime('%A, %m/%d/%Y')) }}
+
+{# ── Overdue ─────────────────────────────────────────────────── #}
+{% if overdue_tasks %}
+<div class="mb-6">
+    <h2 class="text-sm font-semibold text-neg mb-3 flex items-center gap-1">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        Overdue ({{ overdue_tasks|length }})
+    </h2>
+    <div class="space-y-2">
+        {% for task in overdue_tasks %}
+        {{ _task_card(task, overdue=true) }}
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{# ── Today ───────────────────────────────────────────────────── #}
+<div class="mb-6">
+    <h2 class="text-sm font-semibold text-txt-primary mb-3 flex items-center gap-1">
+        <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        Today ({{ today_tasks|length }})
+    </h2>
+    {% if today_tasks %}
+    <div class="space-y-2">
+        {% for task in today_tasks %}
+        {{ _task_card(task) }}
+        {% endfor %}
+    </div>
+    {% else %}
+    {% call card() %}
+    <p class="text-sm text-txt-muted text-center py-4">No tasks scheduled for today.</p>
+    {% endcall %}
+    {% endif %}
+</div>
+
+{# ── This Week ───────────────────────────────────────────────── #}
+<div class="mb-6">
+    <h2 class="text-sm font-semibold text-txt-primary mb-3 flex items-center gap-1">
+        <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+        This Week ({{ this_week_tasks|length }})
+    </h2>
+    {% if this_week_tasks %}
+    <div class="space-y-2">
+        {% for task in this_week_tasks %}
+        {{ _task_card(task) }}
+        {% endfor %}
+    </div>
+    {% else %}
+    {% call card() %}
+    <p class="text-sm text-txt-muted text-center py-4">No other tasks this week.</p>
+    {% endcall %}
+    {% endif %}
+</div>
+
+{# ── Task Card Macro ─────────────────────────────────────────── #}
+{% macro _task_card(task, overdue=false) %}
+<div class="bg-white shadow-card rounded-2xl p-4 {{ 'border-l-4 border-neg' if overdue else '' }}">
+    <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 mb-1">
+                {% if task.priority == 'High' %}
+                <span class="w-2 h-2 rounded-full bg-neg flex-shrink-0"></span>
+                {% elif task.priority == 'Medium' %}
+                <span class="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0"></span>
+                {% else %}
+                <span class="w-2 h-2 rounded-full bg-gray-300 flex-shrink-0"></span>
+                {% endif %}
+                <h3 class="text-sm font-semibold text-txt-primary truncate">{{ task.name }}</h3>
+            </div>
+            <div class="text-xs text-txt-muted space-y-0.5">
+                <div>{{ task.project.client.name }} — {{ task.project.name }}</div>
+                {% if task.start_date and task.end_date %}
+                <div>{{ task.start_date.strftime('%m/%d') }} — {{ task.end_date.strftime('%m/%d/%y') }}
+                    {% if overdue %}
+                    <span class="text-neg font-medium ml-1">{{ (today - task.end_date).days }}d overdue</span>
+                    {% endif %}
+                </div>
+                {% endif %}
+                {% if task.cost_code %}
+                <div>{{ task.cost_code.code }} {{ task.cost_code.name }}</div>
+                {% endif %}
+                {% if task.assignee_names %}
+                <div>{{ task.assignee_names|join(', ') }}</div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="flex flex-col items-end gap-2">
+            <form method="POST" action="{{ url_for('update_task_status', project_id=task.project_id, task_id=task.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <select name="status" onchange="this.form.submit()"
+                        class="text-xs border border-hairline rounded-lg px-2 py-1 bg-white focus:outline-none
+                               {% if task.status == 'Complete' %}text-pos
+                               {% elif task.status == 'Blocked' %}text-neg
+                               {% elif task.status == 'In Progress' %}text-blue-600
+                               {% else %}text-txt-secondary{% endif %}">
+                    {% for s in task_statuses %}
+                    <option value="{{ s }}" {{ 'selected' if task.status == s }}>{{ s }}</option>
+                    {% endfor %}
+                </select>
+            </form>
+            <a href="{{ url_for('edit_task', project_id=task.project_id, task_id=task.id) }}"
+               class="text-[10px] text-txt-muted hover:text-txt-primary hover:underline">Edit</a>
+        </div>
+    </div>
+</div>
+{% endmacro %}
+
+{% endblock %}

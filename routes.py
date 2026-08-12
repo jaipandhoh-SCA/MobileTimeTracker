@@ -9,7 +9,7 @@ from sqlalchemy.orm import joinedload
 
 from collections import defaultdict
 
-from app import app, db
+from app import app, db, csrf
 from models import (
     User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage,
     LeadSource, ClientStatusChange, ChannelSpend, AppSetting,
@@ -19,6 +19,12 @@ from models import (
     Proposal, Contract, DrawScheduleItem, PROPOSAL_STATUSES, CONTRACT_STATUSES,
     Document, DocumentVersion, Permit,
     DOCUMENT_FOLDERS, DOCUMENT_FOLDER_KEYS, PERMIT_STATUSES, PERMIT_TYPES,
+    SchedulePhase, ScheduleTask, TaskDependency, TaskAssignment,
+    Notification, NotificationPreference, TASK_STATUSES, TASK_PRIORITIES,
+    DailyLog, DailyLogPhoto, WEATHER_CONDITIONS, DAILY_LOG_STATUSES,
+    ChangeOrder, ChangeOrderItem, CHANGE_ORDER_STATUSES,
+    Invoice, InvoiceLineItem, Payment,
+    INVOICE_STATUSES, PAYMENT_METHODS,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -583,7 +589,10 @@ def home():
         if cid not in overdue_by_client:
             overdue_by_client[cid] = activity
     for cid, activity in overdue_by_client.items():
-        days_overdue = (now - activity.next_step_date).days
+        step_date = activity.next_step_date
+        if step_date.tzinfo is None:
+            step_date = step_date.replace(tzinfo=timezone.utc)
+        days_overdue = (now - step_date).days
         attention_items.append({
             'client': activity.client,
             'issue_type': 'overdue_step',
@@ -4821,3 +4830,1789 @@ def delete_permit(client_id, permit_id):
     db.session.commit()
     flash(f'{ptype} permit deleted.', 'success')
     return redirect(url_for('client_documents', client_id=client_id))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SCHEDULING
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _notify_task(task, notif_type, actor, extra_msg=''):
+    """Send in-app notification to task assignees (respecting preferences).
+
+    notif_type: 'task_assigned' | 'task_changed'
+    """
+    pref_field = notif_type  # column name matches type
+    for assignment in task.assignments:
+        uid = assignment.user_id
+        if not uid or uid == actor.id:
+            continue
+        prefs = NotificationPreference.query.filter_by(user_id=uid).first()
+        if prefs and not getattr(prefs, pref_field, True):
+            continue
+        client = task.project.client
+        title_map = {
+            'task_assigned': f'New task: {task.name}',
+            'task_changed': f'Task updated: {task.name}',
+        }
+        notif = Notification(
+            user_id=uid,
+            type=notif_type,
+            title=title_map.get(notif_type, task.name),
+            message=f'{client.name} — {extra_msg}' if extra_msg else client.name,
+            link=url_for('project_schedule', project_id=task.project_id),
+        )
+        db.session.add(notif)
+
+
+@app.route('/schedule/<int:project_id>')
+@require_login
+def project_schedule(project_id):
+    project = Project.query.get_or_404(project_id)
+    client = Client.query.get_or_404(project.client_id)
+    phases = SchedulePhase.query.filter_by(project_id=project_id).order_by(SchedulePhase.sort_order).all()
+    unphased_tasks = ScheduleTask.query.filter_by(project_id=project_id, phase_id=None).order_by(ScheduleTask.sort_order).all()
+    all_tasks = ScheduleTask.query.filter_by(project_id=project_id).order_by(ScheduleTask.start_date).all()
+    users = User.query.order_by(User.first_name).all()
+    cost_codes = CostCode.query.filter_by(is_active=True, parent_id=None).order_by(CostCode.sort_order).all()
+
+    # Build Gantt data
+    gantt_tasks = []
+    for t in all_tasks:
+        if t.start_date and t.end_date:
+            phase = t.phase
+            gantt_tasks.append({
+                'id': t.id,
+                'name': t.name,
+                'start': t.start_date.isoformat(),
+                'end': t.end_date.isoformat(),
+                'status': t.status,
+                'phase': phase.name if phase else 'Unphased',
+                'color': phase.color if phase else '#94a3b8',
+                'assignees': ', '.join(t.assignee_names),
+                'deps': [d.depends_on_id for d in t.predecessors],
+            })
+
+    view = request.args.get('view', 'gantt')
+    return render_template('schedule.html',
+                           project=project, client=client,
+                           phases=phases, unphased_tasks=unphased_tasks,
+                           all_tasks=all_tasks, gantt_tasks=gantt_tasks,
+                           users=users, cost_codes=cost_codes,
+                           task_statuses=TASK_STATUSES,
+                           task_priorities=TASK_PRIORITIES,
+                           view=view)
+
+
+@app.route('/schedule/<int:project_id>/phases', methods=['POST'])
+@require_login
+def manage_phases(project_id):
+    project = Project.query.get_or_404(project_id)
+    action = request.form.get('action')
+
+    if action == 'add':
+        name = request.form.get('name', '').strip()
+        color = request.form.get('color', '#6366f1').strip()
+        if not name:
+            flash('Phase name is required.', 'error')
+            return redirect(url_for('project_schedule', project_id=project_id))
+        max_order = db.session.query(func.max(SchedulePhase.sort_order)).filter_by(project_id=project_id).scalar() or 0
+        phase = SchedulePhase(project_id=project_id, name=name, color=color, sort_order=max_order + 1)
+        db.session.add(phase)
+        db.session.commit()
+        flash(f'Phase "{name}" added.', 'success')
+
+    elif action == 'delete':
+        phase_id = request.form.get('phase_id', type=int)
+        phase = SchedulePhase.query.filter_by(id=phase_id, project_id=project_id).first_or_404()
+        # Move tasks to unphased before deleting
+        ScheduleTask.query.filter_by(phase_id=phase_id).update({'phase_id': None})
+        db.session.delete(phase)
+        db.session.commit()
+        flash(f'Phase "{phase.name}" deleted. Tasks moved to unphased.', 'success')
+
+    elif action == 'rename':
+        phase_id = request.form.get('phase_id', type=int)
+        new_name = request.form.get('name', '').strip()
+        phase = SchedulePhase.query.filter_by(id=phase_id, project_id=project_id).first_or_404()
+        if new_name:
+            phase.name = new_name
+            phase.color = request.form.get('color', phase.color).strip()
+            db.session.commit()
+            flash(f'Phase updated.', 'success')
+
+    return redirect(url_for('project_schedule', project_id=project_id))
+
+
+@app.route('/schedule/<int:project_id>/tasks/create', methods=['GET', 'POST'])
+@require_login
+def create_task(project_id):
+    project = Project.query.get_or_404(project_id)
+    client = Client.query.get_or_404(project.client_id)
+
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        if not name:
+            flash('Task name is required.', 'error')
+            return redirect(url_for('create_task', project_id=project_id))
+
+        phase_id = request.form.get('phase_id', type=int) or None
+        cost_code_id = request.form.get('cost_code_id', type=int) or None
+        start_date = request.form.get('start_date') or None
+        end_date = request.form.get('end_date') or None
+
+        max_order = db.session.query(func.max(ScheduleTask.sort_order)).filter_by(project_id=project_id).scalar() or 0
+        task = ScheduleTask(
+            project_id=project_id,
+            phase_id=phase_id,
+            cost_code_id=cost_code_id,
+            name=name,
+            description=request.form.get('description', '').strip() or None,
+            start_date=date.fromisoformat(start_date) if start_date else None,
+            end_date=date.fromisoformat(end_date) if end_date else None,
+            status=request.form.get('status', 'Not Started'),
+            priority=request.form.get('priority', 'Medium'),
+            sort_order=max_order + 1,
+            created_by_user_id=current_user.id,
+        )
+        db.session.add(task)
+        db.session.flush()
+
+        # Assignees
+        _save_task_assignments(task, request.form)
+
+        # Dependencies
+        dep_ids = request.form.getlist('depends_on')
+        for did in dep_ids:
+            if did:
+                dep = TaskDependency(task_id=task.id, depends_on_id=int(did))
+                db.session.add(dep)
+
+        db.session.flush()
+        _notify_task(task, 'task_assigned', current_user)
+        db.session.commit()
+        flash(f'Task "{name}" created.', 'success')
+        return redirect(url_for('project_schedule', project_id=project_id))
+
+    phases = SchedulePhase.query.filter_by(project_id=project_id).order_by(SchedulePhase.sort_order).all()
+    cost_codes = CostCode.query.filter_by(is_active=True, parent_id=None).order_by(CostCode.sort_order).all()
+    users = User.query.order_by(User.first_name).all()
+    existing_tasks = ScheduleTask.query.filter_by(project_id=project_id).order_by(ScheduleTask.name).all()
+
+    return render_template('schedule_task_form.html',
+                           project=project, client=client,
+                           task=None, phases=phases,
+                           cost_codes=cost_codes, users=users,
+                           existing_tasks=existing_tasks,
+                           task_statuses=TASK_STATUSES,
+                           task_priorities=TASK_PRIORITIES)
+
+
+@app.route('/schedule/<int:project_id>/tasks/<int:task_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_task(project_id, task_id):
+    project = Project.query.get_or_404(project_id)
+    client = Client.query.get_or_404(project.client_id)
+    task = ScheduleTask.query.filter_by(id=task_id, project_id=project_id).first_or_404()
+
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        if not name:
+            flash('Task name is required.', 'error')
+            return redirect(url_for('edit_task', project_id=project_id, task_id=task_id))
+
+        old_status = task.status
+        task.name = name
+        task.phase_id = request.form.get('phase_id', type=int) or None
+        task.cost_code_id = request.form.get('cost_code_id', type=int) or None
+        task.description = request.form.get('description', '').strip() or None
+        sd = request.form.get('start_date') or None
+        ed = request.form.get('end_date') or None
+        task.start_date = date.fromisoformat(sd) if sd else None
+        task.end_date = date.fromisoformat(ed) if ed else None
+        task.status = request.form.get('status', task.status)
+        task.priority = request.form.get('priority', task.priority)
+
+        # Rebuild assignments
+        TaskAssignment.query.filter_by(task_id=task.id).delete()
+        db.session.flush()
+        _save_task_assignments(task, request.form)
+
+        # Rebuild dependencies
+        TaskDependency.query.filter_by(task_id=task.id).delete()
+        dep_ids = request.form.getlist('depends_on')
+        for did in dep_ids:
+            if did and int(did) != task.id:
+                dep = TaskDependency(task_id=task.id, depends_on_id=int(did))
+                db.session.add(dep)
+
+        db.session.flush()
+        changes = []
+        if task.status != old_status:
+            changes.append(f'Status: {old_status} → {task.status}')
+        _notify_task(task, 'task_changed', current_user, '; '.join(changes))
+        db.session.commit()
+        flash(f'Task "{name}" updated.', 'success')
+        return redirect(url_for('project_schedule', project_id=project_id))
+
+    phases = SchedulePhase.query.filter_by(project_id=project_id).order_by(SchedulePhase.sort_order).all()
+    cost_codes = CostCode.query.filter_by(is_active=True, parent_id=None).order_by(CostCode.sort_order).all()
+    users = User.query.order_by(User.first_name).all()
+    existing_tasks = ScheduleTask.query.filter_by(project_id=project_id).filter(ScheduleTask.id != task_id).order_by(ScheduleTask.name).all()
+
+    return render_template('schedule_task_form.html',
+                           project=project, client=client,
+                           task=task, phases=phases,
+                           cost_codes=cost_codes, users=users,
+                           existing_tasks=existing_tasks,
+                           task_statuses=TASK_STATUSES,
+                           task_priorities=TASK_PRIORITIES)
+
+
+@app.route('/schedule/<int:project_id>/tasks/<int:task_id>/status', methods=['POST'])
+@require_login
+def update_task_status(project_id, task_id):
+    task = ScheduleTask.query.filter_by(id=task_id, project_id=project_id).first_or_404()
+    old_status = task.status
+    new_status = request.form.get('status', task.status)
+    if new_status in TASK_STATUSES:
+        task.status = new_status
+        if new_status != old_status:
+            _notify_task(task, 'task_changed', current_user, f'Status: {old_status} → {new_status}')
+        db.session.commit()
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify(ok=True, status=task.status)
+    flash(f'Task status updated to {new_status}.', 'success')
+    return redirect(url_for('project_schedule', project_id=project_id))
+
+
+@app.route('/schedule/<int:project_id>/tasks/<int:task_id>/delete', methods=['POST'])
+@require_login
+def delete_task(project_id, task_id):
+    task = ScheduleTask.query.filter_by(id=task_id, project_id=project_id).first_or_404()
+    tname = task.name
+    db.session.delete(task)
+    db.session.commit()
+    flash(f'Task "{tname}" deleted.', 'success')
+    return redirect(url_for('project_schedule', project_id=project_id))
+
+
+def _save_task_assignments(task, form):
+    """Parse assignee fields from form and create TaskAssignment records."""
+    user_ids = form.getlist('assignee_user_ids')
+    sub_names = form.getlist('assignee_sub_names')
+    roles = form.getlist('assignee_roles')
+
+    for i in range(max(len(user_ids), len(sub_names))):
+        uid = user_ids[i] if i < len(user_ids) else ''
+        sname = sub_names[i].strip() if i < len(sub_names) else ''
+        role = roles[i].strip() if i < len(roles) else ''
+        if uid or sname:
+            a = TaskAssignment(
+                task_id=task.id,
+                user_id=uid if uid else None,
+                sub_name=sname if sname and not uid else None,
+                role=role or None,
+            )
+            db.session.add(a)
+
+
+# ── My Tasks (mobile "today / this week" view) ──────────────────────────────
+
+@app.route('/my-tasks')
+@require_login
+def my_tasks():
+    today = date.today()
+    week_end = today + timedelta(days=(6 - today.weekday()))  # end of this week (Sun)
+
+    # Tasks assigned to current user
+    my_task_ids = db.session.query(TaskAssignment.task_id).filter_by(user_id=current_user.id).subquery()
+
+    today_tasks = ScheduleTask.query.filter(
+        ScheduleTask.id.in_(my_task_ids),
+        ScheduleTask.start_date <= today,
+        ScheduleTask.end_date >= today,
+        ScheduleTask.status != 'Complete',
+    ).order_by(ScheduleTask.priority.desc(), ScheduleTask.end_date).all()
+
+    this_week_tasks = ScheduleTask.query.filter(
+        ScheduleTask.id.in_(my_task_ids),
+        ScheduleTask.start_date <= week_end,
+        ScheduleTask.end_date >= today,
+        ScheduleTask.status != 'Complete',
+    ).order_by(ScheduleTask.start_date, ScheduleTask.priority.desc()).all()
+
+    # Overdue
+    overdue_tasks = ScheduleTask.query.filter(
+        ScheduleTask.id.in_(my_task_ids),
+        ScheduleTask.end_date < today,
+        ScheduleTask.status.notin_(['Complete']),
+    ).order_by(ScheduleTask.end_date).all()
+
+    # Remove today duplicates from this_week
+    today_ids = {t.id for t in today_tasks}
+    this_week_tasks = [t for t in this_week_tasks if t.id not in today_ids]
+
+    return render_template('my_tasks.html',
+                           today_tasks=today_tasks,
+                           this_week_tasks=this_week_tasks,
+                           overdue_tasks=overdue_tasks,
+                           today=today,
+                           task_statuses=TASK_STATUSES)
+
+
+# ── Notifications API ────────────────────────────────────────────────────────
+
+@app.route('/api/notifications')
+@require_login
+def api_notifications():
+    notifs = Notification.query.filter_by(user_id=current_user.id, is_read=False)\
+        .order_by(Notification.created_at.desc()).limit(20).all()
+    return jsonify({
+        'count': len(notifs),
+        'items': [{
+            'id': n.id,
+            'type': n.type,
+            'title': n.title,
+            'message': n.message,
+            'link': n.link,
+            'created_at': n.created_at.isoformat() if n.created_at else None,
+        } for n in notifs],
+    })
+
+
+@app.route('/api/notifications/mark-read', methods=['POST'])
+@require_login
+def mark_notifications_read():
+    notif_ids = request.json.get('ids', []) if request.is_json else []
+    if notif_ids:
+        Notification.query.filter(
+            Notification.id.in_(notif_ids),
+            Notification.user_id == current_user.id,
+        ).update({'is_read': True}, synchronize_session=False)
+    else:
+        # Mark all as read
+        Notification.query.filter_by(user_id=current_user.id, is_read=False)\
+            .update({'is_read': True}, synchronize_session=False)
+    db.session.commit()
+    return jsonify(ok=True)
+
+
+@app.route('/settings/notifications', methods=['GET', 'POST'])
+@require_login
+def notification_settings():
+    prefs = NotificationPreference.query.filter_by(user_id=current_user.id).first()
+    if not prefs:
+        prefs = NotificationPreference(user_id=current_user.id)
+        db.session.add(prefs)
+        db.session.commit()
+
+    if request.method == 'POST':
+        prefs.task_assigned = 'task_assigned' in request.form
+        prefs.task_changed = 'task_changed' in request.form
+        prefs.task_reminder = 'task_reminder' in request.form
+        db.session.commit()
+        flash('Notification preferences saved.', 'success')
+        return redirect(url_for('notification_settings'))
+
+    return render_template('notification_settings.html', prefs=prefs)
+
+
+# Inject unread notification count into all templates
+@app.context_processor
+def inject_notification_count():
+    if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
+        count = Notification.query.filter_by(user_id=current_user.id, is_read=False).count()
+        return {'unread_notif_count': count}
+    return {'unread_notif_count': 0}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DAILY LOGS
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.route('/daily-logs')
+@require_login
+def daily_logs_list():
+    """List daily logs across all clients, filterable."""
+    client_id = request.args.get('client_id', type=int)
+    date_from = request.args.get('date_from')
+    date_to = request.args.get('date_to')
+
+    q = DailyLog.query
+    if client_id:
+        q = q.filter_by(client_id=client_id)
+    if date_from:
+        q = q.filter(DailyLog.log_date >= date.fromisoformat(date_from))
+    if date_to:
+        q = q.filter(DailyLog.log_date <= date.fromisoformat(date_to))
+
+    logs = q.order_by(DailyLog.log_date.desc(), DailyLog.created_at.desc()).limit(100).all()
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+
+    return render_template('daily_logs_list.html',
+                           logs=logs, clients=clients,
+                           filter_client_id=client_id,
+                           filter_date_from=date_from or '',
+                           filter_date_to=date_to or '')
+
+
+@app.route('/daily-logs/new', methods=['GET', 'POST'])
+@app.route('/daily-logs/new/<int:client_id>', methods=['GET', 'POST'])
+@require_login
+def create_daily_log(client_id=None):
+    if request.method == 'POST':
+        cid = request.form.get('client_id', type=int)
+        if not cid:
+            flash('Client is required.', 'error')
+            return redirect(url_for('create_daily_log'))
+
+        client = Client.query.get_or_404(cid)
+        log_date_str = request.form.get('log_date', '')
+        try:
+            log_date = date.fromisoformat(log_date_str) if log_date_str else date.today()
+        except ValueError:
+            log_date = date.today()
+
+        # Check for duplicate
+        existing = DailyLog.query.filter_by(
+            client_id=cid, log_date=log_date,
+            created_by_user_id=current_user.id).first()
+        if existing:
+            flash('A log already exists for this client/date. Editing it instead.', 'info')
+            return redirect(url_for('edit_daily_log', log_id=existing.id))
+
+        project = client.default_project()
+
+        log = DailyLog(
+            client_id=cid,
+            project_id=project.id if project else None,
+            log_date=log_date,
+            created_by_user_id=current_user.id,
+            client_uuid=request.form.get('client_uuid') or None,
+        )
+        _populate_daily_log(log, request.form)
+        db.session.add(log)
+        db.session.flush()
+
+        # Also create a ClientActivity for timeline integration
+        _create_log_activity(log, client)
+
+        db.session.commit()
+        flash('Daily log saved.', 'success')
+
+        # Redirect back to edit for photo uploads
+        return redirect(url_for('edit_daily_log', log_id=log.id))
+
+    # GET
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    cost_codes = CostCode.query.filter_by(is_active=True, parent_id=None).order_by(CostCode.sort_order).all()
+    preselected = Client.query.get(client_id) if client_id else None
+    return render_template('daily_log_form.html',
+                           log=None, clients=clients,
+                           cost_codes=cost_codes,
+                           preselected_client=preselected,
+                           weather_conditions=WEATHER_CONDITIONS,
+                           today=date.today())
+
+
+@app.route('/daily-logs/<int:log_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_daily_log(log_id):
+    log = DailyLog.query.get_or_404(log_id)
+    client = Client.query.get_or_404(log.client_id)
+
+    if request.method == 'POST':
+        _populate_daily_log(log, request.form)
+        db.session.commit()
+        flash('Daily log updated.', 'success')
+        return redirect(url_for('edit_daily_log', log_id=log.id))
+
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    cost_codes = CostCode.query.filter_by(is_active=True, parent_id=None).order_by(CostCode.sort_order).all()
+    return render_template('daily_log_form.html',
+                           log=log, client=client, clients=clients,
+                           cost_codes=cost_codes,
+                           preselected_client=client,
+                           weather_conditions=WEATHER_CONDITIONS,
+                           today=date.today())
+
+
+@app.route('/daily-logs/<int:log_id>/delete', methods=['POST'])
+@require_login
+def delete_daily_log(log_id):
+    log = DailyLog.query.get_or_404(log_id)
+    # Clean up R2 photos
+    from r2_storage_helper import delete_file as r2_delete
+    for photo in log.photos:
+        r2_delete(photo.storage_key)
+    db.session.delete(log)
+    db.session.commit()
+    flash('Daily log deleted.', 'success')
+    return redirect(url_for('daily_logs_list'))
+
+
+@app.route('/daily-logs/<int:log_id>/finalize', methods=['POST'])
+@require_login
+def finalize_daily_log(log_id):
+    log = DailyLog.query.get_or_404(log_id)
+    log.status = 'Final'
+    db.session.commit()
+    flash('Daily log finalized.', 'success')
+    return redirect(url_for('view_daily_log', log_id=log.id))
+
+
+def _populate_daily_log(log, form):
+    """Fill DailyLog fields from form data."""
+    log.crew_count = form.get('crew_count', type=int) or None
+    log.crew_names = form.get('crew_names', '').strip() or None
+    hrs_reg = form.get('hours_regular', '').strip()
+    hrs_ot = form.get('hours_overtime', '').strip()
+    log.hours_regular = Decimal(hrs_reg) if hrs_reg else Decimal('0')
+    log.hours_overtime = Decimal(hrs_ot) if hrs_ot else Decimal('0')
+    log.work_completed = form.get('work_completed', '').strip() or None
+    log.weather_condition = form.get('weather_condition', '').strip() or None
+    temp = form.get('weather_temp_f', '').strip()
+    log.weather_temp_f = int(temp) if temp else None
+    log.weather_notes = form.get('weather_notes', '').strip() or None
+    log.delays = form.get('delays', '').strip() or None
+    log.safety_incidents = form.get('safety_incidents', '').strip() or None
+    log.visitors = form.get('visitors', '').strip() or None
+    log.materials_delivered = form.get('materials_delivered', '').strip() or None
+    if form.get('status') in DAILY_LOG_STATUSES:
+        log.status = form.get('status')
+
+
+def _create_log_activity(log, client):
+    """Create a ClientActivity entry so the log appears in the timeline."""
+    summary_parts = []
+    if log.work_completed:
+        summary_parts.append(log.work_completed[:200])
+    if log.delays:
+        summary_parts.append(f"Delays: {log.delays[:100]}")
+    note = ' | '.join(summary_parts) or 'Daily log entry'
+
+    activity = ClientActivity(
+        client_id=client.id,
+        user_id=log.created_by_user_id,
+        activity_type='Daily Log',
+        note_text=f"[{log.log_date.strftime('%m/%d/%Y')}] {note}",
+        activity_date=log.created_at or datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+
+
+# ── Daily Log Photos ─────────────────────────────────────────────────────────
+
+@app.route('/daily-logs/<int:log_id>/photos', methods=['POST'])
+@require_login
+def upload_daily_log_photo(log_id):
+    """Upload photo(s) to a daily log. Returns JSON for AJAX."""
+    import mimetypes
+    from werkzeug.utils import secure_filename
+    from r2_storage_helper import upload_file as r2_upload, build_client_prefix
+
+    log = DailyLog.query.get_or_404(log_id)
+    client = Client.query.get_or_404(log.client_id)
+
+    if not client.storage_prefix:
+        client.storage_prefix = build_client_prefix(client.name, client.address)
+        db.session.flush()
+
+    uploaded = []
+    files = request.files.getlist('photos')
+    captions = request.form.getlist('captions')
+    cost_code_ids = request.form.getlist('cost_code_ids')
+
+    for i, f in enumerate(files):
+        if not f or not f.filename:
+            continue
+        filename = secure_filename(f.filename)
+        ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+        if ext not in {'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'}:
+            continue
+
+        ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        unique_name = f"log_{log.log_date.isoformat()}_{ts}_{i}_{filename}"
+        key = f"{client.storage_prefix}/daily-logs/{unique_name}"
+        mime = mimetypes.guess_type(filename)[0] or 'image/jpeg'
+
+        r2_upload(f.read(), key, mime)
+
+        caption = captions[i].strip() if i < len(captions) else ''
+        cc_id = int(cost_code_ids[i]) if i < len(cost_code_ids) and cost_code_ids[i] else None
+
+        photo = DailyLogPhoto(
+            daily_log_id=log.id,
+            client_id=client.id,
+            cost_code_id=cc_id,
+            storage_key=key,
+            file_name=filename,
+            caption=caption or None,
+            sort_order=len(log.photos) + i,
+            uploaded_by_user_id=current_user.id,
+        )
+        db.session.add(photo)
+        db.session.flush()
+        uploaded.append({'id': photo.id, 'file_name': filename, 'caption': caption})
+
+    db.session.commit()
+
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify(ok=True, photos=uploaded)
+    flash(f'{len(uploaded)} photo(s) uploaded.', 'success')
+    return redirect(url_for('edit_daily_log', log_id=log.id))
+
+
+@app.route('/daily-logs/photos/<int:photo_id>')
+@require_login
+def view_daily_log_photo(photo_id):
+    from flask import send_file
+    from r2_storage_helper import download_file
+    photo = DailyLogPhoto.query.get_or_404(photo_id)
+    import mimetypes
+    mime = mimetypes.guess_type(photo.file_name)[0] or 'image/jpeg'
+    content = download_file(photo.storage_key)
+    return send_file(
+        BytesIO(content),
+        mimetype=mime,
+        download_name=photo.file_name,
+    )
+
+
+@app.route('/daily-logs/photos/<int:photo_id>/delete', methods=['POST'])
+@require_login
+def delete_daily_log_photo(photo_id):
+    from r2_storage_helper import delete_file as r2_delete
+    photo = DailyLogPhoto.query.get_or_404(photo_id)
+    log_id = photo.daily_log_id
+    r2_delete(photo.storage_key)
+    db.session.delete(photo)
+    db.session.commit()
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify(ok=True)
+    flash('Photo deleted.', 'success')
+    return redirect(url_for('edit_daily_log', log_id=log_id))
+
+
+# ── Daily Log View (read-only) ──────────────────────────────────────────────
+
+@app.route('/daily-logs/<int:log_id>')
+@require_login
+def view_daily_log(log_id):
+    log = DailyLog.query.get_or_404(log_id)
+    client = Client.query.get_or_404(log.client_id)
+    return render_template('daily_log_view.html', log=log, client=client)
+
+
+# ── Weather Auto-Fetch ───────────────────────────────────────────────────────
+
+@app.route('/api/weather')
+@require_login
+def api_weather():
+    """Fetch weather for a client's address on a given date using Open-Meteo (free, no key)."""
+    import requests as http_requests
+
+    client_id = request.args.get('client_id', type=int)
+    log_date = request.args.get('date', '')
+
+    if not client_id:
+        return jsonify(ok=False, error='client_id required')
+
+    client = Client.query.get(client_id)
+    if not client or not client.address:
+        return jsonify(ok=False, error='Client has no address')
+
+    # Geocode address via Nominatim (free, no key)
+    geo_url = 'https://nominatim.openstreetmap.org/search'
+    try:
+        geo_resp = http_requests.get(geo_url, params={
+            'q': client.address, 'format': 'json', 'limit': 1,
+        }, headers={'User-Agent': 'ADUPortal/1.0'}, timeout=5)
+        geo_data = geo_resp.json()
+        if not geo_data:
+            return jsonify(ok=False, error='Could not geocode address')
+        lat = float(geo_data[0]['lat'])
+        lon = float(geo_data[0]['lon'])
+    except Exception:
+        return jsonify(ok=False, error='Geocoding failed')
+
+    # Fetch weather from Open-Meteo
+    try:
+        target = log_date or date.today().isoformat()
+        weather_url = 'https://api.open-meteo.com/v1/forecast'
+        w_resp = http_requests.get(weather_url, params={
+            'latitude': lat, 'longitude': lon,
+            'daily': 'temperature_2m_max,temperature_2m_min,weathercode',
+            'temperature_unit': 'fahrenheit',
+            'start_date': target, 'end_date': target,
+            'timezone': 'America/Los_Angeles',
+        }, timeout=5)
+        w_data = w_resp.json()
+
+        daily = w_data.get('daily', {})
+        if not daily.get('temperature_2m_max'):
+            return jsonify(ok=False, error='No weather data for date')
+
+        hi = round(daily['temperature_2m_max'][0])
+        lo = round(daily['temperature_2m_min'][0])
+        code = daily.get('weathercode', [0])[0]
+
+        # WMO weather code → condition text
+        wmo_map = {
+            0: 'Clear', 1: 'Partly Cloudy', 2: 'Partly Cloudy', 3: 'Cloudy',
+            45: 'Fog', 48: 'Fog',
+            51: 'Rain', 53: 'Rain', 55: 'Rain',
+            61: 'Rain', 63: 'Rain', 65: 'Heavy Rain',
+            71: 'Snow', 73: 'Snow', 75: 'Snow',
+            80: 'Rain', 81: 'Rain', 82: 'Heavy Rain',
+            95: 'Heavy Rain', 96: 'Heavy Rain', 99: 'Heavy Rain',
+        }
+        condition = wmo_map.get(code, 'Clear')
+
+        return jsonify(ok=True, condition=condition, temp_hi=hi, temp_lo=lo,
+                       notes=f"{condition}, Hi {hi}F / Lo {lo}F")
+    except Exception:
+        return jsonify(ok=False, error='Weather fetch failed')
+
+
+# ── Offline Sync API ─────────────────────────────────────────────────────────
+
+@app.route('/api/daily-logs/sync', methods=['POST'])
+@require_login
+@csrf.exempt
+def sync_daily_logs():
+    """Accept queued daily logs from offline-capable clients.
+
+    Expects JSON array of log objects with client_uuid for dedup.
+    """
+    if not request.is_json:
+        return jsonify(ok=False, error='JSON required'), 400
+
+    entries = request.json if isinstance(request.json, list) else [request.json]
+    results = []
+
+    for entry in entries:
+        client_uuid = entry.get('client_uuid')
+        if not client_uuid:
+            results.append({'client_uuid': None, 'status': 'error', 'error': 'missing client_uuid'})
+            continue
+
+        # Dedup by client_uuid
+        existing = DailyLog.query.filter_by(client_uuid=client_uuid).first()
+        if existing:
+            results.append({'client_uuid': client_uuid, 'status': 'duplicate', 'id': existing.id})
+            continue
+
+        cid = entry.get('client_id')
+        if not cid:
+            results.append({'client_uuid': client_uuid, 'status': 'error', 'error': 'missing client_id'})
+            continue
+
+        client = Client.query.get(cid)
+        if not client:
+            results.append({'client_uuid': client_uuid, 'status': 'error', 'error': 'client not found'})
+            continue
+
+        try:
+            log_date = date.fromisoformat(entry.get('log_date', date.today().isoformat()))
+        except ValueError:
+            log_date = date.today()
+
+        project = client.default_project()
+        log = DailyLog(
+            client_id=cid,
+            project_id=project.id if project else None,
+            log_date=log_date,
+            created_by_user_id=current_user.id,
+            client_uuid=client_uuid,
+        )
+        # Populate fields from entry dict
+        log.crew_count = entry.get('crew_count')
+        log.crew_names = entry.get('crew_names')
+        log.hours_regular = Decimal(str(entry.get('hours_regular', 0)))
+        log.hours_overtime = Decimal(str(entry.get('hours_overtime', 0)))
+        log.work_completed = entry.get('work_completed')
+        log.weather_condition = entry.get('weather_condition')
+        log.weather_temp_f = entry.get('weather_temp_f')
+        log.weather_notes = entry.get('weather_notes')
+        log.delays = entry.get('delays')
+        log.safety_incidents = entry.get('safety_incidents')
+        log.visitors = entry.get('visitors')
+        log.materials_delivered = entry.get('materials_delivered')
+        log.status = entry.get('status', 'Draft')
+
+        db.session.add(log)
+        db.session.flush()
+        _create_log_activity(log, client)
+        results.append({'client_uuid': client_uuid, 'status': 'created', 'id': log.id})
+
+    db.session.commit()
+    return jsonify(ok=True, results=results)
+
+
+# ── PDF Generation ───────────────────────────────────────────────────────────
+
+@app.route('/daily-logs/<int:log_id>/pdf')
+@require_login
+def daily_log_pdf(log_id):
+    """Generate a PDF for a single daily log."""
+    log = DailyLog.query.get_or_404(log_id)
+    client = Client.query.get_or_404(log.client_id)
+    pdf_bytes = _generate_daily_log_pdf([log], client,
+                                        title=f"Daily Log — {log.log_date.strftime('%m/%d/%Y')}")
+    return Response(pdf_bytes, mimetype='application/pdf',
+                    headers={'Content-Disposition':
+                             f'inline; filename="daily-log-{client.name}-{log.log_date.isoformat()}.pdf"'})
+
+
+@app.route('/daily-logs/weekly-pdf')
+@require_login
+def weekly_log_pdf():
+    """Generate a weekly summary PDF for a client."""
+    client_id = request.args.get('client_id', type=int)
+    if not client_id:
+        flash('Client is required.', 'error')
+        return redirect(url_for('daily_logs_list'))
+
+    client = Client.query.get_or_404(client_id)
+    week_of = request.args.get('week_of', '')
+    try:
+        ref = date.fromisoformat(week_of) if week_of else date.today()
+    except ValueError:
+        ref = date.today()
+
+    # Monday to Sunday of that week
+    monday = ref - timedelta(days=ref.weekday())
+    sunday = monday + timedelta(days=6)
+
+    logs = DailyLog.query.filter(
+        DailyLog.client_id == client_id,
+        DailyLog.log_date >= monday,
+        DailyLog.log_date <= sunday,
+    ).order_by(DailyLog.log_date).all()
+
+    if not logs:
+        flash('No logs found for that week.', 'warning')
+        return redirect(url_for('daily_logs_list', client_id=client_id))
+
+    title = f"Weekly Report — {monday.strftime('%m/%d')} to {sunday.strftime('%m/%d/%Y')}"
+    pdf_bytes = _generate_daily_log_pdf(logs, client, title=title)
+    return Response(pdf_bytes, mimetype='application/pdf',
+                    headers={'Content-Disposition':
+                             f'inline; filename="weekly-log-{client.name}-{monday.isoformat()}.pdf"'})
+
+
+def _generate_daily_log_pdf(logs, client, title='Daily Log'):
+    """Build a PDF from one or more DailyLog records using fpdf2."""
+    from fpdf import FPDF
+    from r2_storage_helper import download_file
+    import tempfile, os
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.set_font('Helvetica', size=10)
+
+    for log in logs:
+        pdf.add_page()
+
+        # Header
+        pdf.set_font('Helvetica', 'B', 16)
+        pdf.cell(0, 10, 'All Inclusive ADU', ln=True, align='C')
+        pdf.set_font('Helvetica', '', 10)
+        pdf.cell(0, 6, title, ln=True, align='C')
+        pdf.ln(4)
+
+        # Client info bar
+        pdf.set_fill_color(241, 245, 249)
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(95, 7, f'Client: {client.name}', fill=True)
+        pdf.cell(95, 7, f'Date: {log.log_date.strftime("%m/%d/%Y")}', fill=True, align='R', ln=True)
+        pdf.set_font('Helvetica', '', 9)
+        pdf.cell(95, 6, f'Address: {client.address or "N/A"}')
+        pdf.cell(95, 6, f'Status: {log.status}', align='R', ln=True)
+        pdf.ln(4)
+
+        # Section helper
+        def section(label, value):
+            if not value:
+                return
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_fill_color(241, 245, 249)
+            pdf.cell(0, 6, label, fill=True, ln=True)
+            pdf.set_font('Helvetica', '', 9)
+            pdf.multi_cell(0, 5, str(value))
+            pdf.ln(2)
+
+        # Weather
+        weather_parts = []
+        if log.weather_condition:
+            weather_parts.append(log.weather_condition)
+        if log.weather_temp_f is not None:
+            weather_parts.append(f'{log.weather_temp_f}°F')
+        if log.weather_notes:
+            weather_parts.append(log.weather_notes)
+        section('Weather', ' — '.join(weather_parts) if weather_parts else None)
+
+        # Crew
+        crew_parts = []
+        if log.crew_count:
+            crew_parts.append(f'{log.crew_count} on site')
+        if log.crew_names:
+            crew_parts.append(log.crew_names)
+        section('Crew', ' | '.join(crew_parts) if crew_parts else None)
+
+        # Hours
+        if log.hours_regular or log.hours_overtime:
+            section('Hours', f'Regular: {log.hours_regular or 0}  |  OT: {log.hours_overtime or 0}  |  Total: {log.total_hours}')
+
+        section('Work Completed', log.work_completed)
+        section('Materials Delivered', log.materials_delivered)
+        section('Delays / Issues', log.delays)
+        section('Safety Incidents', log.safety_incidents)
+        section('Visitors / Inspections', log.visitors)
+
+        # Photos
+        if log.photos:
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_fill_color(241, 245, 249)
+            pdf.cell(0, 6, f'Photos ({len(log.photos)})', fill=True, ln=True)
+            pdf.ln(2)
+
+            for photo in log.photos:
+                try:
+                    img_bytes = download_file(photo.storage_key)
+                    ext = photo.file_name.rsplit('.', 1)[-1].lower() if '.' in photo.file_name else 'jpg'
+                    if ext in ('jpg', 'jpeg', 'png', 'gif'):
+                        with tempfile.NamedTemporaryFile(suffix=f'.{ext}', delete=False) as tmp:
+                            tmp.write(img_bytes)
+                            tmp_path = tmp.name
+                        try:
+                            # Check if enough space for image
+                            if pdf.get_y() > 200:
+                                pdf.add_page()
+                            pdf.image(tmp_path, w=80)
+                        finally:
+                            os.unlink(tmp_path)
+                except Exception:
+                    pdf.set_font('Helvetica', 'I', 8)
+                    pdf.cell(0, 5, f'[Could not load: {photo.file_name}]', ln=True)
+
+                if photo.caption:
+                    pdf.set_font('Helvetica', 'I', 8)
+                    pdf.cell(0, 5, photo.caption, ln=True)
+                if photo.cost_code:
+                    pdf.set_font('Helvetica', '', 7)
+                    pdf.cell(0, 4, f'Cost Code: {photo.cost_code.code} {photo.cost_code.name}', ln=True)
+                pdf.ln(3)
+
+        # Footer
+        pdf.set_font('Helvetica', 'I', 7)
+        pdf.cell(0, 5, f'Generated {datetime.now(timezone.utc).strftime("%m/%d/%Y %I:%M %p")} UTC  |  Logged by {log.created_by.display_name}',
+                 ln=True, align='C')
+
+    return pdf.output()
+
+
+# ── Share token for client portal PDF ────────────────────────────────────────
+
+@app.route('/daily-logs/<int:log_id>/share')
+@require_login
+def share_daily_log(log_id):
+    """Generate a share link. Uses log_id + simple HMAC token."""
+    import hashlib, hmac
+    log = DailyLog.query.get_or_404(log_id)
+    secret = app.secret_key.encode() if isinstance(app.secret_key, str) else app.secret_key
+    token = hmac.new(secret, f'dailylog-{log.id}'.encode(), hashlib.sha256).hexdigest()[:16]
+    share_url = url_for('public_daily_log', log_id=log.id, token=token, _external=True)
+    return jsonify(ok=True, url=share_url)
+
+
+@app.route('/dl/<int:log_id>/<token>')
+@csrf.exempt
+def public_daily_log(log_id, token):
+    """Public view of a daily log PDF (no auth, token-protected)."""
+    import hashlib, hmac
+    log = DailyLog.query.get_or_404(log_id)
+    secret = app.secret_key.encode() if isinstance(app.secret_key, str) else app.secret_key
+    expected = hmac.new(secret, f'dailylog-{log.id}'.encode(), hashlib.sha256).hexdigest()[:16]
+    if not hmac.compare_digest(token, expected):
+        abort(403)
+    client = Client.query.get_or_404(log.client_id)
+    pdf_bytes = _generate_daily_log_pdf([log], client,
+                                        title=f"Daily Log — {log.log_date.strftime('%m/%d/%Y')}")
+    return Response(pdf_bytes, mimetype='application/pdf',
+                    headers={'Content-Disposition':
+                             f'inline; filename="daily-log-{log.log_date.isoformat()}.pdf"'})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CHANGE ORDERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/change-orders')
+@require_login
+def change_orders_list():
+    """List change orders, optionally filtered."""
+    filter_client_id = request.args.get('client_id', type=int)
+    filter_status = request.args.get('status', '')
+    show_unbilled = request.args.get('unbilled', '') == '1'
+
+    q = ChangeOrder.query.options(
+        joinedload(ChangeOrder.client),
+        joinedload(ChangeOrder.project),
+    )
+    if filter_client_id:
+        q = q.filter(ChangeOrder.client_id == filter_client_id)
+    if filter_status:
+        q = q.filter(ChangeOrder.status == filter_status)
+    if show_unbilled:
+        q = q.filter(ChangeOrder.status == 'Approved', ChangeOrder.billed.is_(False))
+
+    cos = q.order_by(ChangeOrder.created_at.desc()).limit(200).all()
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+
+    return render_template('change_orders_list.html',
+                           change_orders=cos, clients=clients,
+                           filter_client_id=filter_client_id,
+                           filter_status=filter_status,
+                           show_unbilled=show_unbilled,
+                           statuses=CHANGE_ORDER_STATUSES)
+
+
+@app.route('/change-orders/new', methods=['GET', 'POST'])
+@app.route('/change-orders/new/<int:client_id>', methods=['GET', 'POST'])
+@require_login
+def create_change_order(client_id=None):
+    if request.method == 'POST':
+        return _save_change_order(None)
+
+    client = Client.query.get(client_id) if client_id else None
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+
+    # Generate next CO number for selected client
+    next_number = _next_co_number(client_id) if client_id else 'CO-001'
+
+    return render_template('change_order_form.html',
+                           co=None, client=client, clients=clients,
+                           cost_codes=cost_codes, cost_types=COST_TYPES,
+                           next_number=next_number)
+
+
+@app.route('/change-orders/<int:co_id>', methods=['GET'])
+@require_login
+def view_change_order(co_id):
+    co = ChangeOrder.query.get_or_404(co_id)
+    return render_template('change_order_view.html', co=co)
+
+
+@app.route('/change-orders/<int:co_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_change_order(co_id):
+    co = ChangeOrder.query.get_or_404(co_id)
+    if request.method == 'POST':
+        return _save_change_order(co)
+
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+    return render_template('change_order_form.html',
+                           co=co, client=co.client, clients=clients,
+                           cost_codes=cost_codes, cost_types=COST_TYPES,
+                           next_number=co.co_number)
+
+
+def _next_co_number(client_id):
+    """Generate next CO number for a client: CO-001, CO-002, etc."""
+    count = ChangeOrder.query.filter_by(client_id=client_id).count()
+    return f'CO-{count + 1:03d}'
+
+
+def _save_change_order(co):
+    """Create or update a change order from form POST."""
+    client_id = request.form.get('client_id', type=int)
+    if not client_id:
+        flash('Client is required.', 'error')
+        return redirect(request.url)
+
+    client = Client.query.get_or_404(client_id)
+    project = client.default_project()
+
+    title = request.form.get('title', '').strip()
+    if not title:
+        flash('Title is required.', 'error')
+        return redirect(request.url)
+
+    is_new = co is None
+    if is_new:
+        co = ChangeOrder(
+            client_id=client_id,
+            project_id=project.id,
+            co_number=request.form.get('co_number', _next_co_number(client_id)).strip(),
+            created_by_user_id=current_user.id,
+        )
+        db.session.add(co)
+
+    co.title = title
+    co.description = request.form.get('description', '').strip() or None
+
+    try:
+        co.price_to_client = Decimal(request.form.get('price_to_client', '0'))
+    except (InvalidOperation, ValueError):
+        co.price_to_client = Decimal('0')
+
+    # Handle line items
+    if not is_new:
+        ChangeOrderItem.query.filter_by(change_order_id=co.id).delete()
+        db.session.flush()
+
+    descriptions = request.form.getlist('item_description')
+    amounts = request.form.getlist('item_amount')
+    cost_code_ids = request.form.getlist('item_cost_code_id')
+    cost_types = request.form.getlist('item_cost_type')
+
+    for i, desc in enumerate(descriptions):
+        desc = desc.strip()
+        if not desc:
+            continue
+        try:
+            amt = Decimal(amounts[i]) if i < len(amounts) else Decimal('0')
+        except (InvalidOperation, ValueError):
+            amt = Decimal('0')
+        cc_id = int(cost_code_ids[i]) if i < len(cost_code_ids) and cost_code_ids[i] else None
+        ct = cost_types[i] if i < len(cost_types) and cost_types[i] else 'Other'
+
+        item = ChangeOrderItem(
+            change_order_id=co.id if co.id else None,
+            cost_code_id=cc_id,
+            cost_type=ct,
+            description=desc,
+            amount=amt,
+            sort_order=i,
+        )
+        if co.id:
+            item.change_order_id = co.id
+            db.session.add(item)
+        else:
+            co.items.append(item)
+
+    db.session.commit()
+
+    if is_new:
+        activity = ClientActivity(
+            client_id=client_id,
+            user_id=current_user.id,
+            activity_type='Change Order Created',
+            note_text=f'{co.co_number}: {co.title} — ${co.price_to_client:,.2f}',
+            activity_date=datetime.now(timezone.utc),
+        )
+        db.session.add(activity)
+        db.session.commit()
+
+    flash(f'Change order {co.co_number} {"created" if is_new else "updated"}.', 'success')
+    return redirect(url_for('view_change_order', co_id=co.id))
+
+
+@app.route('/change-orders/<int:co_id>/send', methods=['POST'])
+@require_login
+def send_change_order(co_id):
+    """Mark CO as Sent and generate share token."""
+    co = ChangeOrder.query.get_or_404(co_id)
+    if co.status not in ('Draft',):
+        flash('Only draft change orders can be sent.', 'error')
+        return redirect(url_for('view_change_order', co_id=co.id))
+
+    co.status = 'Sent'
+    if not co.share_token:
+        co.share_token = _generate_token()
+
+    activity = ClientActivity(
+        client_id=co.client_id,
+        user_id=current_user.id,
+        activity_type='Change Order Sent',
+        note_text=f'{co.co_number}: {co.title}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'Change order {co.co_number} sent. Share link generated.', 'success')
+    return redirect(url_for('view_change_order', co_id=co.id))
+
+
+@app.route('/change-orders/<int:co_id>/approve-internal', methods=['POST'])
+@require_login
+def approve_change_order_internal(co_id):
+    """Internal approval (supervisor approves on behalf of client)."""
+    co = ChangeOrder.query.get_or_404(co_id)
+    if co.status not in ('Draft', 'Sent'):
+        flash('This change order cannot be approved.', 'error')
+        return redirect(url_for('view_change_order', co_id=co.id))
+
+    _apply_change_order_approval(co, approved_name=current_user.display_name,
+                                  approved_ip=request.remote_addr)
+
+    flash(f'Change order {co.co_number} approved. Budget and contract value updated.', 'success')
+    return redirect(url_for('view_change_order', co_id=co.id))
+
+
+@app.route('/change-orders/<int:co_id>/reject', methods=['POST'])
+@require_login
+def reject_change_order(co_id):
+    co = ChangeOrder.query.get_or_404(co_id)
+    co.status = 'Rejected'
+
+    activity = ClientActivity(
+        client_id=co.client_id,
+        user_id=current_user.id,
+        activity_type='Change Order Rejected',
+        note_text=f'{co.co_number}: {co.title}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'Change order {co.co_number} rejected.', 'info')
+    return redirect(url_for('view_change_order', co_id=co.id))
+
+
+@app.route('/change-orders/<int:co_id>/mark-billed', methods=['POST'])
+@require_login
+def mark_change_order_billed(co_id):
+    co = ChangeOrder.query.get_or_404(co_id)
+    if co.status != 'Approved':
+        flash('Only approved change orders can be billed.', 'error')
+        return redirect(url_for('view_change_order', co_id=co.id))
+
+    co.billed = True
+    co.billed_at = datetime.now(timezone.utc)
+
+    activity = ClientActivity(
+        client_id=co.client_id,
+        user_id=current_user.id,
+        activity_type='Change Order Billed',
+        note_text=f'{co.co_number}: ${co.price_to_client:,.2f}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'Change order {co.co_number} marked as billed.', 'success')
+    return redirect(url_for('view_change_order', co_id=co.id))
+
+
+def _apply_change_order_approval(co, approved_name=None, approved_email=None,
+                                  approved_ip=None, signature_data=None):
+    """Apply approval: update budget, contract value, log activity."""
+    now = datetime.now(timezone.utc)
+    co.status = 'Approved'
+    co.approved_at = now
+    co.approved_name = approved_name
+    co.approved_email = approved_email
+    co.approved_ip = approved_ip
+    if signature_data:
+        co.signature_data = signature_data
+
+    project = co.project
+    client = co.client
+
+    # Add CO items to budget (additive — add to existing amounts)
+    for item in co.items.all():
+        if not item.cost_code_id:
+            continue
+        existing = Budget.query.filter_by(
+            project_id=project.id,
+            cost_code_id=item.cost_code_id,
+            cost_type=item.cost_type,
+        ).first()
+        if existing:
+            existing.amount += item.amount
+            existing.notes = (existing.notes or '') + f' +CO#{co.co_number}'
+        else:
+            db.session.add(Budget(
+                project_id=project.id,
+                cost_code_id=item.cost_code_id,
+                cost_type=item.cost_type,
+                amount=item.amount,
+                notes=f'From CO#{co.co_number}',
+            ))
+
+    # Adjust contract values
+    if project.contract_value:
+        project.contract_value += co.price_to_client
+    else:
+        project.contract_value = co.price_to_client
+
+    if client.final_contract_value:
+        client.final_contract_value += co.price_to_client
+    else:
+        client.final_contract_value = co.price_to_client
+
+    # Log activity
+    activity = ClientActivity(
+        client_id=co.client_id,
+        user_id=co.created_by_user_id,
+        activity_type='Change Order Approved',
+        note_text=f'{co.co_number}: {co.title} — ${co.price_to_client:,.2f} '
+                  f'(approved by {approved_name or "internal"})',
+        activity_date=now,
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+
+# ── Public Change Order Portal ──────────────────────────────────────────────
+
+@app.route('/co/<token>', methods=['GET', 'POST'])
+@csrf.exempt
+def public_change_order(token):
+    """Public approval page for a change order."""
+    co = ChangeOrder.query.filter_by(share_token=token).first_or_404()
+
+    if request.method == 'POST' and co.status == 'Sent':
+        signed_name = request.form.get('name', '').strip()
+        signed_email = request.form.get('email', '').strip()
+        sig_data = request.form.get('signature_data', '').strip()
+
+        if not signed_name:
+            flash('Name is required to approve.', 'error')
+            return redirect(url_for('public_change_order', token=token))
+
+        _apply_change_order_approval(
+            co,
+            approved_name=signed_name,
+            approved_email=signed_email,
+            approved_ip=request.remote_addr,
+            signature_data=sig_data or None,
+        )
+
+        flash('Change order approved! Thank you.', 'success')
+        return redirect(url_for('public_change_order', token=token))
+
+    return render_template('change_order_public.html', co=co)
+
+
+@app.route('/change-orders/<int:co_id>/share-link')
+@require_login
+def change_order_share_link(co_id):
+    """Get or generate the share link for a change order."""
+    co = ChangeOrder.query.get_or_404(co_id)
+    if not co.share_token:
+        co.share_token = _generate_token()
+        db.session.commit()
+    url = url_for('public_change_order', token=co.share_token, _external=True)
+    return jsonify(ok=True, url=url)
+
+
+# ── Billing / Invoicing ──────────────────────────────────────────────
+
+def _next_invoice_number(contract):
+    count = Invoice.query.filter_by(contract_id=contract.id).count()
+    return f"{contract.contract_number}-INV-{count + 1:03d}"
+
+
+def _get_stripe():
+    """Return configured stripe module or None."""
+    import os
+    key = os.environ.get('STRIPE_SECRET_KEY')
+    if not key:
+        return None
+    import stripe
+    stripe.api_key = key
+    return stripe
+
+
+@app.route('/contracts/<int:contract_id>/billing')
+@require_login
+def contract_billing(contract_id):
+    """Billing hub for a contract — invoices, payments, draw progress."""
+    contract = Contract.query.get_or_404(contract_id)
+    draws = contract.draw_schedule.order_by(DrawScheduleItem.sort_order).all()
+    invoices = contract.invoices.order_by(Invoice.created_at.desc()).all()
+
+    # Approved, unbilled change orders
+    unbilled_cos = ChangeOrder.query.filter(
+        ChangeOrder.client_id == contract.client_id,
+        ChangeOrder.status == 'Approved',
+        ChangeOrder.billed == False,
+    ).order_by(ChangeOrder.co_number).all()
+
+    # Calculate draw progress: how much of each draw has been invoiced
+    draw_invoiced = {}
+    for draw in draws:
+        billed = db.session.query(func.sum(InvoiceLineItem.amount)).filter(
+            InvoiceLineItem.draw_item_id == draw.id,
+        ).scalar() or Decimal('0')
+        draw_invoiced[draw.id] = billed
+
+    # Overall billing summary
+    total_invoiced = sum((inv.subtotal for inv in invoices), Decimal('0'))
+    total_paid = sum((inv.amount_paid for inv in invoices), Decimal('0'))
+    total_retainage = sum((inv.retainage_amount for inv in invoices), Decimal('0'))
+    co_total = sum((co.price_to_client for co in contract.client.change_orders.filter_by(
+        status='Approved').all()), Decimal('0'))
+    adjusted_contract = contract.total_price + co_total
+
+    return render_template('billing_hub.html',
+        contract=contract, draws=draws, invoices=invoices,
+        unbilled_cos=unbilled_cos, draw_invoiced=draw_invoiced,
+        total_invoiced=total_invoiced, total_paid=total_paid,
+        total_retainage=total_retainage, co_total=co_total,
+        adjusted_contract=adjusted_contract)
+
+
+@app.route('/contracts/<int:contract_id>/invoices/new', methods=['GET', 'POST'])
+@require_login
+def create_invoice(contract_id):
+    """Create a new draw invoice."""
+    contract = Contract.query.get_or_404(contract_id)
+    draws = contract.draw_schedule.order_by(DrawScheduleItem.sort_order).all()
+
+    # Calculate what's already been billed per draw
+    draw_billed = {}
+    for draw in draws:
+        billed = db.session.query(func.sum(InvoiceLineItem.amount)).filter(
+            InvoiceLineItem.draw_item_id == draw.id,
+        ).scalar() or Decimal('0')
+        draw_billed[draw.id] = billed
+
+    unbilled_cos = ChangeOrder.query.filter(
+        ChangeOrder.client_id == contract.client_id,
+        ChangeOrder.status == 'Approved',
+        ChangeOrder.billed == False,
+    ).order_by(ChangeOrder.co_number).all()
+
+    if request.method == 'GET':
+        return render_template('invoice_create.html',
+            contract=contract, draws=draws, draw_billed=draw_billed,
+            unbilled_cos=unbilled_cos,
+            invoice_number=_next_invoice_number(contract),
+            retainage_pct=contract.retainage_pct)
+
+    # POST — create invoice
+    invoice = Invoice(
+        contract_id=contract.id,
+        client_id=contract.client_id,
+        invoice_number=request.form.get('invoice_number', _next_invoice_number(contract)).strip(),
+        share_token=_generate_token(),
+        retainage_pct=Decimal(request.form.get('retainage_pct', '0').replace('%', '') or '0'),
+        notes=request.form.get('notes', '').strip() or None,
+        created_by_user_id=current_user.id,
+    )
+
+    due_date = request.form.get('due_date', '').strip()
+    if due_date:
+        try:
+            invoice.due_date = datetime.strptime(due_date, '%Y-%m-%d').date()
+        except ValueError:
+            pass
+
+    db.session.add(invoice)
+    db.session.flush()
+
+    sort = 0
+    # Add draw lines
+    for draw in draws:
+        field_name = f'draw_{draw.id}_amount'
+        amt_str = request.form.get(field_name, '0').strip().replace(',', '').replace('$', '')
+        try:
+            amt = Decimal(amt_str)
+        except (InvalidOperation, ValueError):
+            amt = Decimal('0')
+        if amt <= 0:
+            continue
+
+        pct_field = f'draw_{draw.id}_pct'
+        pct_str = request.form.get(pct_field, '').strip().replace('%', '')
+        pct = None
+        if pct_str:
+            try:
+                pct = Decimal(pct_str)
+            except (InvalidOperation, ValueError):
+                pass
+
+        sort += 10
+        db.session.add(InvoiceLineItem(
+            invoice_id=invoice.id,
+            source_type='draw',
+            draw_item_id=draw.id,
+            description=draw.milestone,
+            amount=amt,
+            pct_complete=pct,
+            sort_order=sort,
+        ))
+
+    # Add change order lines
+    co_ids = request.form.getlist('co_ids')
+    for co_id_str in co_ids:
+        try:
+            co_id = int(co_id_str)
+        except ValueError:
+            continue
+        co = ChangeOrder.query.get(co_id)
+        if not co or co.billed:
+            continue
+        sort += 10
+        db.session.add(InvoiceLineItem(
+            invoice_id=invoice.id,
+            source_type='change_order',
+            change_order_id=co.id,
+            description=f'CO #{co.co_number}: {co.title}',
+            amount=co.price_to_client,
+            sort_order=sort,
+        ))
+        co.billed = True
+        co.billed_at = datetime.now(timezone.utc)
+
+    invoice.recalculate()
+
+    activity = ClientActivity(
+        client_id=contract.client_id,
+        user_id=current_user.id,
+        activity_type='Invoice created',
+        note_text=f'Invoice {invoice.invoice_number} for ${invoice.total_due:,.2f}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'Invoice {invoice.invoice_number} created for ${invoice.total_due:,.2f}.', 'success')
+    return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+
+@app.route('/invoices/<int:invoice_id>')
+@require_login
+def view_invoice(invoice_id):
+    invoice = Invoice.query.get_or_404(invoice_id)
+    contract = invoice.contract
+    line_items = invoice.line_items.all()
+    payments = invoice.payments.all()
+    has_stripe = bool(_get_stripe())
+    return render_template('invoice_view.html', invoice=invoice,
+                           contract=contract, line_items=line_items,
+                           payments=payments, has_stripe=has_stripe,
+                           today_str=date.today().strftime('%Y-%m-%d'))
+
+
+@app.route('/invoices/<int:invoice_id>/send', methods=['POST'])
+@require_login
+def send_invoice(invoice_id):
+    invoice = Invoice.query.get_or_404(invoice_id)
+    if invoice.status == 'Draft':
+        invoice.status = 'Sent'
+        invoice.issued_date = date.today()
+        if not invoice.due_date:
+            invoice.due_date = date.today() + timedelta(days=30)
+
+        # Create Stripe payment link if configured
+        stripe = _get_stripe()
+        if stripe and not invoice.stripe_payment_intent_id:
+            try:
+                session = stripe.checkout.Session.create(
+                    mode='payment',
+                    line_items=[{
+                        'price_data': {
+                            'currency': 'usd',
+                            'product_data': {
+                                'name': f'Invoice {invoice.invoice_number}',
+                                'description': f'{invoice.contract.contract_number} — {invoice.contract.client.name}',
+                            },
+                            'unit_amount': int(invoice.balance_due * 100),
+                        },
+                        'quantity': 1,
+                    }],
+                    payment_intent_data={
+                        'metadata': {
+                            'invoice_id': str(invoice.id),
+                            'invoice_number': invoice.invoice_number,
+                        },
+                    },
+                    success_url=url_for('public_invoice', token=invoice.share_token, _external=True) + '?paid=1',
+                    cancel_url=url_for('public_invoice', token=invoice.share_token, _external=True),
+                    metadata={
+                        'invoice_id': str(invoice.id),
+                    },
+                )
+                invoice.stripe_payment_url = session.url
+                invoice.stripe_payment_intent_id = session.payment_intent
+            except Exception as e:
+                current_app.logger.error(f'Stripe session creation failed: {e}')
+
+        activity = ClientActivity(
+            client_id=invoice.client_id,
+            user_id=current_user.id,
+            activity_type='Invoice sent',
+            note_text=f'Invoice {invoice.invoice_number} sent — ${invoice.total_due:,.2f}',
+            activity_date=datetime.now(timezone.utc),
+        )
+        db.session.add(activity)
+        db.session.commit()
+        flash('Invoice marked as sent.', 'success')
+    return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+
+@app.route('/invoices/<int:invoice_id>/void', methods=['POST'])
+@require_login
+def void_invoice(invoice_id):
+    invoice = Invoice.query.get_or_404(invoice_id)
+    if invoice.status not in ('Paid',):
+        # Un-bill any change orders
+        for li in invoice.line_items.filter_by(source_type='change_order').all():
+            if li.change_order_id:
+                co = ChangeOrder.query.get(li.change_order_id)
+                if co:
+                    co.billed = False
+                    co.billed_at = None
+        invoice.status = 'Voided'
+        db.session.commit()
+        flash('Invoice voided.', 'success')
+    return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+
+@app.route('/invoices/<int:invoice_id>/record-payment', methods=['POST'])
+@require_login
+def record_payment(invoice_id):
+    """Manually record a payment (check, wire, cash, etc.)."""
+    invoice = Invoice.query.get_or_404(invoice_id)
+
+    amt_str = request.form.get('amount', '0').strip().replace(',', '').replace('$', '')
+    try:
+        amount = Decimal(amt_str)
+    except (InvalidOperation, ValueError):
+        flash('Invalid amount.', 'error')
+        return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+    if amount <= 0:
+        flash('Amount must be positive.', 'error')
+        return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+    method = request.form.get('method', 'other')
+    if method not in PAYMENT_METHODS:
+        method = 'other'
+
+    received_date = None
+    rd = request.form.get('received_date', '').strip()
+    if rd:
+        try:
+            received_date = datetime.strptime(rd, '%Y-%m-%d').date()
+        except ValueError:
+            received_date = date.today()
+    else:
+        received_date = date.today()
+
+    payment = Payment(
+        invoice_id=invoice.id,
+        client_id=invoice.client_id,
+        amount=amount,
+        method=method,
+        status='succeeded',
+        reference=request.form.get('reference', '').strip() or None,
+        is_deposit=request.form.get('is_deposit') == 'on',
+        received_date=received_date,
+        note=request.form.get('note', '').strip() or None,
+        recorded_by_user_id=current_user.id,
+    )
+    db.session.add(payment)
+
+    invoice.recalculate()
+
+    # Mark draw items as paid if fully billed
+    for li in invoice.line_items.filter_by(source_type='draw').all():
+        if li.draw_item_id and invoice.status == 'Paid':
+            draw = DrawScheduleItem.query.get(li.draw_item_id)
+            if draw and not draw.paid_at:
+                draw.paid_at = datetime.now(timezone.utc)
+                draw.paid_amount = (draw.paid_amount or Decimal('0')) + amount
+
+    activity = ClientActivity(
+        client_id=invoice.client_id,
+        user_id=current_user.id,
+        activity_type='Payment received',
+        note_text=f'${amount:,.2f} {method} payment on Invoice {invoice.invoice_number}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'Payment of ${amount:,.2f} recorded.', 'success')
+    return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+
+# ── Public Invoice + Stripe ──────────────────────────────────────────
+
+@app.route('/inv/<token>')
+def public_invoice(token):
+    """Client-facing invoice view with optional Stripe payment."""
+    invoice = Invoice.query.filter_by(share_token=token).first_or_404()
+    if invoice.status == 'Draft':
+        abort(404)  # Don't show unsent invoices
+    line_items = invoice.line_items.all()
+    contract = invoice.contract
+    paid_success = request.args.get('paid') == '1'
+    return render_template('invoice_public.html', invoice=invoice,
+                           contract=contract, line_items=line_items,
+                           token=token, paid_success=paid_success)
+
+
+@app.route('/stripe/webhook', methods=['POST'])
+@csrf.exempt
+def stripe_webhook():
+    """Handle Stripe webhooks for payment confirmation."""
+    import os
+    stripe = _get_stripe()
+    if not stripe:
+        abort(400)
+
+    payload = request.get_data()
+    sig = request.headers.get('Stripe-Signature')
+    webhook_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+
+    if webhook_secret:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig, webhook_secret)
+        except (ValueError, stripe.error.SignatureVerificationError):
+            abort(400)
+    else:
+        event = stripe.Event.construct_from(
+            request.get_json(), stripe.api_key
+        )
+
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        invoice_id = session.get('metadata', {}).get('invoice_id')
+        if invoice_id:
+            invoice = Invoice.query.get(int(invoice_id))
+            if invoice:
+                payment = Payment(
+                    invoice_id=invoice.id,
+                    client_id=invoice.client_id,
+                    amount=Decimal(str(session['amount_total'] / 100)),
+                    method='stripe',
+                    status='succeeded',
+                    stripe_payment_intent_id=session.get('payment_intent'),
+                    received_date=date.today(),
+                    note='Online payment via Stripe',
+                )
+                db.session.add(payment)
+                invoice.recalculate()
+
+                activity = ClientActivity(
+                    client_id=invoice.client_id,
+                    user_id=invoice.created_by_user_id,
+                    activity_type='Online payment received',
+                    note_text=f'Stripe payment ${payment.amount:,.2f} on Invoice {invoice.invoice_number}',
+                    activity_date=datetime.now(timezone.utc),
+                )
+                db.session.add(activity)
+                db.session.commit()
+
+    elif event['type'] == 'charge.refunded':
+        charge = event['data']['object']
+        pi_id = charge.get('payment_intent')
+        if pi_id:
+            payment = Payment.query.filter_by(stripe_payment_intent_id=pi_id).first()
+            if payment:
+                payment.status = 'refunded'
+                payment.invoice.recalculate()
+                db.session.commit()
+
+    return jsonify(received=True), 200

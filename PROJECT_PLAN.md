@@ -50,6 +50,87 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-11 — Change Orders
+
+**Scope:** Change orders wired into job costing, contract value, and billing. Create from a client with cost breakdown by cost code. Status workflow: Draft → Sent → Approved → Rejected. On approval: additively updates Budget, adjusts project.contract_value and client.final_contract_value. Portal approval with e-signature canvas. Unbilled tracking with filtered list view. Logged to ClientActivity timeline.
+
+**Models (models.py):** Added `ChangeOrder`, `ChangeOrderItem`. Constant: `CHANGE_ORDER_STATUSES`.
+
+**Migration:** `g8a0b1c92d53_add_change_orders.py` — 2 new tables with indexes.
+
+**Routes (routes.py):** CRUD, send, internal approve, reject, mark-billed, public portal (`/co/<token>`), share link. Budget update is additive (adds to existing amounts, not replace).
+
+**Templates:** `change_orders_list.html` (with unbilled filter/banner), `change_order_form.html` (Alpine.js dynamic line items), `change_order_view.html`, `change_order_public.html` (standalone approval with signature canvas).
+
+**Nav:** Added "COs" to desktop nav, "Change Orders" to mobile nav. Quick-access card on client_form.html with unbilled count.
+
+---
+
+### 2026-08-11 — Daily Field Logs
+
+**Scope:** Mobile-first daily log system for field crews. Per-client daily entries with crew, hours, work completed, weather (auto-fetched), delays/issues, captioned photos tagged to cost codes. Offline queue + sync. PDF generation (single day and weekly summary) with shareable links.
+
+**Models (models.py):** Added `DailyLog`, `DailyLogPhoto`. Constants: `WEATHER_CONDITIONS`, `DAILY_LOG_STATUSES`.
+
+**Migration:** `f7c9d3e85a40_add_daily_logs.py` — 2 new tables with indexes + unique constraints.
+
+**Dependencies:** Added `fpdf2>=2.8.1` for PDF generation.
+
+**Routes (routes.py):**
+- CRUD: `/daily-logs`, `/daily-logs/new`, `/daily-logs/<id>/edit`, `/daily-logs/<id>/delete`
+- View: `/daily-logs/<id>` (read-only), `/daily-logs/<id>/finalize` (mark Final)
+- Photos: `/daily-logs/<id>/photos` (upload, multi-file + caption + cost code), `/daily-logs/photos/<id>` (view), `/daily-logs/photos/<id>/delete`
+- Weather: `/api/weather?client_id=&date=` — geocodes client address via Nominatim, fetches from Open-Meteo (free, no API key)
+- Offline: `/api/daily-logs/sync` (POST JSON array with client_uuid dedup)
+- PDF: `/daily-logs/<id>/pdf` (single), `/daily-logs/weekly-pdf?client_id=&week_of=` (weekly summary)
+- Share: `/daily-logs/<id>/share` (HMAC token), `/dl/<id>/<token>` (public PDF, no auth)
+
+**Templates:** `daily_log_form.html` (mobile-first create/edit with photo uploader, weather auto-fetch, offline queue), `daily_logs_list.html` (filterable list with offline queue banner), `daily_log_view.html` (read-only with photo grid).
+
+**Nav:** Added "Logs" link (desktop + mobile). Added "Daily Logs" quick-access card on client edit page with "+ Log" shortcut.
+
+**Key Features:**
+- Weather auto-fetch via Open-Meteo (free) + Nominatim geocoding — no API keys needed
+- Photos: multi-upload with drag-and-drop, per-photo caption and optional cost code tag, camera capture on mobile
+- Offline: localStorage queue with client_uuid dedup, auto-sync on reconnect, offline banner
+- PDF: fpdf2-generated reports with embedded photos, client info, all log sections
+- ClientActivity integration: each log creates a "Daily Log" activity entry in the client timeline
+- Shareable PDF links via HMAC token (no auth required)
+- Draft/Final workflow for log finalization
+
+---
+
+### 2026-08-11 — Project Scheduling
+
+**Scope:** Per-client project scheduling with phases, tasks, dependencies, assignees (crew + subs), Gantt chart, calendar view, list view, and a mobile "My Tasks" (today/this week) view. In-app notifications with per-user preference controls.
+
+**Models (models.py):** Added `SchedulePhase`, `ScheduleTask`, `TaskDependency`, `TaskAssignment`, `Notification`, `NotificationPreference`. Constants: `TASK_STATUSES`, `TASK_PRIORITIES`.
+
+**Migration:** `e6b8c2d74f39_add_scheduling.py` — 6 new tables with indexes.
+
+**Routes (routes.py):**
+- Schedule: `/schedule/<project_id>` (Gantt/list/calendar views)
+- Phases: `/schedule/<project_id>/phases` (add/rename/delete)
+- Tasks: `/schedule/<project_id>/tasks/create`, `.../edit`, `.../status` (AJAX), `.../delete`
+- My Tasks: `/my-tasks` — mobile "today/this week/overdue" view
+- Notifications: `/api/notifications` (JSON), `/api/notifications/mark-read` (POST), `/settings/notifications` (preferences)
+- Context processor injects `unread_notif_count` into all templates
+
+**Templates:** `schedule.html` (3-view schedule), `schedule_task_form.html` (create/edit task), `my_tasks.html` (mobile task view), `notification_settings.html`.
+
+**Nav:** Added "Tasks" link (desktop + mobile). Added notification bell with dropdown (Alpine.js). Added "Notifications" to profile dropdown. Added "Schedule" quick-access card on client edit page.
+
+**Features:**
+- Tasks link to cost codes for job costing integration
+- Dependencies are Finish-to-Start with visual arrows on Gantt
+- Canvas-based Gantt with today line, weekend shading, dependency arrows
+- Calendar view with month navigation and task bars
+- Inline status change via dropdown (AJAX on list view, form submit on mobile)
+- Notifications respect per-user preferences (task_assigned, task_changed, task_reminder)
+- Assignees can be crew (User) or named subcontractors (free text)
+
+---
+
 ### 2026-07-22 — Resurrect Time Tracking & Payroll
 
 **Scope:** Brought back clock in/out, manual time entry, My Logs, and payroll — all removed in Phase A (commit `218e3ab`). No PDF/CSV exports restored (intentionally dead). Old data unrecoverable (Neon PITR window passed); tables recreated empty.

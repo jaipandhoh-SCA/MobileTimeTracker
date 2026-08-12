@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice {{ invoice.invoice_number }} - All Inclusive ADU</title>
+    <script src="https://cdn.tailwindcss.com/4"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        @media print { .no-print { display: none !important; } }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    {# Header #}
+    <div class="bg-white border-b border-gray-200 py-4 px-6 no-print">
+        <div class="max-w-3xl mx-auto flex items-center justify-between">
+            <div>
+                <h1 class="text-lg font-bold text-gray-900">All Inclusive ADU</h1>
+                <p class="text-sm text-gray-500">Invoice</p>
+            </div>
+            {% if invoice.status == 'Paid' %}
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-emerald-50 text-emerald-700">Paid</span>
+            {% elif invoice.status == 'Voided' %}
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-50 text-red-700">Voided</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="max-w-3xl mx-auto px-6 py-8">
+
+        {% if paid_success %}
+        <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 mb-6 text-center no-print">
+            <p class="text-emerald-800 font-semibold text-lg">Payment Received!</p>
+            <p class="text-emerald-600 text-sm mt-1">Thank you for your payment. You'll receive a confirmation shortly.</p>
+        </div>
+        {% endif %}
+
+        {# Invoice content #}
+        <div class="bg-white rounded-2xl shadow-lg p-8 mb-8">
+            {# Header info #}
+            <div class="flex justify-between mb-8">
+                <div>
+                    <h2 class="text-2xl font-bold text-gray-900">Invoice</h2>
+                    <p class="text-gray-500 text-sm mt-1">#{{ invoice.invoice_number }}</p>
+                </div>
+                <div class="text-right text-sm text-gray-600">
+                    {% if invoice.issued_date %}<p>Issued: {{ invoice.issued_date.strftime('%B %d, %Y') }}</p>{% endif %}
+                    {% if invoice.due_date %}<p class="{% if invoice.is_overdue %}text-red-600 font-semibold{% endif %}">Due: {{ invoice.due_date.strftime('%B %d, %Y') }}{% if invoice.is_overdue %} (Overdue){% endif %}</p>{% endif %}
+                </div>
+            </div>
+
+            {# Bill to #}
+            <div class="mb-8">
+                <p class="text-xs text-gray-400 uppercase tracking-wider mb-1">Bill To</p>
+                <p class="font-semibold text-gray-900">{{ contract.client.name }}</p>
+                {% if contract.client.address %}<p class="text-sm text-gray-600">{{ contract.client.address }}</p>{% endif %}
+                <p class="text-sm text-gray-500 mt-1">Contract: {{ contract.contract_number }}</p>
+            </div>
+
+            {# Line items #}
+            <table class="min-w-full divide-y divide-gray-200 mb-6">
+                <thead>
+                    <tr>
+                        <th class="py-2 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+                        <th class="py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for li in line_items %}
+                    <tr>
+                        <td class="py-3 text-sm text-gray-700">
+                            {{ li.description }}
+                            {% if li.pct_complete %}<span class="text-gray-400 ml-1">({{ li.pct_complete }}% complete)</span>{% endif %}
+                        </td>
+                        <td class="py-3 text-sm text-right font-medium text-gray-900">${{ "{:,.2f}".format(li.amount|float) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            {# Totals #}
+            <div class="border-t-2 border-gray-900 pt-4 space-y-2">
+                <div class="flex justify-between text-sm">
+                    <span class="text-gray-600">Subtotal</span>
+                    <span class="font-medium text-gray-900">${{ "{:,.2f}".format(invoice.subtotal|float) }}</span>
+                </div>
+                {% if invoice.retainage_amount > 0 %}
+                <div class="flex justify-between text-sm">
+                    <span class="text-gray-600">Retainage ({{ invoice.retainage_pct }}%)</span>
+                    <span class="text-gray-600">-${{ "{:,.2f}".format(invoice.retainage_amount|float) }}</span>
+                </div>
+                {% endif %}
+                {% if invoice.amount_paid > 0 %}
+                <div class="flex justify-between text-sm">
+                    <span class="text-gray-600">Payments Received</span>
+                    <span class="text-emerald-600">-${{ "{:,.2f}".format(invoice.amount_paid|float) }}</span>
+                </div>
+                {% endif %}
+                <div class="flex justify-between text-xl pt-2 border-t border-gray-200">
+                    <span class="font-bold text-gray-900">Balance Due</span>
+                    <span class="font-bold text-gray-900">${{ "{:,.2f}".format(invoice.balance_due|float) }}</span>
+                </div>
+            </div>
+
+            {% if invoice.notes %}
+            <div class="mt-8 pt-6 border-t border-gray-200">
+                <p class="text-xs text-gray-400 uppercase tracking-wider mb-1">Notes</p>
+                <p class="text-sm text-gray-600 whitespace-pre-wrap">{{ invoice.notes }}</p>
+            </div>
+            {% endif %}
+        </div>
+
+        {# Pay button #}
+        {% if invoice.balance_due > 0 and invoice.status not in ('Paid', 'Voided') %}
+        <div class="no-print">
+            {% if invoice.stripe_payment_url %}
+            <a href="{{ invoice.stripe_payment_url }}"
+               class="block w-full text-center px-6 py-4 bg-[#635BFF] text-white rounded-2xl text-base font-semibold hover:bg-[#5046e4] transition-colors shadow-lg">
+                Pay ${{ "{:,.2f}".format(invoice.balance_due|float) }} Online
+            </a>
+            <p class="text-center text-xs text-gray-400 mt-3">Secure payment powered by Stripe. Cards and ACH accepted.</p>
+            {% else %}
+            <div class="bg-white rounded-2xl shadow-lg p-6 text-center">
+                <p class="text-gray-700 font-medium">Payment of ${{ "{:,.2f}".format(invoice.balance_due|float) }} is due{% if invoice.due_date %} by {{ invoice.due_date.strftime('%B %d, %Y') }}{% endif %}.</p>
+                <p class="text-gray-500 text-sm mt-1">Please contact us for payment arrangements.</p>
+            </div>
+            {% endif %}
+        </div>
+        {% elif invoice.status == 'Paid' %}
+        <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center">
+            <p class="text-emerald-800 font-semibold text-lg">Paid in Full</p>
+            <p class="text-emerald-600 text-sm mt-1">Thank you for your payment.</p>
+        </div>
+        {% endif %}
+
+        <div class="text-center text-xs text-gray-400 mt-8 no-print">
+            <button onclick="window.print()" class="text-gray-500 hover:text-gray-700 underline">Print this invoice</button>
+        </div>
+    </div>
+</body>
+</html>

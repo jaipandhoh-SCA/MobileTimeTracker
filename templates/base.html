@@ -110,6 +110,21 @@
                                   {{ 'bg-pill text-txt-primary' if current_endpoint in ['estimates_list', 'create_estimate', 'edit_estimate', 'view_estimate'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
                             Estimates
                         </a>
+                        <a href="{{ url_for('my_tasks') }}"
+                           class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
+                                  {{ 'bg-pill text-txt-primary' if current_endpoint in ['my_tasks', 'project_schedule', 'create_task', 'edit_task'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
+                            Tasks
+                        </a>
+                        <a href="{{ url_for('daily_logs_list') }}"
+                           class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
+                                  {{ 'bg-pill text-txt-primary' if current_endpoint in ['daily_logs_list', 'create_daily_log', 'edit_daily_log', 'view_daily_log'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
+                            Logs
+                        </a>
+                        <a href="{{ url_for('change_orders_list') }}"
+                           class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
+                                  {{ 'bg-pill text-txt-primary' if current_endpoint in ['change_orders_list', 'create_change_order', 'edit_change_order', 'view_change_order'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
+                            COs
+                        </a>
                         <a href="{{ url_for('channel_spend') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
                                   {{ 'bg-pill text-txt-primary' if current_endpoint in ['channel_spend', 'roi_report'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
@@ -206,8 +221,41 @@
                     </div>
                 </div>
 
-                <!-- Right: Profile -->
+                <!-- Right: Notification bell + Profile -->
                 <div class="flex items-center gap-3">
+                    <!-- Notification bell -->
+                    <div class="relative" x-data="notifBell()">
+                        <button @click="toggle()" class="relative p-2 rounded-lg text-txt-muted hover:text-txt-primary hover:bg-pill transition-colors duration-150 touch-target" aria-label="Notifications">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>
+                            <span x-show="count > 0" x-cloak
+                                  class="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-neg text-white text-[10px] font-bold px-1"
+                                  x-text="count > 9 ? '9+' : count"></span>
+                        </button>
+                        <div x-show="open" x-cloak @click.away="open = false"
+                             x-transition:enter="transition ease-out duration-150"
+                             x-transition:enter-start="opacity-0 scale-95 -translate-y-1"
+                             x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+                             class="absolute right-0 mt-2 w-80 bg-white rounded-2xl shadow-card overflow-hidden z-50 max-h-96 overflow-y-auto">
+                            <div class="flex items-center justify-between px-4 py-3 border-b border-hairline">
+                                <span class="text-sm font-semibold text-txt-primary">Notifications</span>
+                                <button @click="markAllRead()" x-show="count > 0" class="text-xs text-txt-secondary hover:text-txt-primary hover:underline">Mark all read</button>
+                            </div>
+                            <template x-if="items.length === 0">
+                                <div class="px-4 py-8 text-center text-sm text-txt-muted">No new notifications</div>
+                            </template>
+                            <template x-for="n in items" :key="n.id">
+                                <a :href="n.link || '#'" @click="markRead(n.id)"
+                                   class="block px-4 py-3 hover:bg-pill border-b border-hairline transition-colors duration-150">
+                                    <div class="text-sm font-medium text-txt-primary" x-text="n.title"></div>
+                                    <div class="text-xs text-txt-muted mt-0.5" x-text="n.message"></div>
+                                </a>
+                            </template>
+                            <a href="{{ url_for('notification_settings') }}" class="block px-4 py-2.5 text-center text-xs text-txt-secondary hover:text-txt-primary hover:bg-pill border-t border-hairline">
+                                Notification Settings
+                            </a>
+                        </div>
+                    </div>
+
                     <!-- Profile dropdown -->
                     <div class="relative">
                         <button @click="profileOpen = !profileOpen"
@@ -254,6 +302,10 @@
                                 <a href="{{ url_for('edit_profile') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-txt-secondary hover:bg-pill transition-colors duration-150">
                                     <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
                                     Edit Profile
+                                </a>
+                                <a href="{{ url_for('notification_settings') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-txt-secondary hover:bg-pill transition-colors duration-150">
+                                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>
+                                    Notifications
                                 </a>
                                 {% if current_user.is_supervisor %}
                                 <a href="{{ url_for('admin_dashboard') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm text-txt-secondary hover:bg-pill transition-colors duration-150">
@@ -342,6 +394,21 @@
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
                           {{ 'bg-pill text-txt-primary' if current_endpoint in ['estimates_list', 'create_estimate', 'edit_estimate', 'view_estimate'] else 'text-txt-muted hover:bg-pill' }}">
                     Estimates
+                </a>
+                <a href="{{ url_for('my_tasks') }}"
+                   class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
+                          {{ 'bg-pill text-txt-primary' if current_endpoint in ['my_tasks', 'project_schedule', 'create_task', 'edit_task'] else 'text-txt-muted hover:bg-pill' }}">
+                    Tasks
+                </a>
+                <a href="{{ url_for('daily_logs_list') }}"
+                   class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
+                          {{ 'bg-pill text-txt-primary' if current_endpoint in ['daily_logs_list', 'create_daily_log', 'edit_daily_log', 'view_daily_log'] else 'text-txt-muted hover:bg-pill' }}">
+                    Logs
+                </a>
+                <a href="{{ url_for('change_orders_list') }}"
+                   class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
+                          {{ 'bg-pill text-txt-primary' if current_endpoint in ['change_orders_list', 'create_change_order', 'edit_change_order', 'view_change_order'] else 'text-txt-muted hover:bg-pill' }}">
+                    Change Orders
                 </a>
                 <a href="{{ url_for('channel_spend') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
@@ -479,6 +546,42 @@
             if (input) input.focus();
         }
     });
+
+    // --- Notification bell ---
+    function notifBell() {
+        return {
+            open: false,
+            count: {{ unread_notif_count|default(0) }},
+            items: [],
+            toggle() {
+                this.open = !this.open;
+                if (this.open) this.fetchNotifs();
+            },
+            fetchNotifs() {
+                fetch('{{ url_for("api_notifications") }}')
+                    .then(r => r.json())
+                    .then(data => { this.items = data.items; this.count = data.count; })
+                    .catch(() => {});
+            },
+            markRead(id) {
+                fetch('{{ url_for("mark_notifications_read") }}', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
+                    body: JSON.stringify({ ids: [id] }),
+                }).then(() => {
+                    this.items = this.items.filter(n => n.id !== id);
+                    this.count = Math.max(0, this.count - 1);
+                });
+            },
+            markAllRead() {
+                fetch('{{ url_for("mark_notifications_read") }}', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
+                    body: JSON.stringify({ ids: [] }),
+                }).then(() => { this.items = []; this.count = 0; });
+            }
+        };
+    }
 
     // --- Count-up animation utility ---
     function animateCountUp(element, target, duration) {

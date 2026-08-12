@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, stat_card, page_header %}
+
+{% block title %}Billing - {{ contract.contract_number }}{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto">
+
+    {{ page_header("Billing",
+        subtitle=contract.client.name ~ " &middot; " ~ contract.contract_number,
+        back_text="&larr; Contract", back_href=url_for('view_contract', contract_id=contract.id)) }}
+
+    {# Summary cards #}
+    <div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
+        {{ stat_card("Original Contract", "${:,.0f}".format(contract.total_price|float)) }}
+        {{ stat_card("Change Orders", "${:,.0f}".format(co_total|float)) }}
+        {{ stat_card("Adjusted Total", "${:,.0f}".format(adjusted_contract|float)) }}
+        {{ stat_card("Invoiced", "${:,.0f}".format(total_invoiced|float)) }}
+        <div class="{% if total_paid < total_invoiced %}bg-amber-50 border border-amber-200{% else %}bg-emerald-50 border border-emerald-200{% endif %} rounded-2xl p-4">
+            <p class="text-xs font-medium {% if total_paid < total_invoiced %}text-amber-600{% else %}text-emerald-600{% endif %}">Collected</p>
+            <p class="text-2xl font-bold {% if total_paid < total_invoiced %}text-amber-700{% else %}text-emerald-700{% endif %} mt-1">${{ "{:,.0f}".format(total_paid|float) }}</p>
+        </div>
+    </div>
+
+    {# Actions #}
+    <div class="flex flex-wrap gap-3 mb-6">
+        {{ btn("Create Invoice", href=url_for('create_invoice', contract_id=contract.id), variant="primary", size="sm") }}
+    </div>
+
+    {# Draw Schedule Progress #}
+    <div class="bg-white shadow-card rounded-2xl overflow-hidden mb-6">
+        <div class="px-6 py-3 bg-pill border-b border-hairline">
+            <h3 class="text-sm font-semibold text-txt-primary">Draw Schedule Progress</h3>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-hairline">
+                <thead class="bg-white">
+                    <tr>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">Milestone</th>
+                        <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Scheduled</th>
+                        <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Invoiced</th>
+                        <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Remaining</th>
+                        <th class="px-4 py-2 text-center text-xs font-medium text-txt-muted uppercase">Status</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-hairline">
+                    {% for draw in draws %}
+                    {% set billed = draw_invoiced.get(draw.id, 0) %}
+                    {% set remaining = (draw.amount|float) - (billed|float) %}
+                    <tr class="hover:bg-pill">
+                        <td class="px-4 py-2 text-sm font-medium text-txt-primary">{{ draw.milestone }}</td>
+                        <td class="px-4 py-2 text-sm text-right text-txt-secondary">${{ "{:,.2f}".format(draw.amount|float) }} <span class="text-txt-muted">({{ draw.pct_of_total }}%)</span></td>
+                        <td class="px-4 py-2 text-sm text-right text-txt-primary font-medium">${{ "{:,.2f}".format(billed|float) }}</td>
+                        <td class="px-4 py-2 text-sm text-right {% if remaining > 0 %}text-amber-600{% else %}text-emerald-600{% endif %}">
+                            ${{ "{:,.2f}".format(remaining) }}
+                        </td>
+                        <td class="px-4 py-2 text-center">
+                            {% if draw.paid_at %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700">Paid</span>
+                            {% elif billed > 0 %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">Billed</span>
+                            {% else %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-txt-muted">Pending</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {# Unbilled Change Orders #}
+    {% if unbilled_cos %}
+    <div class="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-6">
+        <h3 class="text-sm font-semibold text-amber-800 mb-2">Unbilled Approved Change Orders</h3>
+        <div class="space-y-1">
+            {% for co in unbilled_cos %}
+            <div class="flex justify-between text-sm">
+                <span class="text-amber-700">CO #{{ co.co_number }}: {{ co.title }}</span>
+                <span class="font-medium text-amber-900">${{ "{:,.2f}".format(co.price_to_client|float) }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        <p class="text-xs text-amber-600 mt-2">These will be available to include on the next invoice.</p>
+    </div>
+    {% endif %}
+
+    {# Invoice History #}
+    <div class="bg-white shadow-card rounded-2xl overflow-hidden mb-6">
+        <div class="px-6 py-3 bg-pill border-b border-hairline">
+            <h3 class="text-sm font-semibold text-txt-primary">Invoices</h3>
+        </div>
+        {% if invoices %}
+        <div class="divide-y divide-hairline">
+            {% for inv in invoices %}
+            <a href="{{ url_for('view_invoice', invoice_id=inv.id) }}" class="px-6 py-3 flex items-center gap-4 hover:bg-pill transition-colors block">
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium text-txt-primary">{{ inv.invoice_number }}</p>
+                    <p class="text-xs text-txt-muted">
+                        {{ inv.issued_date.strftime('%m/%d/%Y') if inv.issued_date else 'Draft' }}
+                        {% if inv.due_date %} &middot; Due {{ inv.due_date.strftime('%m/%d/%Y') }}{% endif %}
+                    </p>
+                </div>
+                <div class="text-right">
+                    <p class="text-sm font-medium text-txt-primary">${{ "{:,.2f}".format(inv.total_due|float) }}</p>
+                    {% if inv.status == 'Paid' %}
+                    <span class="text-xs text-emerald-600 font-medium">Paid</span>
+                    {% elif inv.status == 'Partial' %}
+                    <span class="text-xs text-amber-600 font-medium">Partial — ${{ "{:,.2f}".format(inv.balance_due|float) }} due</span>
+                    {% elif inv.status == 'Voided' %}
+                    <span class="text-xs text-red-600 font-medium">Voided</span>
+                    {% elif inv.is_overdue %}
+                    <span class="text-xs text-red-600 font-bold">OVERDUE</span>
+                    {% elif inv.status == 'Sent' %}
+                    <span class="text-xs text-blue-600 font-medium">Sent</span>
+                    {% else %}
+                    <span class="text-xs text-txt-muted">{{ inv.status }}</span>
+                    {% endif %}
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="px-6 py-8 text-center text-txt-muted text-sm">No invoices yet.</div>
+        {% endif %}
+    </div>
+
+    {# Retainage summary #}
+    {% if total_retainage > 0 %}
+    <div class="bg-white shadow-card rounded-2xl p-6 mb-6">
+        <h3 class="text-sm font-semibold text-txt-primary mb-2">Retainage Held</h3>
+        <p class="text-2xl font-bold text-txt-primary">${{ "{:,.2f}".format(total_retainage|float) }}</p>
+        <p class="text-xs text-txt-muted mt-1">{{ contract.retainage_pct }}% retainage on invoiced amounts</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

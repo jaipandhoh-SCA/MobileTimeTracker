@@ -153,6 +153,7 @@ ADU_TYPES = ['Studio', '1BR', '2BR', 'Detached', 'Garage Conversion']
 ESTIMATE_STATUSES = ['Draft', 'Sent', 'Accepted', 'Rejected', 'Expired']
 PROPOSAL_STATUSES = ['Draft', 'Sent', 'Viewed', 'Accepted', 'Rejected', 'Expired']
 CONTRACT_STATUSES = ['Draft', 'Sent', 'Signed', 'Executed', 'Voided']
+CHANGE_ORDER_STATUSES = ['Draft', 'Sent', 'Approved', 'Rejected']
 
 
 class Project(db.Model):
@@ -556,6 +557,7 @@ class Contract(db.Model):
     scope_text = db.Column(db.Text, nullable=True)
     terms_text = db.Column(db.Text, nullable=True)
     total_price = db.Column(db.Numeric(12, 2), nullable=False)
+    retainage_pct = db.Column(db.Numeric(5, 2), nullable=False, default=0)
     # Signature
     signed_at = db.Column(db.DateTime, nullable=True)
     signed_ip = db.Column(db.String(45), nullable=True)
@@ -757,6 +759,256 @@ class AuthorizedUser(db.Model):
         return f'<AuthorizedUser {self.email}>'
 
 
+WEATHER_CONDITIONS = [
+    'Clear', 'Partly Cloudy', 'Cloudy', 'Rain', 'Heavy Rain',
+    'Wind', 'Fog', 'Hot', 'Cold', 'Snow',
+]
+
+DAILY_LOG_STATUSES = ['Draft', 'Final']
+
+
+class DailyLog(db.Model):
+    """Field daily log: one per client per date."""
+    __tablename__ = 'daily_logs'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=True)
+    log_date = db.Column(db.Date, nullable=False)
+    status = db.Column(db.String(10), nullable=False, default='Draft')
+    # Crew on site
+    crew_count = db.Column(db.Integer, nullable=True)
+    crew_names = db.Column(db.Text, nullable=True)  # comma-separated or free text
+    # Hours
+    hours_regular = db.Column(db.Numeric(5, 2), nullable=True, default=0)
+    hours_overtime = db.Column(db.Numeric(5, 2), nullable=True, default=0)
+    # Work performed
+    work_completed = db.Column(db.Text, nullable=True)
+    # Weather
+    weather_condition = db.Column(db.String(30), nullable=True)
+    weather_temp_f = db.Column(db.Integer, nullable=True)
+    weather_notes = db.Column(db.String(300), nullable=True)
+    # Delays / issues
+    delays = db.Column(db.Text, nullable=True)
+    safety_incidents = db.Column(db.Text, nullable=True)
+    # Visitors / inspections
+    visitors = db.Column(db.Text, nullable=True)
+    # Materials delivered
+    materials_delivered = db.Column(db.Text, nullable=True)
+    # Meta
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+    # Offline sync
+    client_uuid = db.Column(db.String(36), nullable=True, unique=True)
+
+    client = db.relationship('Client', backref=db.backref(
+        'daily_logs', lazy='dynamic', order_by='DailyLog.log_date.desc()'))
+    project = db.relationship('Project')
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+    photos = db.relationship('DailyLogPhoto', backref='daily_log',
+                             cascade='all, delete-orphan',
+                             order_by='DailyLogPhoto.sort_order')
+
+    __table_args__ = (
+        UniqueConstraint('client_id', 'log_date', 'created_by_user_id',
+                         name='uq_daily_log_client_date_user'),
+        Index('idx_daily_log_client', 'client_id', 'log_date'),
+        Index('idx_daily_log_date', 'log_date'),
+    )
+
+    @property
+    def total_hours(self):
+        return (self.hours_regular or 0) + (self.hours_overtime or 0)
+
+    @property
+    def photo_count(self):
+        return len(self.photos)
+
+    def __repr__(self):
+        return f'<DailyLog {self.id} - {self.log_date}>'
+
+
+class DailyLogPhoto(db.Model):
+    """Photo attached to a daily log, stored in R2."""
+    __tablename__ = 'daily_log_photos'
+    id = db.Column(db.Integer, primary_key=True)
+    daily_log_id = db.Column(db.Integer, db.ForeignKey('daily_logs.id'), nullable=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=True)
+    storage_key = db.Column(db.String(500), nullable=False)
+    file_name = db.Column(db.String(255), nullable=False)
+    caption = db.Column(db.String(500), nullable=True)
+    sort_order = db.Column(db.Integer, default=0)
+    uploaded_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    client = db.relationship('Client')
+    cost_code = db.relationship('CostCode')
+    uploaded_by = db.relationship('User', foreign_keys=[uploaded_by_user_id])
+
+    __table_args__ = (
+        Index('idx_dlp_log', 'daily_log_id'),
+        Index('idx_dlp_client', 'client_id'),
+    )
+
+    def __repr__(self):
+        return f'<DailyLogPhoto {self.id} - {self.file_name}>'
+
+
+TASK_STATUSES = ['Not Started', 'In Progress', 'Complete', 'Blocked']
+TASK_PRIORITIES = ['Low', 'Medium', 'High']
+
+
+class SchedulePhase(db.Model):
+    """A phase/stage within a project schedule (e.g. Foundation, Framing)."""
+    __tablename__ = 'schedule_phases'
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    name = db.Column(db.String(200), nullable=False)
+    sort_order = db.Column(db.Integer, default=0)
+    color = db.Column(db.String(7), default='#6366f1')
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    project = db.relationship('Project', backref=db.backref(
+        'phases', lazy='dynamic', cascade='all, delete-orphan',
+        order_by='SchedulePhase.sort_order'))
+    tasks = db.relationship('ScheduleTask', backref='phase',
+                            cascade='all, delete-orphan',
+                            order_by='ScheduleTask.sort_order')
+
+    __table_args__ = (
+        Index('idx_phase_project', 'project_id'),
+    )
+
+    def __repr__(self):
+        return f'<SchedulePhase {self.id} - {self.name}>'
+
+
+class ScheduleTask(db.Model):
+    """A schedulable task within a project, optionally grouped into a phase."""
+    __tablename__ = 'schedule_tasks'
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    phase_id = db.Column(db.Integer, db.ForeignKey('schedule_phases.id'), nullable=True)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=True)
+    name = db.Column(db.String(300), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    start_date = db.Column(db.Date, nullable=True)
+    end_date = db.Column(db.Date, nullable=True)
+    status = db.Column(db.String(20), nullable=False, default='Not Started')
+    priority = db.Column(db.String(10), nullable=False, default='Medium')
+    sort_order = db.Column(db.Integer, default=0)
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    project = db.relationship('Project', backref=db.backref(
+        'tasks', lazy='dynamic', order_by='ScheduleTask.sort_order'))
+    cost_code = db.relationship('CostCode')
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+    assignments = db.relationship('TaskAssignment', backref='task',
+                                  cascade='all, delete-orphan')
+    predecessors = db.relationship('TaskDependency',
+                                   foreign_keys='TaskDependency.task_id',
+                                   backref='task', cascade='all, delete-orphan')
+
+    __table_args__ = (
+        Index('idx_task_project', 'project_id'),
+        Index('idx_task_phase', 'phase_id'),
+        Index('idx_task_dates', 'start_date', 'end_date'),
+        Index('idx_task_status', 'status'),
+    )
+
+    @property
+    def duration_days(self):
+        if self.start_date and self.end_date:
+            return (self.end_date - self.start_date).days + 1
+        return None
+
+    @property
+    def is_overdue(self):
+        if self.end_date and self.status not in ('Complete',):
+            return self.end_date < date.today()
+        return False
+
+    @property
+    def assignee_names(self):
+        names = []
+        for a in self.assignments:
+            if a.user:
+                names.append(a.user.display_name)
+            elif a.sub_name:
+                names.append(a.sub_name)
+        return names
+
+    def __repr__(self):
+        return f'<ScheduleTask {self.id} - {self.name}>'
+
+
+class TaskDependency(db.Model):
+    """Finish-to-Start (or other) dependency between two tasks."""
+    __tablename__ = 'task_dependencies'
+    id = db.Column(db.Integer, primary_key=True)
+    task_id = db.Column(db.Integer, db.ForeignKey('schedule_tasks.id'), nullable=False)
+    depends_on_id = db.Column(db.Integer, db.ForeignKey('schedule_tasks.id'), nullable=False)
+    dependency_type = db.Column(db.String(5), nullable=False, default='FS')
+
+    depends_on = db.relationship('ScheduleTask', foreign_keys=[depends_on_id])
+
+    __table_args__ = (
+        UniqueConstraint('task_id', 'depends_on_id', name='uq_task_dep'),
+    )
+
+
+class TaskAssignment(db.Model):
+    """Assigns a user or named subcontractor to a task."""
+    __tablename__ = 'task_assignments'
+    id = db.Column(db.Integer, primary_key=True)
+    task_id = db.Column(db.Integer, db.ForeignKey('schedule_tasks.id'), nullable=False)
+    user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=True)
+    sub_name = db.Column(db.String(200), nullable=True)
+    role = db.Column(db.String(50), nullable=True)
+
+    user = db.relationship('User', foreign_keys=[user_id])
+
+    __table_args__ = (
+        Index('idx_assignment_user', 'user_id'),
+    )
+
+
+class Notification(db.Model):
+    """In-app notification delivered to a user."""
+    __tablename__ = 'notifications'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    type = db.Column(db.String(50), nullable=False)
+    title = db.Column(db.String(300), nullable=False)
+    message = db.Column(db.Text, nullable=True)
+    link = db.Column(db.String(500), nullable=True)
+    is_read = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    user = db.relationship('User', backref=db.backref(
+        'notifications', lazy='dynamic',
+        order_by='Notification.created_at.desc()'))
+
+    __table_args__ = (
+        Index('idx_notif_user_read', 'user_id', 'is_read'),
+    )
+
+
+class NotificationPreference(db.Model):
+    """Per-user notification opt-in/out flags."""
+    __tablename__ = 'notification_preferences'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False, unique=True)
+    task_assigned = db.Column(db.Boolean, default=True, nullable=False)
+    task_changed = db.Column(db.Boolean, default=True, nullable=False)
+    task_reminder = db.Column(db.Boolean, default=True, nullable=False)
+
+    user = db.relationship('User', backref=db.backref('notification_prefs', uselist=False))
+
+
 DOCUMENT_FOLDERS = [
     ('plans', 'Plans & Drawings'),
     ('permits', 'Permits'),
@@ -901,6 +1153,199 @@ class Permit(db.Model):
         if self.submitted_date and self.status in ('Submitted', 'In Review'):
             return (date.today() - self.submitted_date).days
         return None
+
+
+class ChangeOrder(db.Model):
+    """Change order for a client's project, wired into job costing."""
+    __tablename__ = 'change_orders'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    co_number = db.Column(db.String(20), nullable=False)
+    title = db.Column(db.String(300), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(20), nullable=False, default='Draft')
+    price_to_client = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    # Portal / signature
+    share_token = db.Column(db.String(64), unique=True, nullable=True)
+    approved_at = db.Column(db.DateTime, nullable=True)
+    approved_ip = db.Column(db.String(45), nullable=True)
+    approved_name = db.Column(db.String(200), nullable=True)
+    approved_email = db.Column(db.String(200), nullable=True)
+    signature_data = db.Column(db.Text, nullable=True)
+    # Billing
+    billed = db.Column(db.Boolean, default=False, nullable=False)
+    billed_at = db.Column(db.DateTime, nullable=True)
+    # Meta
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('change_orders', lazy='dynamic'))
+    project = db.relationship('Project', backref=db.backref('change_orders', lazy='dynamic'))
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+    items = db.relationship('ChangeOrderItem', backref='change_order',
+                            lazy='dynamic', cascade='all, delete-orphan',
+                            order_by='ChangeOrderItem.sort_order')
+
+    __table_args__ = (
+        Index('idx_co_client', 'client_id'),
+        Index('idx_co_project', 'project_id'),
+        Index('idx_co_token', 'share_token'),
+        Index('idx_co_billed', 'billed'),
+    )
+
+    @property
+    def item_total(self):
+        result = db.session.query(func.sum(ChangeOrderItem.amount)).filter(
+            ChangeOrderItem.change_order_id == self.id
+        ).scalar()
+        return result or Decimal('0')
+
+
+class ChangeOrderItem(db.Model):
+    """Cost breakdown line item on a change order."""
+    __tablename__ = 'change_order_items'
+    id = db.Column(db.Integer, primary_key=True)
+    change_order_id = db.Column(db.Integer, db.ForeignKey('change_orders.id'), nullable=False)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=True)
+    cost_type = db.Column(db.String(20), nullable=False, default='Other')
+    description = db.Column(db.String(500), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    cost_code = db.relationship('CostCode')
+
+    __table_args__ = (
+        Index('idx_coi_co', 'change_order_id'),
+    )
+
+
+INVOICE_STATUSES = ['Draft', 'Sent', 'Viewed', 'Paid', 'Partial', 'Overdue', 'Voided']
+
+PAYMENT_METHODS = ['stripe', 'check', 'wire', 'cash', 'other']
+
+
+class Invoice(db.Model):
+    """Residential draw invoice billed against contract milestones."""
+    __tablename__ = 'invoices'
+    id = db.Column(db.Integer, primary_key=True)
+    contract_id = db.Column(db.Integer, db.ForeignKey('contracts.id'), nullable=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    invoice_number = db.Column(db.String(50), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='Draft')
+    share_token = db.Column(db.String(64), unique=True, nullable=False)
+    # Amounts
+    subtotal = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    retainage_pct = db.Column(db.Numeric(5, 2), nullable=False, default=0)
+    retainage_amount = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    total_due = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    amount_paid = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    balance_due = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    # Dates
+    issued_date = db.Column(db.Date, nullable=True)
+    due_date = db.Column(db.Date, nullable=True)
+    # Notes
+    notes = db.Column(db.Text, nullable=True)
+    # Stripe
+    stripe_payment_intent_id = db.Column(db.String(200), nullable=True)
+    stripe_payment_url = db.Column(db.String(500), nullable=True)
+    # Meta
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    contract = db.relationship('Contract', backref=db.backref('invoices', lazy='dynamic',
+                               order_by='Invoice.created_at.desc()'))
+    client = db.relationship('Client', backref=db.backref('invoices', lazy='dynamic'))
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+    line_items = db.relationship('InvoiceLineItem', backref='invoice',
+                                 lazy='dynamic', cascade='all, delete-orphan',
+                                 order_by='InvoiceLineItem.sort_order')
+    payments = db.relationship('Payment', backref='invoice',
+                                lazy='dynamic', cascade='all, delete-orphan',
+                                order_by='Payment.created_at.desc()')
+
+    __table_args__ = (
+        Index('idx_inv_contract', 'contract_id'),
+        Index('idx_inv_client', 'client_id'),
+        Index('idx_inv_token', 'share_token'),
+        Index('idx_inv_status', 'status'),
+    )
+
+    def recalculate(self):
+        """Recalculate totals from line items and payments."""
+        sub = sum((li.amount for li in self.line_items.all()), Decimal('0'))
+        self.subtotal = sub
+        ret = (sub * self.retainage_pct / 100).quantize(Decimal('0.01')) if self.retainage_pct else Decimal('0')
+        self.retainage_amount = ret
+        self.total_due = sub - ret
+        paid = sum((p.amount for p in self.payments.filter_by(status='succeeded').all()), Decimal('0'))
+        self.amount_paid = paid
+        self.balance_due = self.total_due - paid
+        if self.balance_due <= 0 and paid > 0:
+            self.status = 'Paid'
+        elif paid > 0 and self.balance_due > 0:
+            self.status = 'Partial'
+
+    @property
+    def is_overdue(self):
+        if self.due_date and self.status in ('Sent', 'Viewed', 'Partial'):
+            return self.due_date < date.today()
+        return False
+
+
+class InvoiceLineItem(db.Model):
+    """Line on an invoice — either a draw schedule milestone or a change order."""
+    __tablename__ = 'invoice_line_items'
+    id = db.Column(db.Integer, primary_key=True)
+    invoice_id = db.Column(db.Integer, db.ForeignKey('invoices.id'), nullable=False)
+    # Source: draw or change_order
+    source_type = db.Column(db.String(20), nullable=False, default='draw')
+    draw_item_id = db.Column(db.Integer, db.ForeignKey('draw_schedule_items.id'), nullable=True)
+    change_order_id = db.Column(db.Integer, db.ForeignKey('change_orders.id'), nullable=True)
+    description = db.Column(db.String(500), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    pct_complete = db.Column(db.Numeric(5, 2), nullable=True)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    draw_item = db.relationship('DrawScheduleItem')
+    change_order = db.relationship('ChangeOrder')
+
+    __table_args__ = (
+        Index('idx_ili_invoice', 'invoice_id'),
+    )
+
+
+class Payment(db.Model):
+    """Payment against an invoice."""
+    __tablename__ = 'payments'
+    id = db.Column(db.Integer, primary_key=True)
+    invoice_id = db.Column(db.Integer, db.ForeignKey('invoices.id'), nullable=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    method = db.Column(db.String(20), nullable=False, default='other')
+    status = db.Column(db.String(20), nullable=False, default='succeeded')  # succeeded, pending, failed, refunded
+    reference = db.Column(db.String(200), nullable=True)  # check #, wire ref, etc.
+    # Stripe
+    stripe_payment_intent_id = db.Column(db.String(200), nullable=True)
+    stripe_charge_id = db.Column(db.String(200), nullable=True)
+    # Deposit tracking
+    is_deposit = db.Column(db.Boolean, default=False)
+    # Meta
+    received_date = db.Column(db.Date, nullable=True)
+    note = db.Column(db.String(500), nullable=True)
+    recorded_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('payments_received', lazy='dynamic'))
+    recorded_by = db.relationship('User', foreign_keys=[recorded_by_user_id])
+
+    __table_args__ = (
+        Index('idx_pmt_invoice', 'invoice_id'),
+        Index('idx_pmt_client', 'client_id'),
+        Index('idx_pmt_stripe', 'stripe_payment_intent_id'),
+    )
 
 
 class AppSetting(db.Model):
