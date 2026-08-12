@@ -9,7 +9,7 @@ from sqlalchemy.orm import joinedload
 
 from collections import defaultdict
 
-from app import app, db
+from app import app, db, csrf
 from models import (
     User, Client, TimeEntry, ActiveClock, ClientActivity, PropertyImage,
     LeadSource, ClientStatusChange, ChannelSpend, AppSetting,
@@ -22,6 +22,7 @@ from models import (
     SchedulePhase, ScheduleTask, TaskDependency, TaskAssignment,
     Notification, NotificationPreference, TASK_STATUSES, TASK_PRIORITIES,
     DailyLog, DailyLogPhoto, WEATHER_CONDITIONS, DAILY_LOG_STATUSES,
+    ChangeOrder, ChangeOrderItem, CHANGE_ORDER_STATUSES,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -586,7 +587,10 @@ def home():
         if cid not in overdue_by_client:
             overdue_by_client[cid] = activity
     for cid, activity in overdue_by_client.items():
-        days_overdue = (now - activity.next_step_date).days
+        step_date = activity.next_step_date
+        if step_date.tzinfo is None:
+            step_date = step_date.replace(tzinfo=timezone.utc)
+        days_overdue = (now - step_date).days
         attention_items.append({
             'client': activity.client,
             'issue_type': 'overdue_step',
@@ -5837,3 +5841,361 @@ def public_daily_log(log_id, token):
     return Response(pdf_bytes, mimetype='application/pdf',
                     headers={'Content-Disposition':
                              f'inline; filename="daily-log-{log.log_date.isoformat()}.pdf"'})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CHANGE ORDERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/change-orders')
+@require_login
+def change_orders_list():
+    """List change orders, optionally filtered."""
+    filter_client_id = request.args.get('client_id', type=int)
+    filter_status = request.args.get('status', '')
+    show_unbilled = request.args.get('unbilled', '') == '1'
+
+    q = ChangeOrder.query.options(
+        joinedload(ChangeOrder.client),
+        joinedload(ChangeOrder.project),
+    )
+    if filter_client_id:
+        q = q.filter(ChangeOrder.client_id == filter_client_id)
+    if filter_status:
+        q = q.filter(ChangeOrder.status == filter_status)
+    if show_unbilled:
+        q = q.filter(ChangeOrder.status == 'Approved', ChangeOrder.billed.is_(False))
+
+    cos = q.order_by(ChangeOrder.created_at.desc()).limit(200).all()
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+
+    return render_template('change_orders_list.html',
+                           change_orders=cos, clients=clients,
+                           filter_client_id=filter_client_id,
+                           filter_status=filter_status,
+                           show_unbilled=show_unbilled,
+                           statuses=CHANGE_ORDER_STATUSES)
+
+
+@app.route('/change-orders/new', methods=['GET', 'POST'])
+@app.route('/change-orders/new/<int:client_id>', methods=['GET', 'POST'])
+@require_login
+def create_change_order(client_id=None):
+    if request.method == 'POST':
+        return _save_change_order(None)
+
+    client = Client.query.get(client_id) if client_id else None
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+
+    # Generate next CO number for selected client
+    next_number = _next_co_number(client_id) if client_id else 'CO-001'
+
+    return render_template('change_order_form.html',
+                           co=None, client=client, clients=clients,
+                           cost_codes=cost_codes, cost_types=COST_TYPES,
+                           next_number=next_number)
+
+
+@app.route('/change-orders/<int:co_id>', methods=['GET'])
+@require_login
+def view_change_order(co_id):
+    co = ChangeOrder.query.get_or_404(co_id)
+    return render_template('change_order_view.html', co=co)
+
+
+@app.route('/change-orders/<int:co_id>/edit', methods=['GET', 'POST'])
+@require_login
+def edit_change_order(co_id):
+    co = ChangeOrder.query.get_or_404(co_id)
+    if request.method == 'POST':
+        return _save_change_order(co)
+
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+    return render_template('change_order_form.html',
+                           co=co, client=co.client, clients=clients,
+                           cost_codes=cost_codes, cost_types=COST_TYPES,
+                           next_number=co.co_number)
+
+
+def _next_co_number(client_id):
+    """Generate next CO number for a client: CO-001, CO-002, etc."""
+    count = ChangeOrder.query.filter_by(client_id=client_id).count()
+    return f'CO-{count + 1:03d}'
+
+
+def _save_change_order(co):
+    """Create or update a change order from form POST."""
+    client_id = request.form.get('client_id', type=int)
+    if not client_id:
+        flash('Client is required.', 'error')
+        return redirect(request.url)
+
+    client = Client.query.get_or_404(client_id)
+    project = client.default_project()
+
+    title = request.form.get('title', '').strip()
+    if not title:
+        flash('Title is required.', 'error')
+        return redirect(request.url)
+
+    is_new = co is None
+    if is_new:
+        co = ChangeOrder(
+            client_id=client_id,
+            project_id=project.id,
+            co_number=request.form.get('co_number', _next_co_number(client_id)).strip(),
+            created_by_user_id=current_user.id,
+        )
+        db.session.add(co)
+
+    co.title = title
+    co.description = request.form.get('description', '').strip() or None
+
+    try:
+        co.price_to_client = Decimal(request.form.get('price_to_client', '0'))
+    except (InvalidOperation, ValueError):
+        co.price_to_client = Decimal('0')
+
+    # Handle line items
+    if not is_new:
+        ChangeOrderItem.query.filter_by(change_order_id=co.id).delete()
+        db.session.flush()
+
+    descriptions = request.form.getlist('item_description')
+    amounts = request.form.getlist('item_amount')
+    cost_code_ids = request.form.getlist('item_cost_code_id')
+    cost_types = request.form.getlist('item_cost_type')
+
+    for i, desc in enumerate(descriptions):
+        desc = desc.strip()
+        if not desc:
+            continue
+        try:
+            amt = Decimal(amounts[i]) if i < len(amounts) else Decimal('0')
+        except (InvalidOperation, ValueError):
+            amt = Decimal('0')
+        cc_id = int(cost_code_ids[i]) if i < len(cost_code_ids) and cost_code_ids[i] else None
+        ct = cost_types[i] if i < len(cost_types) and cost_types[i] else 'Other'
+
+        item = ChangeOrderItem(
+            change_order_id=co.id if co.id else None,
+            cost_code_id=cc_id,
+            cost_type=ct,
+            description=desc,
+            amount=amt,
+            sort_order=i,
+        )
+        if co.id:
+            item.change_order_id = co.id
+            db.session.add(item)
+        else:
+            co.items.append(item)
+
+    db.session.commit()
+
+    if is_new:
+        activity = ClientActivity(
+            client_id=client_id,
+            user_id=current_user.id,
+            activity_type='Change Order Created',
+            note_text=f'{co.co_number}: {co.title} — ${co.price_to_client:,.2f}',
+            activity_date=datetime.now(timezone.utc),
+        )
+        db.session.add(activity)
+        db.session.commit()
+
+    flash(f'Change order {co.co_number} {"created" if is_new else "updated"}.', 'success')
+    return redirect(url_for('view_change_order', co_id=co.id))
+
+
+@app.route('/change-orders/<int:co_id>/send', methods=['POST'])
+@require_login
+def send_change_order(co_id):
+    """Mark CO as Sent and generate share token."""
+    co = ChangeOrder.query.get_or_404(co_id)
+    if co.status not in ('Draft',):
+        flash('Only draft change orders can be sent.', 'error')
+        return redirect(url_for('view_change_order', co_id=co.id))
+
+    co.status = 'Sent'
+    if not co.share_token:
+        co.share_token = _generate_token()
+
+    activity = ClientActivity(
+        client_id=co.client_id,
+        user_id=current_user.id,
+        activity_type='Change Order Sent',
+        note_text=f'{co.co_number}: {co.title}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'Change order {co.co_number} sent. Share link generated.', 'success')
+    return redirect(url_for('view_change_order', co_id=co.id))
+
+
+@app.route('/change-orders/<int:co_id>/approve-internal', methods=['POST'])
+@require_login
+def approve_change_order_internal(co_id):
+    """Internal approval (supervisor approves on behalf of client)."""
+    co = ChangeOrder.query.get_or_404(co_id)
+    if co.status not in ('Draft', 'Sent'):
+        flash('This change order cannot be approved.', 'error')
+        return redirect(url_for('view_change_order', co_id=co.id))
+
+    _apply_change_order_approval(co, approved_name=current_user.display_name,
+                                  approved_ip=request.remote_addr)
+
+    flash(f'Change order {co.co_number} approved. Budget and contract value updated.', 'success')
+    return redirect(url_for('view_change_order', co_id=co.id))
+
+
+@app.route('/change-orders/<int:co_id>/reject', methods=['POST'])
+@require_login
+def reject_change_order(co_id):
+    co = ChangeOrder.query.get_or_404(co_id)
+    co.status = 'Rejected'
+
+    activity = ClientActivity(
+        client_id=co.client_id,
+        user_id=current_user.id,
+        activity_type='Change Order Rejected',
+        note_text=f'{co.co_number}: {co.title}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'Change order {co.co_number} rejected.', 'info')
+    return redirect(url_for('view_change_order', co_id=co.id))
+
+
+@app.route('/change-orders/<int:co_id>/mark-billed', methods=['POST'])
+@require_login
+def mark_change_order_billed(co_id):
+    co = ChangeOrder.query.get_or_404(co_id)
+    if co.status != 'Approved':
+        flash('Only approved change orders can be billed.', 'error')
+        return redirect(url_for('view_change_order', co_id=co.id))
+
+    co.billed = True
+    co.billed_at = datetime.now(timezone.utc)
+
+    activity = ClientActivity(
+        client_id=co.client_id,
+        user_id=current_user.id,
+        activity_type='Change Order Billed',
+        note_text=f'{co.co_number}: ${co.price_to_client:,.2f}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'Change order {co.co_number} marked as billed.', 'success')
+    return redirect(url_for('view_change_order', co_id=co.id))
+
+
+def _apply_change_order_approval(co, approved_name=None, approved_email=None,
+                                  approved_ip=None, signature_data=None):
+    """Apply approval: update budget, contract value, log activity."""
+    now = datetime.now(timezone.utc)
+    co.status = 'Approved'
+    co.approved_at = now
+    co.approved_name = approved_name
+    co.approved_email = approved_email
+    co.approved_ip = approved_ip
+    if signature_data:
+        co.signature_data = signature_data
+
+    project = co.project
+    client = co.client
+
+    # Add CO items to budget (additive — add to existing amounts)
+    for item in co.items.all():
+        if not item.cost_code_id:
+            continue
+        existing = Budget.query.filter_by(
+            project_id=project.id,
+            cost_code_id=item.cost_code_id,
+            cost_type=item.cost_type,
+        ).first()
+        if existing:
+            existing.amount += item.amount
+            existing.notes = (existing.notes or '') + f' +CO#{co.co_number}'
+        else:
+            db.session.add(Budget(
+                project_id=project.id,
+                cost_code_id=item.cost_code_id,
+                cost_type=item.cost_type,
+                amount=item.amount,
+                notes=f'From CO#{co.co_number}',
+            ))
+
+    # Adjust contract values
+    if project.contract_value:
+        project.contract_value += co.price_to_client
+    else:
+        project.contract_value = co.price_to_client
+
+    if client.final_contract_value:
+        client.final_contract_value += co.price_to_client
+    else:
+        client.final_contract_value = co.price_to_client
+
+    # Log activity
+    activity = ClientActivity(
+        client_id=co.client_id,
+        user_id=co.created_by_user_id,
+        activity_type='Change Order Approved',
+        note_text=f'{co.co_number}: {co.title} — ${co.price_to_client:,.2f} '
+                  f'(approved by {approved_name or "internal"})',
+        activity_date=now,
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+
+# ── Public Change Order Portal ──────────────────────────────────────────────
+
+@app.route('/co/<token>', methods=['GET', 'POST'])
+@csrf.exempt
+def public_change_order(token):
+    """Public approval page for a change order."""
+    co = ChangeOrder.query.filter_by(share_token=token).first_or_404()
+
+    if request.method == 'POST' and co.status == 'Sent':
+        signed_name = request.form.get('name', '').strip()
+        signed_email = request.form.get('email', '').strip()
+        sig_data = request.form.get('signature_data', '').strip()
+
+        if not signed_name:
+            flash('Name is required to approve.', 'error')
+            return redirect(url_for('public_change_order', token=token))
+
+        _apply_change_order_approval(
+            co,
+            approved_name=signed_name,
+            approved_email=signed_email,
+            approved_ip=request.remote_addr,
+            signature_data=sig_data or None,
+        )
+
+        flash('Change order approved! Thank you.', 'success')
+        return redirect(url_for('public_change_order', token=token))
+
+    return render_template('change_order_public.html', co=co)
+
+
+@app.route('/change-orders/<int:co_id>/share-link')
+@require_login
+def change_order_share_link(co_id):
+    """Get or generate the share link for a change order."""
+    co = ChangeOrder.query.get_or_404(co_id)
+    if not co.share_token:
+        co.share_token = _generate_token()
+        db.session.commit()
+    url = url_for('public_change_order', token=co.share_token, _external=True)
+    return jsonify(ok=True, url=url)

@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, input, select, textarea, card, page_header, form_actions %}
+
+{% block title %}{{ 'Edit' if co else 'New' }} Change Order{% endblock %}
+
+{% block content %}
+{{ page_header(
+    "Edit Change Order" if co else "New Change Order",
+    back_text="Change Orders",
+    back_href=url_for('change_orders_list')
+) }}
+
+<form method="POST" x-data="coForm()" class="space-y-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+    {# ── Header ───────────────────────────────────────────────────── #}
+    {% call card(title="Details") %}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+            <label class="block text-xs font-medium text-txt-secondary mb-1">Client *</label>
+            <select name="client_id" required
+                    class="w-full p-2 text-sm border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary">
+                <option value="">-- Select Client --</option>
+                {% for c in clients %}
+                <option value="{{ c.id }}" {% if (co and co.client_id == c.id) or (client and client.id == c.id) %}selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        {{ input("co_number", label="CO #", value=co.co_number if co else next_number, required=true) }}
+        {{ input("title", label="Title", value=co.title if co else '', required=true) }}
+        {{ input("price_to_client", label="Price to Client ($)", type="number",
+                 value=co.price_to_client if co else '', attrs='step="0.01" min="0" x-model="priceToClient"') }}
+    </div>
+    {{ textarea("description", label="Description", value=co.description if co else '', rows=3) }}
+    {% endcall %}
+
+    {# ── Line Items ───────────────────────────────────────────────── #}
+    {% call card(title="Cost Breakdown") %}
+    <div class="space-y-3" id="items-container">
+        <template x-for="(item, idx) in items" :key="idx">
+            <div class="flex flex-wrap gap-2 items-start p-3 bg-gray-50 rounded-xl">
+                <div class="flex-1 min-w-[200px]">
+                    <label class="block text-xs font-medium text-txt-secondary mb-1">Description</label>
+                    <input type="text" :name="'item_description'" x-model="item.description"
+                           class="w-full p-2 text-sm border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary"
+                           placeholder="Line item description" required>
+                </div>
+                <div class="w-28">
+                    <label class="block text-xs font-medium text-txt-secondary mb-1">Amount ($)</label>
+                    <input type="number" :name="'item_amount'" x-model="item.amount" step="0.01"
+                           class="w-full p-2 text-sm border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary"
+                           @input="recalcTotal()">
+                </div>
+                <div class="w-36">
+                    <label class="block text-xs font-medium text-txt-secondary mb-1">Cost Code</label>
+                    <select :name="'item_cost_code_id'" x-model="item.cost_code_id"
+                            class="w-full p-2 text-sm border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary">
+                        <option value="">—</option>
+                        {% for cc in cost_codes %}
+                        <option value="{{ cc.id }}">{{ cc.code }} {{ cc.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="w-32">
+                    <label class="block text-xs font-medium text-txt-secondary mb-1">Cost Type</label>
+                    <select :name="'item_cost_type'" x-model="item.cost_type"
+                            class="w-full p-2 text-sm border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary">
+                        {% for ct in cost_types %}
+                        <option value="{{ ct }}">{{ ct }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="flex items-end">
+                    <button type="button" @click="removeItem(idx)"
+                            class="p-2 text-neg hover:bg-neg/10 rounded-lg transition-colors touch-target">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <div class="flex items-center justify-between mt-3">
+        <button type="button" @click="addItem()"
+                class="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium bg-pill text-txt-secondary hover:bg-gray-200 transition-colors touch-target">
+            + Add Item
+        </button>
+        <div class="text-sm font-semibold text-txt-primary">
+            Items Total: $<span x-text="itemsTotal.toFixed(2)">0.00</span>
+        </div>
+    </div>
+    {% endcall %}
+
+    {{ form_actions(submit_text="Save Change Order", cancel_href=url_for('change_orders_list')) }}
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function coForm() {
+    return {
+        priceToClient: {{ (co.price_to_client or 0)|string }},
+        items: [
+            {% if co %}
+            {% for item in co.items.all() %}
+            { description: {{ item.description|tojson }}, amount: {{ item.amount|string }}, cost_code_id: '{{ item.cost_code_id or "" }}', cost_type: '{{ item.cost_type }}' },
+            {% endfor %}
+            {% endif %}
+        ],
+        itemsTotal: 0,
+
+        init() {
+            if (this.items.length === 0) this.addItem();
+            this.recalcTotal();
+        },
+
+        addItem() {
+            this.items.push({ description: '', amount: 0, cost_code_id: '', cost_type: 'Other' });
+        },
+
+        removeItem(idx) {
+            this.items.splice(idx, 1);
+            this.recalcTotal();
+        },
+
+        recalcTotal() {
+            this.itemsTotal = this.items.reduce((s, i) => s + (parseFloat(i.amount) || 0), 0);
+        }
+    };
+}
+</script>
+{% endblock %}

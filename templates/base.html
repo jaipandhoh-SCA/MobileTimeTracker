@@ -120,6 +120,11 @@
                                   {{ 'bg-pill text-txt-primary' if current_endpoint in ['daily_logs_list', 'create_daily_log', 'edit_daily_log', 'view_daily_log'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
                             Logs
                         </a>
+                        <a href="{{ url_for('change_orders_list') }}"
+                           class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
+                                  {{ 'bg-pill text-txt-primary' if current_endpoint in ['change_orders_list', 'create_change_order', 'edit_change_order', 'view_change_order'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
+                            COs
+                        </a>
                         <a href="{{ url_for('channel_spend') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
                                   {{ 'bg-pill text-txt-primary' if current_endpoint in ['channel_spend', 'roi_report'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
@@ -399,6 +404,11 @@
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
                           {{ 'bg-pill text-txt-primary' if current_endpoint in ['daily_logs_list', 'create_daily_log', 'edit_daily_log', 'view_daily_log'] else 'text-txt-muted hover:bg-pill' }}">
                     Logs
+                </a>
+                <a href="{{ url_for('change_orders_list') }}"
+                   class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150
+                          {{ 'bg-pill text-txt-primary' if current_endpoint in ['change_orders_list', 'create_change_order', 'edit_change_order', 'view_change_order'] else 'text-txt-muted hover:bg-pill' }}">
+                    Change Orders
                 </a>
                 <a href="{{ url_for('channel_spend') }}"
                    class="block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150

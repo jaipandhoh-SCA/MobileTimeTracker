@@ -153,6 +153,7 @@ ADU_TYPES = ['Studio', '1BR', '2BR', 'Detached', 'Garage Conversion']
 ESTIMATE_STATUSES = ['Draft', 'Sent', 'Accepted', 'Rejected', 'Expired']
 PROPOSAL_STATUSES = ['Draft', 'Sent', 'Viewed', 'Accepted', 'Rejected', 'Expired']
 CONTRACT_STATUSES = ['Draft', 'Sent', 'Signed', 'Executed', 'Voided']
+CHANGE_ORDER_STATUSES = ['Draft', 'Sent', 'Approved', 'Rejected']
 
 
 class Project(db.Model):
@@ -1151,6 +1152,72 @@ class Permit(db.Model):
         if self.submitted_date and self.status in ('Submitted', 'In Review'):
             return (date.today() - self.submitted_date).days
         return None
+
+
+class ChangeOrder(db.Model):
+    """Change order for a client's project, wired into job costing."""
+    __tablename__ = 'change_orders'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    co_number = db.Column(db.String(20), nullable=False)
+    title = db.Column(db.String(300), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(20), nullable=False, default='Draft')
+    price_to_client = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    # Portal / signature
+    share_token = db.Column(db.String(64), unique=True, nullable=True)
+    approved_at = db.Column(db.DateTime, nullable=True)
+    approved_ip = db.Column(db.String(45), nullable=True)
+    approved_name = db.Column(db.String(200), nullable=True)
+    approved_email = db.Column(db.String(200), nullable=True)
+    signature_data = db.Column(db.Text, nullable=True)
+    # Billing
+    billed = db.Column(db.Boolean, default=False, nullable=False)
+    billed_at = db.Column(db.DateTime, nullable=True)
+    # Meta
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('change_orders', lazy='dynamic'))
+    project = db.relationship('Project', backref=db.backref('change_orders', lazy='dynamic'))
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+    items = db.relationship('ChangeOrderItem', backref='change_order',
+                            lazy='dynamic', cascade='all, delete-orphan',
+                            order_by='ChangeOrderItem.sort_order')
+
+    __table_args__ = (
+        Index('idx_co_client', 'client_id'),
+        Index('idx_co_project', 'project_id'),
+        Index('idx_co_token', 'share_token'),
+        Index('idx_co_billed', 'billed'),
+    )
+
+    @property
+    def item_total(self):
+        result = db.session.query(func.sum(ChangeOrderItem.amount)).filter(
+            ChangeOrderItem.change_order_id == self.id
+        ).scalar()
+        return result or Decimal('0')
+
+
+class ChangeOrderItem(db.Model):
+    """Cost breakdown line item on a change order."""
+    __tablename__ = 'change_order_items'
+    id = db.Column(db.Integer, primary_key=True)
+    change_order_id = db.Column(db.Integer, db.ForeignKey('change_orders.id'), nullable=False)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=True)
+    cost_type = db.Column(db.String(20), nullable=False, default='Other')
+    description = db.Column(db.String(500), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    cost_code = db.relationship('CostCode')
+
+    __table_args__ = (
+        Index('idx_coi_co', 'change_order_id'),
+    )
 
 
 class AppSetting(db.Model):

@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, select, empty_state, page_header, filter_bar, status_badge %}
+
+{% block title %}Change Orders{% endblock %}
+
+{% block content %}
+{{ page_header("Change Orders", subtitle="Track scope changes",
+               cta_text="+ New CO", cta_href=url_for('create_change_order')) }}
+
+{# ── Filters ─────────────────────────────────────────────────── #}
+{% call filter_bar() %}
+    <div>
+        <label class="block text-xs font-medium text-txt-secondary mb-1">Client</label>
+        <select name="client_id" class="w-full p-2 text-sm border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary">
+            <option value="">All Clients</option>
+            {% for c in clients %}
+            <option value="{{ c.id }}" {% if filter_client_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div>
+        <label class="block text-xs font-medium text-txt-secondary mb-1">Status</label>
+        <select name="status" class="w-full p-2 text-sm border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary">
+            <option value="">All Statuses</option>
+            {% for s in statuses %}
+            <option value="{{ s }}" {% if filter_status == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <label class="flex items-end gap-2 cursor-pointer">
+        <input type="checkbox" name="unbilled" value="1" {% if show_unbilled %}checked{% endif %}
+               class="rounded border-hairline text-txt-primary focus:ring-txt-primary/20 mt-6">
+        <span class="text-xs text-txt-secondary pb-1">Unbilled only</span>
+    </label>
+    <div class="flex items-end">
+        {{ btn("Filter", type="submit", size="sm") }}
+    </div>
+{% endcall %}
+
+{# ── Unbilled summary ────────────────────────────────────────── #}
+{% set unbilled_cos = [] %}
+{% for co in change_orders %}{% if co.status == 'Approved' and not co.billed %}{% if unbilled_cos.append(co) %}{% endif %}{% endif %}{% endfor %}
+{% if unbilled_cos and not show_unbilled %}
+<div class="mb-4 bg-amber-50 border border-amber-200 rounded-2xl p-3 flex items-center justify-between">
+    <div class="flex items-center gap-2">
+        <svg class="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        <span class="text-sm font-medium text-amber-800">{{ unbilled_cos|length }} unbilled approved CO{{ 's' if unbilled_cos|length != 1 }}</span>
+    </div>
+    {{ btn("Show Unbilled", href=url_for('change_orders_list', unbilled='1'), variant="secondary", size="sm") }}
+</div>
+{% endif %}
+
+{# ── List ─────────────────────────────────────────────────────── #}
+{% if change_orders %}
+<div class="space-y-3">
+    {% for co in change_orders %}
+    <a href="{{ url_for('view_change_order', co_id=co.id) }}"
+       class="block bg-white shadow-card rounded-2xl p-4 hover:shadow-md transition-shadow duration-150">
+        <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 mb-1">
+                    <span class="text-xs font-mono text-txt-muted">{{ co.co_number }}</span>
+                    <h3 class="text-sm font-semibold text-txt-primary truncate">{{ co.title }}</h3>
+                    {% if co.status == 'Approved' %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-pos/10 text-pos">Approved</span>
+                    {% elif co.status == 'Sent' %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-100 text-blue-700">Sent</span>
+                    {% elif co.status == 'Rejected' %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-neg/10 text-neg">Rejected</span>
+                    {% else %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-pill text-txt-muted">Draft</span>
+                    {% endif %}
+                    {% if co.status == 'Approved' and not co.billed %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700">Unbilled</span>
+                    {% endif %}
+                </div>
+                <div class="text-xs text-txt-muted space-y-0.5">
+                    <div class="flex items-center gap-3">
+                        <span>{{ co.client.name }}</span>
+                        <span class="font-semibold">${{ '{:,.2f}'.format(co.price_to_client) }}</span>
+                        <span>{{ co.created_at.strftime('%m/%d/%Y') if co.created_at }}</span>
+                    </div>
+                </div>
+            </div>
+            <svg class="w-4 h-4 text-txt-muted flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+{{ empty_state("No change orders found.", icon="folder",
+               cta_text="Create your first CO", cta_href=url_for('create_change_order')) }}
+{% endif %}
+{% endblock %}

@@ -50,6 +50,22 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-11 — Change Orders
+
+**Scope:** Change orders wired into job costing, contract value, and billing. Create from a client with cost breakdown by cost code. Status workflow: Draft → Sent → Approved → Rejected. On approval: additively updates Budget, adjusts project.contract_value and client.final_contract_value. Portal approval with e-signature canvas. Unbilled tracking with filtered list view. Logged to ClientActivity timeline.
+
+**Models (models.py):** Added `ChangeOrder`, `ChangeOrderItem`. Constant: `CHANGE_ORDER_STATUSES`.
+
+**Migration:** `g8a0b1c92d53_add_change_orders.py` — 2 new tables with indexes.
+
+**Routes (routes.py):** CRUD, send, internal approve, reject, mark-billed, public portal (`/co/<token>`), share link. Budget update is additive (adds to existing amounts, not replace).
+
+**Templates:** `change_orders_list.html` (with unbilled filter/banner), `change_order_form.html` (Alpine.js dynamic line items), `change_order_view.html`, `change_order_public.html` (standalone approval with signature canvas).
+
+**Nav:** Added "COs" to desktop nav, "Change Orders" to mobile nav. Quick-access card on client_form.html with unbilled count.
+
+---
+
 ### 2026-08-11 — Daily Field Logs
 
 **Scope:** Mobile-first daily log system for field crews. Per-client daily entries with crew, hours, work completed, weather (auto-fetched), delays/issues, captioned photos tagged to cost codes. Offline queue + sync. PDF generation (single day and weekly summary) with shareable links.
