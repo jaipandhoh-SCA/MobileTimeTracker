@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import input, textarea, btn, card, form_actions %}
+
+{% block title %}New Invoice - {{ contract.contract_number }}{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto">
+    {% call card(title="Create Invoice — " ~ contract.contract_number) %}
+        <div class="bg-pill rounded-xl p-4 mb-6 text-sm">
+            <p class="font-semibold text-txt-primary">{{ contract.client.name }}</p>
+            <p class="text-txt-secondary">Contract ${{ "{:,.2f}".format(contract.total_price|float) }}</p>
+        </div>
+
+        <form method="POST" class="space-y-6">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {{ input("invoice_number", label="Invoice #", value=invoice_number, required=true) }}
+                <div>
+                    <label class="block text-sm font-semibold text-txt-secondary mb-1">Due Date</label>
+                    <input type="date" name="due_date" class="w-full px-3 py-2 border border-hairline rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20 touch-target">
+                </div>
+                {{ input("retainage_pct", label="Retainage %", value=retainage_pct|string, placeholder="0") }}
+            </div>
+
+            {# Draw schedule lines #}
+            <div>
+                <label class="block text-sm font-semibold text-txt-secondary mb-2">Draw Schedule — Select What to Bill</label>
+                <div class="border border-hairline rounded-xl overflow-hidden">
+                    <table class="min-w-full divide-y divide-hairline">
+                        <thead class="bg-pill">
+                            <tr>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-txt-muted uppercase">Milestone</th>
+                                <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Scheduled</th>
+                                <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">Previously Billed</th>
+                                <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">This Invoice</th>
+                                <th class="px-4 py-2 text-right text-xs font-medium text-txt-muted uppercase">% Complete</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-hairline">
+                            {% for draw in draws %}
+                            {% set billed = draw_billed.get(draw.id, 0) %}
+                            {% set remaining = (draw.amount|float) - (billed|float) %}
+                            <tr class="hover:bg-pill">
+                                <td class="px-4 py-2 text-sm text-txt-primary font-medium">{{ draw.milestone }}</td>
+                                <td class="px-4 py-2 text-sm text-right text-txt-secondary">${{ "{:,.2f}".format(draw.amount|float) }}</td>
+                                <td class="px-4 py-2 text-sm text-right text-txt-muted">${{ "{:,.2f}".format(billed|float) }}</td>
+                                <td class="px-4 py-2 text-right">
+                                    <input type="text" name="draw_{{ draw.id }}_amount"
+                                           value="{% if remaining > 0 %}0{% else %}0{% endif %}"
+                                           placeholder="{{ '{:,.2f}'.format(remaining) }}"
+                                           class="w-28 px-2 py-1 border border-hairline rounded-lg text-sm text-right focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                                </td>
+                                <td class="px-4 py-2 text-right">
+                                    <input type="text" name="draw_{{ draw.id }}_pct" placeholder="%"
+                                           class="w-16 px-2 py-1 border border-hairline rounded-lg text-sm text-right focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <p class="text-xs text-txt-muted mt-2">Enter the dollar amount to bill for each milestone on this invoice. Leave at 0 to skip.</p>
+            </div>
+
+            {# Unbilled change orders #}
+            {% if unbilled_cos %}
+            <div>
+                <label class="block text-sm font-semibold text-txt-secondary mb-2">Approved Change Orders — Include on Invoice</label>
+                <div class="space-y-2">
+                    {% for co in unbilled_cos %}
+                    <label class="flex items-center gap-3 p-3 border border-hairline rounded-xl hover:bg-pill cursor-pointer">
+                        <input type="checkbox" name="co_ids" value="{{ co.id }}" class="w-4 h-4 rounded border-hairline text-txt-primary focus:ring-txt-primary/20">
+                        <div class="flex-1">
+                            <p class="text-sm font-medium text-txt-primary">CO #{{ co.co_number }}: {{ co.title }}</p>
+                            <p class="text-xs text-txt-muted">Approved {{ co.approved_at|format_date if co.approved_at else 'N/A' }}</p>
+                        </div>
+                        <span class="text-sm font-medium text-txt-primary">${{ "{:,.2f}".format(co.price_to_client|float) }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {{ textarea("notes", label="Notes (shown on invoice)", rows=3, placeholder="Payment terms, instructions, etc.") }}
+
+            {{ form_actions(cancel_href=url_for('contract_billing', contract_id=contract.id), submit_text="Create Invoice") }}
+        </form>
+    {% endcall %}
+</div>
+{% endblock %}

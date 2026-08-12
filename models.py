@@ -557,6 +557,7 @@ class Contract(db.Model):
     scope_text = db.Column(db.Text, nullable=True)
     terms_text = db.Column(db.Text, nullable=True)
     total_price = db.Column(db.Numeric(12, 2), nullable=False)
+    retainage_pct = db.Column(db.Numeric(5, 2), nullable=False, default=0)
     # Signature
     signed_at = db.Column(db.DateTime, nullable=True)
     signed_ip = db.Column(db.String(45), nullable=True)
@@ -1217,6 +1218,133 @@ class ChangeOrderItem(db.Model):
 
     __table_args__ = (
         Index('idx_coi_co', 'change_order_id'),
+    )
+
+
+INVOICE_STATUSES = ['Draft', 'Sent', 'Viewed', 'Paid', 'Partial', 'Overdue', 'Voided']
+
+PAYMENT_METHODS = ['stripe', 'check', 'wire', 'cash', 'other']
+
+
+class Invoice(db.Model):
+    """Residential draw invoice billed against contract milestones."""
+    __tablename__ = 'invoices'
+    id = db.Column(db.Integer, primary_key=True)
+    contract_id = db.Column(db.Integer, db.ForeignKey('contracts.id'), nullable=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    invoice_number = db.Column(db.String(50), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='Draft')
+    share_token = db.Column(db.String(64), unique=True, nullable=False)
+    # Amounts
+    subtotal = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    retainage_pct = db.Column(db.Numeric(5, 2), nullable=False, default=0)
+    retainage_amount = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    total_due = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    amount_paid = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    balance_due = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    # Dates
+    issued_date = db.Column(db.Date, nullable=True)
+    due_date = db.Column(db.Date, nullable=True)
+    # Notes
+    notes = db.Column(db.Text, nullable=True)
+    # Stripe
+    stripe_payment_intent_id = db.Column(db.String(200), nullable=True)
+    stripe_payment_url = db.Column(db.String(500), nullable=True)
+    # Meta
+    created_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+    contract = db.relationship('Contract', backref=db.backref('invoices', lazy='dynamic',
+                               order_by='Invoice.created_at.desc()'))
+    client = db.relationship('Client', backref=db.backref('invoices', lazy='dynamic'))
+    created_by = db.relationship('User', foreign_keys=[created_by_user_id])
+    line_items = db.relationship('InvoiceLineItem', backref='invoice',
+                                 lazy='dynamic', cascade='all, delete-orphan',
+                                 order_by='InvoiceLineItem.sort_order')
+    payments = db.relationship('Payment', backref='invoice',
+                                lazy='dynamic', cascade='all, delete-orphan',
+                                order_by='Payment.created_at.desc()')
+
+    __table_args__ = (
+        Index('idx_inv_contract', 'contract_id'),
+        Index('idx_inv_client', 'client_id'),
+        Index('idx_inv_token', 'share_token'),
+        Index('idx_inv_status', 'status'),
+    )
+
+    def recalculate(self):
+        """Recalculate totals from line items and payments."""
+        sub = sum((li.amount for li in self.line_items.all()), Decimal('0'))
+        self.subtotal = sub
+        ret = (sub * self.retainage_pct / 100).quantize(Decimal('0.01')) if self.retainage_pct else Decimal('0')
+        self.retainage_amount = ret
+        self.total_due = sub - ret
+        paid = sum((p.amount for p in self.payments.filter_by(status='succeeded').all()), Decimal('0'))
+        self.amount_paid = paid
+        self.balance_due = self.total_due - paid
+        if self.balance_due <= 0 and paid > 0:
+            self.status = 'Paid'
+        elif paid > 0 and self.balance_due > 0:
+            self.status = 'Partial'
+
+    @property
+    def is_overdue(self):
+        if self.due_date and self.status in ('Sent', 'Viewed', 'Partial'):
+            return self.due_date < date.today()
+        return False
+
+
+class InvoiceLineItem(db.Model):
+    """Line on an invoice — either a draw schedule milestone or a change order."""
+    __tablename__ = 'invoice_line_items'
+    id = db.Column(db.Integer, primary_key=True)
+    invoice_id = db.Column(db.Integer, db.ForeignKey('invoices.id'), nullable=False)
+    # Source: draw or change_order
+    source_type = db.Column(db.String(20), nullable=False, default='draw')
+    draw_item_id = db.Column(db.Integer, db.ForeignKey('draw_schedule_items.id'), nullable=True)
+    change_order_id = db.Column(db.Integer, db.ForeignKey('change_orders.id'), nullable=True)
+    description = db.Column(db.String(500), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    pct_complete = db.Column(db.Numeric(5, 2), nullable=True)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    draw_item = db.relationship('DrawScheduleItem')
+    change_order = db.relationship('ChangeOrder')
+
+    __table_args__ = (
+        Index('idx_ili_invoice', 'invoice_id'),
+    )
+
+
+class Payment(db.Model):
+    """Payment against an invoice."""
+    __tablename__ = 'payments'
+    id = db.Column(db.Integer, primary_key=True)
+    invoice_id = db.Column(db.Integer, db.ForeignKey('invoices.id'), nullable=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    method = db.Column(db.String(20), nullable=False, default='other')
+    status = db.Column(db.String(20), nullable=False, default='succeeded')  # succeeded, pending, failed, refunded
+    reference = db.Column(db.String(200), nullable=True)  # check #, wire ref, etc.
+    # Stripe
+    stripe_payment_intent_id = db.Column(db.String(200), nullable=True)
+    stripe_charge_id = db.Column(db.String(200), nullable=True)
+    # Deposit tracking
+    is_deposit = db.Column(db.Boolean, default=False)
+    # Meta
+    received_date = db.Column(db.Date, nullable=True)
+    note = db.Column(db.String(500), nullable=True)
+    recorded_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('payments_received', lazy='dynamic'))
+    recorded_by = db.relationship('User', foreign_keys=[recorded_by_user_id])
+
+    __table_args__ = (
+        Index('idx_pmt_invoice', 'invoice_id'),
+        Index('idx_pmt_client', 'client_id'),
+        Index('idx_pmt_stripe', 'stripe_payment_intent_id'),
     )
 
 

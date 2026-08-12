@@ -23,6 +23,8 @@ from models import (
     Notification, NotificationPreference, TASK_STATUSES, TASK_PRIORITIES,
     DailyLog, DailyLogPhoto, WEATHER_CONDITIONS, DAILY_LOG_STATUSES,
     ChangeOrder, ChangeOrderItem, CHANGE_ORDER_STATUSES,
+    Invoice, InvoiceLineItem, Payment,
+    INVOICE_STATUSES, PAYMENT_METHODS,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -6199,3 +6201,418 @@ def change_order_share_link(co_id):
         db.session.commit()
     url = url_for('public_change_order', token=co.share_token, _external=True)
     return jsonify(ok=True, url=url)
+
+
+# ── Billing / Invoicing ──────────────────────────────────────────────
+
+def _next_invoice_number(contract):
+    count = Invoice.query.filter_by(contract_id=contract.id).count()
+    return f"{contract.contract_number}-INV-{count + 1:03d}"
+
+
+def _get_stripe():
+    """Return configured stripe module or None."""
+    import os
+    key = os.environ.get('STRIPE_SECRET_KEY')
+    if not key:
+        return None
+    import stripe
+    stripe.api_key = key
+    return stripe
+
+
+@app.route('/contracts/<int:contract_id>/billing')
+@require_login
+def contract_billing(contract_id):
+    """Billing hub for a contract — invoices, payments, draw progress."""
+    contract = Contract.query.get_or_404(contract_id)
+    draws = contract.draw_schedule.order_by(DrawScheduleItem.sort_order).all()
+    invoices = contract.invoices.order_by(Invoice.created_at.desc()).all()
+
+    # Approved, unbilled change orders
+    unbilled_cos = ChangeOrder.query.filter(
+        ChangeOrder.client_id == contract.client_id,
+        ChangeOrder.status == 'Approved',
+        ChangeOrder.billed == False,
+    ).order_by(ChangeOrder.co_number).all()
+
+    # Calculate draw progress: how much of each draw has been invoiced
+    draw_invoiced = {}
+    for draw in draws:
+        billed = db.session.query(func.sum(InvoiceLineItem.amount)).filter(
+            InvoiceLineItem.draw_item_id == draw.id,
+        ).scalar() or Decimal('0')
+        draw_invoiced[draw.id] = billed
+
+    # Overall billing summary
+    total_invoiced = sum((inv.subtotal for inv in invoices), Decimal('0'))
+    total_paid = sum((inv.amount_paid for inv in invoices), Decimal('0'))
+    total_retainage = sum((inv.retainage_amount for inv in invoices), Decimal('0'))
+    co_total = sum((co.price_to_client for co in contract.client.change_orders.filter_by(
+        status='Approved').all()), Decimal('0'))
+    adjusted_contract = contract.total_price + co_total
+
+    return render_template('billing_hub.html',
+        contract=contract, draws=draws, invoices=invoices,
+        unbilled_cos=unbilled_cos, draw_invoiced=draw_invoiced,
+        total_invoiced=total_invoiced, total_paid=total_paid,
+        total_retainage=total_retainage, co_total=co_total,
+        adjusted_contract=adjusted_contract)
+
+
+@app.route('/contracts/<int:contract_id>/invoices/new', methods=['GET', 'POST'])
+@require_login
+def create_invoice(contract_id):
+    """Create a new draw invoice."""
+    contract = Contract.query.get_or_404(contract_id)
+    draws = contract.draw_schedule.order_by(DrawScheduleItem.sort_order).all()
+
+    # Calculate what's already been billed per draw
+    draw_billed = {}
+    for draw in draws:
+        billed = db.session.query(func.sum(InvoiceLineItem.amount)).filter(
+            InvoiceLineItem.draw_item_id == draw.id,
+        ).scalar() or Decimal('0')
+        draw_billed[draw.id] = billed
+
+    unbilled_cos = ChangeOrder.query.filter(
+        ChangeOrder.client_id == contract.client_id,
+        ChangeOrder.status == 'Approved',
+        ChangeOrder.billed == False,
+    ).order_by(ChangeOrder.co_number).all()
+
+    if request.method == 'GET':
+        return render_template('invoice_create.html',
+            contract=contract, draws=draws, draw_billed=draw_billed,
+            unbilled_cos=unbilled_cos,
+            invoice_number=_next_invoice_number(contract),
+            retainage_pct=contract.retainage_pct)
+
+    # POST — create invoice
+    invoice = Invoice(
+        contract_id=contract.id,
+        client_id=contract.client_id,
+        invoice_number=request.form.get('invoice_number', _next_invoice_number(contract)).strip(),
+        share_token=_generate_token(),
+        retainage_pct=Decimal(request.form.get('retainage_pct', '0').replace('%', '') or '0'),
+        notes=request.form.get('notes', '').strip() or None,
+        created_by_user_id=current_user.id,
+    )
+
+    due_date = request.form.get('due_date', '').strip()
+    if due_date:
+        try:
+            invoice.due_date = datetime.strptime(due_date, '%Y-%m-%d').date()
+        except ValueError:
+            pass
+
+    db.session.add(invoice)
+    db.session.flush()
+
+    sort = 0
+    # Add draw lines
+    for draw in draws:
+        field_name = f'draw_{draw.id}_amount'
+        amt_str = request.form.get(field_name, '0').strip().replace(',', '').replace('$', '')
+        try:
+            amt = Decimal(amt_str)
+        except (InvalidOperation, ValueError):
+            amt = Decimal('0')
+        if amt <= 0:
+            continue
+
+        pct_field = f'draw_{draw.id}_pct'
+        pct_str = request.form.get(pct_field, '').strip().replace('%', '')
+        pct = None
+        if pct_str:
+            try:
+                pct = Decimal(pct_str)
+            except (InvalidOperation, ValueError):
+                pass
+
+        sort += 10
+        db.session.add(InvoiceLineItem(
+            invoice_id=invoice.id,
+            source_type='draw',
+            draw_item_id=draw.id,
+            description=draw.milestone,
+            amount=amt,
+            pct_complete=pct,
+            sort_order=sort,
+        ))
+
+    # Add change order lines
+    co_ids = request.form.getlist('co_ids')
+    for co_id_str in co_ids:
+        try:
+            co_id = int(co_id_str)
+        except ValueError:
+            continue
+        co = ChangeOrder.query.get(co_id)
+        if not co or co.billed:
+            continue
+        sort += 10
+        db.session.add(InvoiceLineItem(
+            invoice_id=invoice.id,
+            source_type='change_order',
+            change_order_id=co.id,
+            description=f'CO #{co.co_number}: {co.title}',
+            amount=co.price_to_client,
+            sort_order=sort,
+        ))
+        co.billed = True
+        co.billed_at = datetime.now(timezone.utc)
+
+    invoice.recalculate()
+
+    activity = ClientActivity(
+        client_id=contract.client_id,
+        user_id=current_user.id,
+        activity_type='Invoice created',
+        note_text=f'Invoice {invoice.invoice_number} for ${invoice.total_due:,.2f}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'Invoice {invoice.invoice_number} created for ${invoice.total_due:,.2f}.', 'success')
+    return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+
+@app.route('/invoices/<int:invoice_id>')
+@require_login
+def view_invoice(invoice_id):
+    invoice = Invoice.query.get_or_404(invoice_id)
+    contract = invoice.contract
+    line_items = invoice.line_items.all()
+    payments = invoice.payments.all()
+    has_stripe = bool(_get_stripe())
+    return render_template('invoice_view.html', invoice=invoice,
+                           contract=contract, line_items=line_items,
+                           payments=payments, has_stripe=has_stripe,
+                           today_str=date.today().strftime('%Y-%m-%d'))
+
+
+@app.route('/invoices/<int:invoice_id>/send', methods=['POST'])
+@require_login
+def send_invoice(invoice_id):
+    invoice = Invoice.query.get_or_404(invoice_id)
+    if invoice.status == 'Draft':
+        invoice.status = 'Sent'
+        invoice.issued_date = date.today()
+        if not invoice.due_date:
+            invoice.due_date = date.today() + timedelta(days=30)
+
+        # Create Stripe payment link if configured
+        stripe = _get_stripe()
+        if stripe and not invoice.stripe_payment_intent_id:
+            try:
+                session = stripe.checkout.Session.create(
+                    mode='payment',
+                    line_items=[{
+                        'price_data': {
+                            'currency': 'usd',
+                            'product_data': {
+                                'name': f'Invoice {invoice.invoice_number}',
+                                'description': f'{invoice.contract.contract_number} — {invoice.contract.client.name}',
+                            },
+                            'unit_amount': int(invoice.balance_due * 100),
+                        },
+                        'quantity': 1,
+                    }],
+                    payment_intent_data={
+                        'metadata': {
+                            'invoice_id': str(invoice.id),
+                            'invoice_number': invoice.invoice_number,
+                        },
+                    },
+                    success_url=url_for('public_invoice', token=invoice.share_token, _external=True) + '?paid=1',
+                    cancel_url=url_for('public_invoice', token=invoice.share_token, _external=True),
+                    metadata={
+                        'invoice_id': str(invoice.id),
+                    },
+                )
+                invoice.stripe_payment_url = session.url
+                invoice.stripe_payment_intent_id = session.payment_intent
+            except Exception as e:
+                current_app.logger.error(f'Stripe session creation failed: {e}')
+
+        activity = ClientActivity(
+            client_id=invoice.client_id,
+            user_id=current_user.id,
+            activity_type='Invoice sent',
+            note_text=f'Invoice {invoice.invoice_number} sent — ${invoice.total_due:,.2f}',
+            activity_date=datetime.now(timezone.utc),
+        )
+        db.session.add(activity)
+        db.session.commit()
+        flash('Invoice marked as sent.', 'success')
+    return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+
+@app.route('/invoices/<int:invoice_id>/void', methods=['POST'])
+@require_login
+def void_invoice(invoice_id):
+    invoice = Invoice.query.get_or_404(invoice_id)
+    if invoice.status not in ('Paid',):
+        # Un-bill any change orders
+        for li in invoice.line_items.filter_by(source_type='change_order').all():
+            if li.change_order_id:
+                co = ChangeOrder.query.get(li.change_order_id)
+                if co:
+                    co.billed = False
+                    co.billed_at = None
+        invoice.status = 'Voided'
+        db.session.commit()
+        flash('Invoice voided.', 'success')
+    return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+
+@app.route('/invoices/<int:invoice_id>/record-payment', methods=['POST'])
+@require_login
+def record_payment(invoice_id):
+    """Manually record a payment (check, wire, cash, etc.)."""
+    invoice = Invoice.query.get_or_404(invoice_id)
+
+    amt_str = request.form.get('amount', '0').strip().replace(',', '').replace('$', '')
+    try:
+        amount = Decimal(amt_str)
+    except (InvalidOperation, ValueError):
+        flash('Invalid amount.', 'error')
+        return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+    if amount <= 0:
+        flash('Amount must be positive.', 'error')
+        return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+    method = request.form.get('method', 'other')
+    if method not in PAYMENT_METHODS:
+        method = 'other'
+
+    received_date = None
+    rd = request.form.get('received_date', '').strip()
+    if rd:
+        try:
+            received_date = datetime.strptime(rd, '%Y-%m-%d').date()
+        except ValueError:
+            received_date = date.today()
+    else:
+        received_date = date.today()
+
+    payment = Payment(
+        invoice_id=invoice.id,
+        client_id=invoice.client_id,
+        amount=amount,
+        method=method,
+        status='succeeded',
+        reference=request.form.get('reference', '').strip() or None,
+        is_deposit=request.form.get('is_deposit') == 'on',
+        received_date=received_date,
+        note=request.form.get('note', '').strip() or None,
+        recorded_by_user_id=current_user.id,
+    )
+    db.session.add(payment)
+
+    invoice.recalculate()
+
+    # Mark draw items as paid if fully billed
+    for li in invoice.line_items.filter_by(source_type='draw').all():
+        if li.draw_item_id and invoice.status == 'Paid':
+            draw = DrawScheduleItem.query.get(li.draw_item_id)
+            if draw and not draw.paid_at:
+                draw.paid_at = datetime.now(timezone.utc)
+                draw.paid_amount = (draw.paid_amount or Decimal('0')) + amount
+
+    activity = ClientActivity(
+        client_id=invoice.client_id,
+        user_id=current_user.id,
+        activity_type='Payment received',
+        note_text=f'${amount:,.2f} {method} payment on Invoice {invoice.invoice_number}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+
+    flash(f'Payment of ${amount:,.2f} recorded.', 'success')
+    return redirect(url_for('view_invoice', invoice_id=invoice.id))
+
+
+# ── Public Invoice + Stripe ──────────────────────────────────────────
+
+@app.route('/inv/<token>')
+def public_invoice(token):
+    """Client-facing invoice view with optional Stripe payment."""
+    invoice = Invoice.query.filter_by(share_token=token).first_or_404()
+    if invoice.status == 'Draft':
+        abort(404)  # Don't show unsent invoices
+    line_items = invoice.line_items.all()
+    contract = invoice.contract
+    paid_success = request.args.get('paid') == '1'
+    return render_template('invoice_public.html', invoice=invoice,
+                           contract=contract, line_items=line_items,
+                           token=token, paid_success=paid_success)
+
+
+@app.route('/stripe/webhook', methods=['POST'])
+@csrf.exempt
+def stripe_webhook():
+    """Handle Stripe webhooks for payment confirmation."""
+    import os
+    stripe = _get_stripe()
+    if not stripe:
+        abort(400)
+
+    payload = request.get_data()
+    sig = request.headers.get('Stripe-Signature')
+    webhook_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+
+    if webhook_secret:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig, webhook_secret)
+        except (ValueError, stripe.error.SignatureVerificationError):
+            abort(400)
+    else:
+        event = stripe.Event.construct_from(
+            request.get_json(), stripe.api_key
+        )
+
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        invoice_id = session.get('metadata', {}).get('invoice_id')
+        if invoice_id:
+            invoice = Invoice.query.get(int(invoice_id))
+            if invoice:
+                payment = Payment(
+                    invoice_id=invoice.id,
+                    client_id=invoice.client_id,
+                    amount=Decimal(str(session['amount_total'] / 100)),
+                    method='stripe',
+                    status='succeeded',
+                    stripe_payment_intent_id=session.get('payment_intent'),
+                    received_date=date.today(),
+                    note='Online payment via Stripe',
+                )
+                db.session.add(payment)
+                invoice.recalculate()
+
+                activity = ClientActivity(
+                    client_id=invoice.client_id,
+                    user_id=invoice.created_by_user_id,
+                    activity_type='Online payment received',
+                    note_text=f'Stripe payment ${payment.amount:,.2f} on Invoice {invoice.invoice_number}',
+                    activity_date=datetime.now(timezone.utc),
+                )
+                db.session.add(activity)
+                db.session.commit()
+
+    elif event['type'] == 'charge.refunded':
+        charge = event['data']['object']
+        pi_id = charge.get('payment_intent')
+        if pi_id:
+            payment = Payment.query.filter_by(stripe_payment_intent_id=pi_id).first()
+            if payment:
+                payment.status = 'refunded'
+                payment.invoice.recalculate()
+                db.session.commit()
+
+    return jsonify(received=True), 200
