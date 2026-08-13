@@ -25,34 +25,76 @@
                 </div>
             </div>
             {% if ghl_status.connected %}
-            <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-emerald-50 text-pos border border-pos/20">Connected</span>
+            <div class="flex items-center gap-2">
+                {% if ghl_status.health == 'healthy' %}
+                <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-emerald-50 text-pos border border-pos/20 flex items-center gap-1">
+                    <span class="w-1.5 h-1.5 bg-pos rounded-full"></span> Healthy
+                </span>
+                {% elif ghl_status.health == 'unhealthy' %}
+                <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-red-50 text-neg border border-neg/20 flex items-center gap-1">
+                    <span class="w-1.5 h-1.5 bg-neg rounded-full"></span> Unhealthy
+                </span>
+                {% else %}
+                <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-emerald-50 text-pos border border-pos/20">Connected</span>
+                {% endif %}
+            </div>
             {% else %}
             <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-pill text-txt-muted border border-hairline">Not configured</span>
             {% endif %}
         </div>
 
         {% if ghl_status.connected %}
+        {# ── Health indicator ── #}
+        {% if ghl_status.health == 'unhealthy' %}
+        <div class="bg-red-50 border border-neg/20 rounded-xl p-4">
+            <div class="flex items-start gap-2">
+                <svg class="w-5 h-5 text-neg flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+                <div>
+                    <p class="text-sm font-semibold text-neg">Integration Issue Detected</p>
+                    <p class="text-xs text-red-700 mt-0.5">{{ ghl_status.health_error }}</p>
+                    {% if ghl_status.health_checked_at %}
+                    <p class="text-[10px] text-red-400 mt-1">Checked: {{ ghl_status.health_checked_at }}</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
         <div class="bg-pill rounded-xl p-4 space-y-3">
             <div class="flex items-center justify-between">
                 <div>
                     <p class="text-sm text-txt-secondary">Location: <span class="font-semibold text-txt-primary">{{ ghl_status.location_name }}</span></p>
                     {% if ghl_status.last_sync %}
-                    <p class="text-xs text-txt-muted mt-0.5">Last sync: {{ ghl_status.last_sync }}</p>
+                    <p class="text-xs text-txt-muted mt-0.5">Last sync: {{ ghl_status.last_sync }}
+                        {% if ghl_status.last_sync_success %}
+                        <span class="text-pos">✓</span>
+                        {% else %}
+                        <span class="text-neg">✗</span>
+                        {% endif %}
+                    </p>
+                    {% else %}
+                    <p class="text-xs text-amber-600 mt-0.5">Never synced</p>
                     {% endif %}
                 </div>
             </div>
 
-            <div class="flex flex-wrap gap-3">
+            <div class="flex flex-wrap gap-2">
                 <form method="POST" action="{{ url_for('ghl_sync_contacts') }}" class="inline">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                     <button type="submit" class="px-4 py-2 text-sm font-medium bg-txt-primary text-white rounded-lg hover:bg-txt-primary/80 transition">
-                        Sync Contacts Now
+                        Sync Contacts
                     </button>
                 </form>
-                <form method="POST" action="{{ url_for('ghl_test_connection') }}" class="inline">
+                <form method="POST" action="{{ url_for('ghl_sync_opportunities') }}" class="inline">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                     <button type="submit" class="px-4 py-2 text-sm font-medium bg-white text-txt-secondary border border-hairline rounded-lg hover:bg-pill transition">
-                        Test Connection
+                        Sync Won Deals
+                    </button>
+                </form>
+                <form method="POST" action="{{ url_for('ghl_health_check') }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <button type="submit" class="px-4 py-2 text-sm font-medium bg-white text-txt-secondary border border-hairline rounded-lg hover:bg-pill transition">
+                        Run Health Check
                     </button>
                 </form>
             </div>
@@ -60,6 +102,12 @@
             {% if ghl_status.last_sync_result %}
             <div class="text-sm p-3 rounded-lg {{ 'bg-emerald-50 text-pos border border-pos/20' if ghl_status.last_sync_success else 'bg-red-50 text-neg border border-neg/20' }}">
                 {{ ghl_status.last_sync_result }}
+            </div>
+            {% endif %}
+
+            {% if ghl_status.opp_sync_result %}
+            <div class="text-sm p-3 rounded-lg bg-blue-50 text-blue-700 border border-blue-200">
+                {{ ghl_status.opp_sync_result }}
             </div>
             {% endif %}
         </div>
@@ -99,7 +147,7 @@
                     <select name="lead_source_id" class="flex-1 text-sm border border-hairline rounded-lg px-3 py-1.5 bg-white text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
                         <option value="">-- Select lead source --</option>
                         {% for source in lead_sources %}
-                        <option value="{{ source.id }}" {{ 'selected' if ghl_lead_source_id == source.id }}>{{ source.name }}</option>
+                        <option value="{{ source.id }}" {{ 'selected' if ghl_lead_source_id == source.id|string }}>{{ source.name }}</option>
                         {% endfor %}
                     </select>
                     <button type="submit" class="px-3 py-1.5 text-xs font-medium bg-txt-primary text-white rounded-lg hover:bg-txt-primary/80 transition">Save</button>
@@ -125,7 +173,19 @@
                 </div>
             </div>
             {% if meta_status.connected %}
-            <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-emerald-50 text-pos border border-pos/20">Connected</span>
+            <div class="flex items-center gap-2">
+                {% if meta_status.last_sync_success %}
+                <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-emerald-50 text-pos border border-pos/20 flex items-center gap-1">
+                    <span class="w-1.5 h-1.5 bg-pos rounded-full"></span> Healthy
+                </span>
+                {% elif meta_status.last_sync and not meta_status.last_sync_success %}
+                <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-red-50 text-neg border border-neg/20 flex items-center gap-1">
+                    <span class="w-1.5 h-1.5 bg-neg rounded-full"></span> Last sync failed
+                </span>
+                {% else %}
+                <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-emerald-50 text-pos border border-pos/20">Connected</span>
+                {% endif %}
+            </div>
             {% else %}
             <span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-pill text-txt-muted border border-hairline">Not configured</span>
             {% endif %}
@@ -136,7 +196,15 @@
             <div>
                 <p class="text-sm text-txt-secondary">Account: <span class="font-semibold text-txt-primary">{{ meta_status.account_name }}</span></p>
                 {% if meta_status.last_sync %}
-                <p class="text-xs text-txt-muted mt-0.5">Last sync: {{ meta_status.last_sync }}</p>
+                <p class="text-xs text-txt-muted mt-0.5">Last sync: {{ meta_status.last_sync }}
+                    {% if meta_status.last_sync_success %}
+                    <span class="text-pos">✓</span>
+                    {% else %}
+                    <span class="text-neg">✗</span>
+                    {% endif %}
+                </p>
+                {% else %}
+                <p class="text-xs text-amber-600 mt-0.5">Never synced</p>
                 {% endif %}
             </div>
 
@@ -215,7 +283,7 @@
                     <select name="lead_source_id" class="flex-1 text-sm border border-hairline rounded-lg px-3 py-1.5 bg-white text-txt-primary focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
                         <option value="">-- Select lead source --</option>
                         {% for source in lead_sources %}
-                        <option value="{{ source.id }}" {{ 'selected' if meta_lead_source_id == source.id }}>{{ source.name }}</option>
+                        <option value="{{ source.id }}" {{ 'selected' if meta_lead_source_id == source.id|string }}>{{ source.name }}</option>
                         {% endfor %}
                     </select>
                     <button type="submit" class="px-3 py-1.5 text-xs font-medium bg-txt-primary text-white rounded-lg hover:bg-txt-primary/80 transition">Save</button>

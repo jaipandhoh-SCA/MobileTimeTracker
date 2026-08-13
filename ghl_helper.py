@@ -133,11 +133,11 @@ def map_contact_to_client_data(contact):
 def fetch_opportunities(pipeline_id=None, limit=100):
     """Fetch opportunities from GHL (optional: filter by pipeline)."""
     params = {
-        'location_id': _location_id(),
+        'locationId': _location_id(),
         'limit': min(limit, 100),
     }
     if pipeline_id:
-        params['pipeline_id'] = pipeline_id
+        params['pipelineId'] = pipeline_id
 
     try:
         r = requests.get(
@@ -146,11 +146,50 @@ def fetch_opportunities(pipeline_id=None, limit=100):
             params=params,
             timeout=15,
         )
+        logger.info(f'GHL opportunities response status: {r.status_code}')
         r.raise_for_status()
-        return r.json().get('opportunities', [])
+        data = r.json()
+        opps = data.get('opportunities', [])
+        logger.info(f'GHL returned {len(opps)} opportunities')
+        return opps
     except Exception as e:
         logger.error(f'GHL fetch_opportunities error: {e}')
         return []
+
+
+def fetch_all_opportunities(pipeline_id=None, max_pages=20):
+    """Paginate through all opportunities. Returns full list."""
+    all_opps = []
+    # GHL opportunities/search doesn't paginate the same as contacts,
+    # but supports startAfterId via meta
+    params = {
+        'locationId': _location_id(),
+        'limit': 100,
+    }
+    if pipeline_id:
+        params['pipelineId'] = pipeline_id
+
+    for _ in range(max_pages):
+        try:
+            r = requests.get(
+                f'{GHL_API_BASE}/opportunities/search',
+                headers=_headers(),
+                params=params,
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+            batch = data.get('opportunities', [])
+            all_opps.extend(batch)
+            meta = data.get('meta', {})
+            next_cursor = meta.get('startAfterId')
+            if not next_cursor or not batch:
+                break
+            params['startAfterId'] = next_cursor
+        except Exception as e:
+            logger.error(f'GHL fetch_all_opportunities error: {e}')
+            break
+    return all_opps
 
 
 def fetch_pipelines():
@@ -167,3 +206,101 @@ def fetch_pipelines():
     except Exception as e:
         logger.error(f'GHL fetch_pipelines error: {e}')
         return []
+
+
+def map_opportunity_to_client_update(opp):
+    """Map a won GHL opportunity to Client update fields.
+
+    Returns dict with fields to set on the Client, or None if the
+    opportunity isn't in a 'won' stage.
+    """
+    status = (opp.get('status') or '').lower()
+    stage_name = (opp.get('pipelineStageId') or '').lower()
+
+    # GHL marks won opportunities with status='won'
+    if status != 'won':
+        return None
+
+    monetary = opp.get('monetaryValue')
+    result = {
+        'status': 'Active',
+    }
+    if monetary:
+        try:
+            result['opportunity_value'] = float(monetary)
+        except (ValueError, TypeError):
+            pass
+
+    # Pull contact name from the opportunity
+    contact = opp.get('contact', {})
+    if contact.get('name'):
+        result['contact_name'] = contact['name']
+
+    return result
+
+
+def health_check():
+    """Run a lightweight health check. Returns (ok, details_dict).
+
+    Checks: credentials present, API reachable, locationId valid,
+    contacts endpoint responds.
+    """
+    details = {
+        'has_api_key': bool(os.environ.get('GHL_API_KEY')),
+        'has_location_id': bool(os.environ.get('GHL_LOCATION_ID')),
+        'api_reachable': False,
+        'location_valid': False,
+        'contacts_readable': False,
+        'error': None,
+    }
+
+    if not details['has_api_key'] or not details['has_location_id']:
+        details['error'] = 'Missing credentials'
+        return False, details
+
+    # Test location endpoint
+    try:
+        r = requests.get(
+            f'{GHL_API_BASE}/locations/{_location_id()}',
+            headers=_headers(),
+            timeout=10,
+        )
+        details['api_reachable'] = True
+        if r.status_code == 200:
+            details['location_valid'] = True
+        elif r.status_code == 401:
+            details['error'] = 'API key invalid or expired (401)'
+            return False, details
+        elif r.status_code == 403:
+            details['error'] = 'Insufficient permissions (403) — check OAuth scopes'
+            return False, details
+        else:
+            details['error'] = f'Location check failed: HTTP {r.status_code}'
+            return False, details
+    except requests.exceptions.Timeout:
+        details['error'] = 'API timeout — services.leadconnectorhq.com unreachable'
+        return False, details
+    except requests.exceptions.ConnectionError:
+        details['error'] = 'Connection failed — check network/DNS'
+        return False, details
+
+    # Test contacts endpoint with limit=1
+    try:
+        r = requests.get(
+            f'{GHL_API_BASE}/contacts/',
+            headers=_headers(),
+            params={'locationId': _location_id(), 'limit': 1},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            details['contacts_readable'] = True
+            data = r.json()
+            details['contact_count_sample'] = len(data.get('contacts', []))
+        else:
+            details['error'] = f'Contacts endpoint: HTTP {r.status_code}'
+            return False, details
+    except Exception as e:
+        details['error'] = f'Contacts check failed: {e}'
+        return False, details
+
+    return True, details

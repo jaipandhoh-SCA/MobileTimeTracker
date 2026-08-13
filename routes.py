@@ -3011,6 +3011,10 @@ def integrations_settings():
         'last_sync': AppSetting.get('ghl_last_sync'),
         'last_sync_result': AppSetting.get('ghl_sync_result'),
         'last_sync_success': AppSetting.get('ghl_sync_success') == 'true',
+        'health': AppSetting.get('ghl_health_status'),
+        'health_error': AppSetting.get('ghl_health_error'),
+        'health_checked_at': AppSetting.get('ghl_health_checked_at'),
+        'opp_sync_result': AppSetting.get('ghl_opp_sync_result'),
     }
 
     # Meta status
@@ -3099,9 +3103,22 @@ def ghl_sync_contacts():
         flash('GoHighLevel is not configured.', 'error')
         return redirect(url_for('integrations_settings'))
 
-    contacts = ghl_helper.fetch_all_contacts()
+    try:
+        contacts = ghl_helper.fetch_all_contacts()
+    except Exception as e:
+        result = f'Sync failed: {e}'
+        AppSetting.set('ghl_last_sync', format_datetime_for_display(datetime.now(timezone.utc)))
+        AppSetting.set('ghl_sync_result', result)
+        AppSetting.set('ghl_sync_success', 'false')
+        flash(result, 'error')
+        return redirect(url_for('integrations_settings'))
+
     if not contacts:
-        flash(f'GHL returned 0 contacts. Check that your sub-account has contacts and that your API key has contacts read permission.', 'warning')
+        result = 'GHL returned 0 contacts. Check that your sub-account has contacts and that your API key has contacts.readonly scope.'
+        AppSetting.set('ghl_last_sync', format_datetime_for_display(datetime.now(timezone.utc)))
+        AppSetting.set('ghl_sync_result', result)
+        AppSetting.set('ghl_sync_success', 'false')
+        flash(result, 'warning')
         return redirect(url_for('integrations_settings'))
 
     created = 0
@@ -3161,6 +3178,103 @@ def ghl_sync_contacts():
     return redirect(url_for('integrations_settings'))
 
 
+@app.route('/settings/integrations/ghl/sync-opportunities', methods=['POST'])
+@require_supervisor
+def ghl_sync_opportunities():
+    """Sync won GHL opportunities → update matching Client records."""
+    if not ghl_helper.is_configured():
+        flash('GoHighLevel is not configured.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    try:
+        opps = ghl_helper.fetch_all_opportunities()
+    except Exception as e:
+        flash(f'Failed to fetch opportunities: {e}', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    updated = 0
+    skipped = 0
+
+    for opp in opps:
+        update_data = ghl_helper.map_opportunity_to_client_update(opp)
+        if not update_data:
+            continue  # not won
+
+        # Find matching client by GHL contact ID
+        contact_id = opp.get('contactId') or (opp.get('contact', {}).get('id'))
+        if not contact_id:
+            skipped += 1
+            continue
+
+        client = Client.query.filter_by(ghl_contact_id=contact_id).first()
+        if not client:
+            skipped += 1
+            continue
+
+        # Update client fields
+        changed = False
+        if client.status not in ('Active', 'Completed'):
+            old_status = client.status
+            client.status = update_data['status']
+            sc = ClientStatusChange(
+                client_id=client.id,
+                from_status=old_status,
+                to_status=update_data['status'],
+                changed_by_user_id=current_user.id,
+            )
+            db.session.add(sc)
+            changed = True
+
+        if 'opportunity_value' in update_data and not client.opportunity_value:
+            client.opportunity_value = update_data['opportunity_value']
+            changed = True
+
+        if changed:
+            updated += 1
+        else:
+            skipped += 1
+
+    db.session.commit()
+
+    result = f'Opportunities: {updated} client{"s" if updated != 1 else ""} updated'
+    if skipped:
+        result += f', {skipped} skipped'
+    AppSetting.set('ghl_opp_sync_result', result)
+    flash(result, 'success')
+    return redirect(url_for('integrations_settings'))
+
+
+@app.route('/settings/integrations/ghl/health', methods=['POST'])
+@require_supervisor
+def ghl_health_check():
+    """Run a GHL integration health check."""
+    ok, details = ghl_helper.health_check()
+
+    checks = []
+    checks.append(('API Key', details['has_api_key']))
+    checks.append(('Location ID', details['has_location_id']))
+    checks.append(('API Reachable', details['api_reachable']))
+    checks.append(('Location Valid', details['location_valid']))
+    checks.append(('Contacts Readable', details['contacts_readable']))
+
+    passed = sum(1 for _, v in checks if v)
+    total = len(checks)
+
+    if ok:
+        result = f'Health check passed ({passed}/{total} checks OK)'
+        AppSetting.set('ghl_health_status', 'healthy')
+        flash(result, 'success')
+    else:
+        result = f'Health check failed ({passed}/{total}): {details.get("error", "Unknown error")}'
+        AppSetting.set('ghl_health_status', 'unhealthy')
+        AppSetting.set('ghl_health_error', details.get('error', ''))
+        flash(result, 'error')
+
+    AppSetting.set('ghl_health_checked_at', format_datetime_for_display(datetime.now(timezone.utc)))
+    AppSetting.set('ghl_health_detail', str(details))
+    return redirect(url_for('integrations_settings'))
+
+
 @app.route('/settings/integrations/meta/test', methods=['POST'])
 @require_supervisor
 def meta_test_connection():
@@ -3204,7 +3318,15 @@ def meta_sync_spend():
     year, month = now_pacific.year, now_pacific.month
     period_month = date(year, month, 1)
 
-    spend, leads, impressions, clicks = meta_ads_helper.fetch_monthly_spend(year, month)
+    try:
+        spend, leads, impressions, clicks = meta_ads_helper.fetch_monthly_spend(year, month)
+    except Exception as e:
+        result = f'Sync failed: {e}'
+        AppSetting.set('meta_last_sync', format_datetime_for_display(datetime.now(timezone.utc)))
+        AppSetting.set('meta_sync_result', result)
+        AppSetting.set('meta_sync_success', 'false')
+        flash(result, 'error')
+        return redirect(url_for('integrations_settings'))
 
     # Upsert: find existing entry or create
     existing = ChannelSpend.query.filter_by(
