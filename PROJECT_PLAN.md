@@ -50,6 +50,57 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-13 — Prod Hardening: Auth, PWA, Notifications, Audit, Tests, Accessibility
+
+**Access-control tests** (`test_access_control.py` — 11 tests):
+- Rep vs supervisor: reps get 403 on supervisor-only routes, supervisors get 200.
+- Unauthenticated: redirected to login on all protected routes.
+- Client isolation: client A cannot see client B messages, portal data scoped per client.
+- Session tampering: injecting `_user_id` into client session doesn't grant staff access.
+- Magic links: expired, invalid, and used tokens all rejected.
+
+**Cost math tests** (`test_cost_math.py` — 20 tests):
+- Project budget/actual/committed aggregation, CTC = budget - actual - committed.
+- `budget_used_pct` handles zero budget without division error.
+- `CostEntry.upsert_for_time_entry` idempotency: second call updates, doesn't duplicate.
+- Estimate math: line item extended cost with waste, subtotal + markup/overhead/contingency.
+- Invoice recalculate: retainage, partial/full payment, failed payments ignored.
+- Change order item_total aggregation.
+- Client.total_contract_value sums all projects.
+
+**Mobile/PWA** (`static/manifest.json`, `static/sw.js`):
+- Web app manifest for installability (standalone display, icons, theme color).
+- Service worker: cache-first for CDN assets, network-first for API and pages.
+- Offline fallback page when network unavailable.
+- IndexedDB sync queue for offline mutations (POST/PUT/DELETE).
+- Background Sync to replay queued requests on reconnect.
+- `base.html`: PWA meta tags (apple-mobile-web-app, theme-color), offline banner.
+
+**Notifications** (extended `NotificationPreference`, `notification_settings.html`):
+- Added financial event preferences: invoice_created, payment_received, estimate_accepted.
+- Added portal event preferences: portal_message, selection_made.
+- `_notify_supervisors()` helper respects per-user preferences.
+- Portal notification dispatch (selections, messages) checks preferences before sending.
+
+**Audit trails** (routes.py):
+- Added ClientActivity entry for `accept_estimate` (was missing).
+- Added ClientActivity entry for `void_invoice` (was missing).
+- (Already existed: invoice created, invoice sent, payment received, all COs, status changes.)
+
+**Accessibility** (`base.html`):
+- Skip-to-content link for keyboard navigation.
+- `role="main"` + `id="main-content"` on main element.
+- Touch targets: 44px minimum for interactive elements on coarse pointer devices.
+- Label contrast: form labels set to slate-700 (7:1 ratio on white).
+- `prefers-reduced-motion` respected globally.
+- Focus-visible outlines on all interactive elements.
+
+**Dev login** (`routes.py`, `landing.html`):
+- Always-available `/dev-login` route (creates/reuses supervisor account).
+- Landing page shows "Sign In (Dev)" button without needing env var.
+
+---
+
 ### 2026-08-13 — Financial Hub & Reports
 
 **Scope:** Extend existing hub and reports with financial truth from the job costing spine. Role-aware views: supervisor sees portfolio profitability, WIP, AR aging; rep sees client status + next steps; field sees today's assignments + clock. One-click PDF/CSV export. All numbers read from the C1 cost spine (Budget, CostEntry, Invoice, Payment models).

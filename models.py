@@ -1005,6 +1005,13 @@ class NotificationPreference(db.Model):
     task_assigned = db.Column(db.Boolean, default=True, nullable=False)
     task_changed = db.Column(db.Boolean, default=True, nullable=False)
     task_reminder = db.Column(db.Boolean, default=True, nullable=False)
+    # Financial events
+    invoice_created = db.Column(db.Boolean, default=True, nullable=False)
+    payment_received = db.Column(db.Boolean, default=True, nullable=False)
+    estimate_accepted = db.Column(db.Boolean, default=True, nullable=False)
+    # Client portal events
+    portal_message = db.Column(db.Boolean, default=True, nullable=False)
+    selection_made = db.Column(db.Boolean, default=True, nullable=False)
 
     user = db.relationship('User', backref=db.backref('notification_prefs', uselist=False))
 

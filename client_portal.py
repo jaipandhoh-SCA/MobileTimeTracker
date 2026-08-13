@@ -281,12 +281,15 @@ def selection_detail(category_id):
         )
         db.session.add(activity)
 
-        # Notify staff
-        from models import User
+        # Notify staff (respecting preferences)
+        from models import User, NotificationPreference
         for staff in User.query.filter_by(role='supervisor').all():
+            prefs = NotificationPreference.query.filter_by(user_id=staff.id).first()
+            if prefs and not prefs.selection_made:
+                continue
             notif = Notification(
                 user_id=staff.id,
-                type='selection',
+                type='selection_made',
                 title=f'Selection: {client.name}',
                 message=f'{category.name} → {option.name}',
                 link=url_for('view_client', client_id=client.id),
@@ -326,9 +329,12 @@ def messages():
             )
             db.session.add(msg)
 
-            # Notify staff
-            from models import User
+            # Notify staff (respecting preferences)
+            from models import User, NotificationPreference
             for staff in User.query.filter_by(role='supervisor').all():
+                prefs = NotificationPreference.query.filter_by(user_id=staff.id).first()
+                if prefs and not prefs.portal_message:
+                    continue
                 notif = Notification(
                     user_id=staff.id,
                     type='portal_message',

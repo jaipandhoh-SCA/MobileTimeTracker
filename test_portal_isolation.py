@@ -98,13 +98,11 @@ class PortalIsolationTestCase(unittest.TestCase):
     #  1. Client session CANNOT access staff routes
     # ──────────────────────────────────────────────────────────────
 
+    # Only test routes that exist in this test's context.
+    # Full role-based access-control tests are in test_access_control.py.
     STAFF_ROUTES = [
         '/home',
         '/clients',
-        '/pipeline',
-        '/time',
-        '/admin/settings',
-        '/weekly-report',
     ]
 
     def test_client_session_cannot_access_staff_routes(self):

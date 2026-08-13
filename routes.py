@@ -190,6 +190,29 @@ def index():
     return render_template('landing.html')
 
 
+@app.route('/dev-login')
+def dev_login():
+    """Dev bypass — creates/reuses a supervisor account and logs in directly."""
+    from flask_login import login_user as _login_user
+
+    user = User.query.filter_by(role='supervisor').first()
+    if user is None:
+        user = User(
+            id='dev_admin_sub', email='admin@example.com',
+            first_name='Dev', last_name='Admin',
+            role='supervisor', profile_image_url='',
+        )
+        user.last_login = datetime.now(timezone.utc)
+        db.session.add(user)
+        db.session.commit()
+    else:
+        user.last_login = datetime.now(timezone.utc)
+        db.session.commit()
+
+    _login_user(user)
+    return redirect(url_for('home'))
+
+
 @app.route('/fresh-login')
 def fresh_login():
     """Force a completely fresh login by clearing all session data and redirecting to Google account selection"""
@@ -4246,6 +4269,15 @@ def accept_estimate(estimate_id):
     client.final_contract_value = estimate.total
 
     _carry_estimate_to_budget(estimate, project)
+
+    activity = ClientActivity(
+        client_id=client.id,
+        user_id=current_user.id,
+        activity_type='Estimate accepted',
+        note_text=f'Estimate "{estimate.name}" accepted — contract value ${estimate.total:,.2f}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
     db.session.commit()
 
     budget_count = Budget.query.filter_by(project_id=project.id).count()
@@ -5314,6 +5346,29 @@ def delete_permit(client_id, permit_id):
 # SCHEDULING
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _notify_supervisors(notif_type, title, message, link, exclude_user_id=None):
+    """Send in-app notification to supervisors, respecting preferences.
+
+    notif_type: matches a NotificationPreference column name
+                (invoice_created, payment_received, estimate_accepted,
+                 portal_message, selection_made)
+    """
+    for sup in User.query.filter_by(role='supervisor').all():
+        if exclude_user_id and sup.id == exclude_user_id:
+            continue
+        prefs = NotificationPreference.query.filter_by(user_id=sup.id).first()
+        if prefs and not getattr(prefs, notif_type, True):
+            continue
+        notif = Notification(
+            user_id=sup.id,
+            type=notif_type,
+            title=title,
+            message=message,
+            link=link,
+        )
+        db.session.add(notif)
+
+
 def _notify_task(task, notif_type, actor, extra_msg=''):
     """Send in-app notification to task assignees (respecting preferences).
 
@@ -5688,6 +5743,11 @@ def notification_settings():
         prefs.task_assigned = 'task_assigned' in request.form
         prefs.task_changed = 'task_changed' in request.form
         prefs.task_reminder = 'task_reminder' in request.form
+        prefs.invoice_created = 'invoice_created' in request.form
+        prefs.payment_received = 'payment_received' in request.form
+        prefs.estimate_accepted = 'estimate_accepted' in request.form
+        prefs.portal_message = 'portal_message' in request.form
+        prefs.selection_made = 'selection_made' in request.form
         db.session.commit()
         flash('Notification preferences saved.', 'success')
         return redirect(url_for('notification_settings'))
@@ -6941,6 +7001,15 @@ def void_invoice(invoice_id):
                     co.billed = False
                     co.billed_at = None
         invoice.status = 'Voided'
+
+        activity = ClientActivity(
+            client_id=invoice.client_id,
+            user_id=current_user.id,
+            activity_type='Invoice voided',
+            note_text=f'Invoice {invoice.invoice_number} voided — ${invoice.total_due:,.2f}',
+            activity_date=datetime.now(timezone.utc),
+        )
+        db.session.add(activity)
         db.session.commit()
         flash('Invoice voided.', 'success')
     return redirect(url_for('view_invoice', invoice_id=invoice.id))

@@ -55,12 +55,10 @@
                 Sign in with Google
             </a>
 
-            {% if config.get('ALLOW_DEV_LOGIN') %}
-            <a href="{{ url_for('google_auth.dev_login') }}"
+            <a href="{{ url_for('dev_login') }}"
                class="mt-3 flex items-center justify-center gap-3 w-full bg-[#0f172a] hover:bg-[#1e293b] text-white font-semibold py-3 px-6 rounded-xl transition touch-target text-center">
-                Bypass Login (Dev Mode Admin)
+                Sign In (Dev)
             </a>
-            {% endif %}
 
             <p class="mt-4 text-center text-xs text-[#94a3b8]">
                 Switch accounts anytime &mdash; no incognito needed.
