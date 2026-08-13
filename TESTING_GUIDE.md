@@ -7,26 +7,32 @@ gives you sample data so you can test each one end-to-end.
 
 ## 1. Getting In (Login)
 
-**How it works:** The landing page at `/` shows a "Sign in with Google" button.
-If `ALLOW_DEV_LOGIN=true` is set, a "Bypass Login (Dev Mode Admin)" button also
-appears — click that to get in as a supervisor without Google OAuth.
+**How it works:** The landing page at `/` shows a "Sign in with Google" button
+and a "Sign In (Dev)" button. The dev button creates or reuses a supervisor
+account and logs you in immediately — no Google OAuth needed.
 
 **Test it:**
-1. Go to your Render URL (e.g. `https://mobiletimetracker.onrender.com/`)
-2. Click "Bypass Login (Dev Mode Admin)"
+1. Go to your app URL (e.g. `https://mobiletimetracker.onrender.com/`)
+2. Click "Sign In (Dev)"
 3. You should land on the Home dashboard
 
 ---
 
 ## 2. Home Dashboard
 
-**Where:** `/` (after login)
+**Where:** `/home` (after login)
 
-**What it shows:** Pipeline summary, lead counts by status, recent clients,
-stale leads needing attention, channel performance cards, and a weekly brief.
+**What it shows:**
+- **All users**: Pipeline summary, lead counts by status, recent clients,
+  stale leads needing attention, channel performance cards, weekly brief.
+- **All users**: "My Assignments" section — today's tasks and this week's tasks
+  (from the scheduling system).
+- **Supervisors**: "Portfolio Financials" collapsible section — contract value,
+  budget vs actual, gross margin, AR outstanding, WIP mini-table (top 5 projects
+  with progress bars), AR aging buckets, CSV/PDF export buttons.
 
-**Test it:** Once you add a few clients (next section), come back here to see
-the dashboard populate.
+**Test it:** Once you add a few clients and accept an estimate (sections below),
+come back here to see both the pipeline and financial sections populate.
 
 ---
 
@@ -448,6 +454,318 @@ the payroll and job costing data.
 
 Shows all 15 UI macros (buttons, inputs, cards, etc.) rendered with examples.
 Useful for design consistency.
+
+---
+
+## 16. Project Scheduling
+
+### 16a. Create Schedule Phases
+
+**Where:** Client page → default project → "Schedule" button, or
+`/schedule/<project_id>`
+
+**Test it:**
+1. Open Maria Garcia's project schedule
+2. Click "Add Phase"
+3. Create these phases in order:
+   - Foundation (color: #ef4444)
+   - Framing (color: #f59e0b)
+   - Rough-In (color: #3b82f6)
+   - Finishes (color: #10b981)
+
+### 16b. Create Tasks
+
+**Where:** Schedule view → "Add Task" button
+
+**Test data — create these tasks:**
+
+| Task Name | Phase | Start | End | Priority | Status |
+|-----------|-------|-------|-----|----------|--------|
+| Excavation | Foundation | today | today+3 | High | In Progress |
+| Pour footings | Foundation | today+4 | today+6 | High | Not Started |
+| Frame walls | Framing | today+7 | today+12 | Medium | Not Started |
+| Rough plumbing | Rough-In | today+13 | today+15 | Medium | Not Started |
+
+### 16c. My Tasks (Mobile View)
+
+**Where:** Tasks tab in nav, or `/my-tasks`
+
+Shows tasks assigned to the current user, grouped by "Today", "This Week",
+and "Overdue". Designed for field crews on mobile.
+
+### 16d. Gantt Chart
+
+**Where:** Schedule view → Gantt tab
+
+Canvas-based Gantt chart showing phases and tasks on a timeline. No external
+library needed — rendered with vanilla JS and HTML5 Canvas.
+
+---
+
+## 17. Daily Field Logs
+
+### 17a. Create a Daily Log
+
+**Where:** Logs tab in nav → "New Log", or `/daily-logs/new`
+
+**Test data:**
+1. Click "New Log"
+2. Set Client = Maria Garcia, Date = today
+3. Fill in:
+   - Crew Count = 4
+   - Crew Names = "Mike, Juan, Alex, Dev"
+   - Hours Regular = 8, Hours OT = 0
+   - Work Completed = "Completed excavation and form setup for foundation"
+   - Weather = auto-fetched (or enter manually: Clear, 85°F)
+4. Save as Draft or Final
+
+### 17b. Add Photos to a Log
+
+**Where:** Daily log edit page → "Add Photos" section
+
+Upload construction photos. On mobile, the camera capture button opens the
+device camera directly. Photos are stored in R2 under `daily-logs/`.
+
+### 17c. Daily Log PDF
+
+**Where:** Daily log view → "Download PDF" button
+
+Generates a PDF of the day's log using fpdf2. Also available as a weekly
+summary PDF.
+
+### 17d. Offline Daily Logs
+
+Daily logs support offline entry via the sync queue. If you create a log while
+offline, it's stored in localStorage and synced when connectivity returns.
+
+---
+
+## 18. Change Orders
+
+### 18a. Create a Change Order
+
+**Where:** COs tab in nav → "New CO", or `/change-orders/new`
+
+**Test data:**
+1. Click "New CO"
+2. Select Client = Maria Garcia
+3. Fill in:
+   - CO Number = CO-001
+   - Title = "Add skylight to bedroom"
+   - Description = "Client requests 2x3 skylight in master bedroom"
+   - Price to Client = $3,500
+4. Add line items:
+   - "Skylight unit" — Cost Code: 16 Windows & Doors, Amount: $1,200
+   - "Install labor" — Cost Code: 16 Windows & Doors, Amount: $800
+   - "Flashing/waterproofing" — Cost Code: 04 Roofing, Amount: $500
+5. Save
+
+### 18b. Approve a Change Order
+
+**Where:** CO view → "Approve" button, or via the client portal (e-signature)
+
+Approving a CO:
+- Adds the price_to_client to the project contract value
+- Creates budget lines from the CO items
+- Logs a ClientActivity entry
+- Can be signed by the client via a public share link with e-signature
+
+---
+
+## 19. Billing & Invoicing
+
+### 19a. Create an Invoice
+
+**Where:** Client billing hub (from contract view) → "New Invoice"
+
+**Prerequisites:** Must have a signed contract with draw schedule items.
+
+**Test it:**
+1. Open Maria Garcia's contract → click "Billing"
+2. Click "New Invoice"
+3. Select draw schedule milestones to bill (e.g., Deposit at 10%)
+4. Add any approved, unbilled change orders
+5. Set due date = 30 days from today
+6. Create the invoice
+
+### 19b. Record a Payment
+
+**Where:** Invoice view → "Record Payment"
+
+**Test it:**
+1. Open the invoice
+2. Click "Record Payment"
+3. Enter Amount = $25,000, Method = Check, Reference = "Check #1234"
+4. Save — invoice should show "Partial" status
+5. Record another payment for the remaining balance — should show "Paid"
+
+### 19c. Void an Invoice
+
+**Where:** Invoice view → "Void" button
+
+Voiding un-bills any associated change orders so they can be re-billed.
+Creates an audit trail entry (ClientActivity).
+
+### 19d. Public Invoice + Stripe
+
+Invoices have a public share link. If Stripe is configured, clients can pay
+online via a Stripe Checkout session.
+
+---
+
+## 20. Financial Reports
+
+### 20a. Portfolio Financials Page
+
+**Where:** Reports → Financials, or `/reports/financials`
+
+**What it shows:**
+- 7 summary cards: Active Projects, Contract Value, Total Budget, Actual Costs,
+  Committed, Cost to Complete, Gross Margin (with %)
+- WIP table: every active project with contract value, budget, actual, committed,
+  CTC, progress bar, and health badge (On Track / Watch / Over Budget)
+- AR Aging: total outstanding, 5 aging buckets (Current / 1-30 / 31-60 / 61-90 / 90+),
+  and a detail table of every outstanding invoice
+
+**Test it:**
+1. After accepting an estimate and creating some cost entries, visit `/reports/financials`
+2. You should see the project in the WIP table
+3. After creating and sending an invoice, the AR section should populate
+
+### 20b. Export
+
+**Where:** Financials page → "Export CSV" or "Export PDF"
+
+CSV downloads a spreadsheet; PDF generates a formatted report via fpdf2.
+
+---
+
+## 21. Client Portal
+
+### 21a. Create a Client User
+
+**Where:** Client detail page → "Portal" section (supervisor only)
+
+**Test it:**
+1. Open Maria Garcia's client page
+2. In the Portal section, enter email = "maria@example.com", name = "Maria Garcia"
+3. Click "Create Portal User"
+4. A magic link is generated — in dev mode, it's shown as a flash message
+
+### 21b. Magic Link Login
+
+**Where:** `/portal/login`
+
+Clients enter their email, receive a magic link, and click it to log in.
+Links are single-use and expire after 30 minutes. No password needed.
+
+### 21c. Portal Dashboard
+
+**Where:** `/portal/` (after client login)
+
+Shows the client:
+- Project progress (phases and task completion)
+- Draw schedule / payment milestones
+- Recent construction photos
+- Unread messages count
+- Pending selections count
+
+### 21d. Portal Messages
+
+**Where:** `/portal/messages`
+
+Two-way message thread between client and staff. Staff messages are marked
+as read when the client views them. Client messages notify supervisors
+(respecting notification preferences).
+
+### 21e. Portal Selections
+
+**Where:** `/portal/selections`
+
+Clients choose finish/fixture options (flooring, countertops, etc.) from
+categories set up by staff. Each selection:
+- Creates a ClientActivity entry
+- Notifies supervisors (if their preferences allow)
+- Can trigger a change order for price deltas
+
+### 21f. Auth Isolation
+
+The client portal is **fully isolated** from staff auth:
+- ClientUser uses `session['client_user_id']` — never flask-login
+- Staff uses flask-login (`current_user`) — never client sessions
+- A client session CANNOT access any staff route (returns 302)
+- A staff session CANNOT access portal routes
+- Client A cannot see Client B's data
+
+---
+
+## 22. Notification Preferences
+
+**Where:** Profile menu → Notifications, or `/settings/notifications`
+
+**Preference categories:**
+- **Task Notifications**: new task assigned, task updated, task reminders
+- **Financial Notifications**: invoice created, payment received, estimate accepted
+- **Client Portal Notifications**: portal message received, selection made
+
+Unchecking a preference suppresses that notification type for your account.
+In-app notifications still appear in the bell dropdown; email/SMS delivery
+is a future feature.
+
+---
+
+## 23. PWA / Mobile Install
+
+### 23a. Install on iOS
+
+1. Open the app in Safari
+2. Tap the Share button → "Add to Home Screen"
+3. The app launches in standalone mode (no browser chrome)
+
+### 23b. Install on Android
+
+1. Open the app in Chrome
+2. Tap the install banner (or Menu → "Install app")
+3. The app appears as a standalone icon on the home screen
+
+### 23c. Offline Support
+
+When offline:
+- Previously visited pages load from the service worker cache
+- An amber "You are offline" banner appears at the top
+- POST/PUT actions (time entries, daily logs) are queued in IndexedDB
+- When connectivity returns, queued actions replay automatically via Background Sync
+
+---
+
+## 24. Automated Test Suites
+
+Run these from the project root to verify core logic without needing a live database:
+
+```bash
+# Access-control tests (11 tests)
+.venv/bin/python -m unittest test_access_control -v
+
+# Cost math tests (20 tests)
+.venv/bin/python -m unittest test_cost_math -v
+
+# Portal isolation tests (8 tests)
+.venv/bin/python -m unittest test_portal_isolation -v
+
+# All tests at once
+.venv/bin/python -m unittest test_access_control test_cost_math test_portal_isolation -v
+```
+
+**What they cover:**
+- `test_access_control.py` — rep vs supervisor roles, unauthenticated redirects,
+  client portal isolation, session tampering, magic link security
+- `test_cost_math.py` — budget/actual/committed aggregation, CostEntry upsert
+  idempotency, estimate math (waste, markup, overhead, contingency), invoice
+  recalculate (retainage, partial/full payment), change order totals
+- `test_portal_isolation.py` — client session can't access staff routes, cross-client
+  data isolation, inactive client blocked, magic link single-use
+
+All tests use SQLite in-memory — no external database or API keys needed.
 
 ---
 
