@@ -1,0 +1,45 @@
+{% extends "portal/base.html" %}
+{% block title %}Selections — {{ client.name }}{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-2">Finish & Fixture Selections</h1>
+<p class="text-gray-500 text-sm mb-6">Choose your finishes below. Each selection will be reviewed by our team.</p>
+
+{% if categories %}
+<div class="space-y-3">
+    {% for cat in categories %}
+    {% set sel = current.get(cat.id) %}
+    <a href="{{ url_for('portal.selection_detail', category_id=cat.id) }}"
+       class="block bg-white rounded-2xl shadow-sm border border-gray-200 p-5 hover:shadow-md transition-shadow">
+        <div class="flex items-center justify-between">
+            <div>
+                <h3 class="text-sm font-semibold text-gray-900">{{ cat.name }}</h3>
+                {% if cat.description %}
+                <p class="text-xs text-gray-400 mt-0.5">{{ cat.description }}</p>
+                {% endif %}
+                {% if sel %}
+                <div class="mt-2 flex items-center gap-2">
+                    <span class="text-xs text-gray-600">Selected: <strong>{{ sel.option.name }}</strong></span>
+                    {% if sel.status == 'Approved' %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">Approved</span>
+                    {% elif sel.status == 'Rejected' %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-red-100 text-red-700">Rejected</span>
+                    {% else %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700">Pending</span>
+                    {% endif %}
+                </div>
+                {% else %}
+                <div class="mt-2 text-xs text-blue-600">Tap to choose</div>
+                {% endif %}
+            </div>
+            <svg class="w-5 h-5 text-gray-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-12 text-gray-400">
+    <p>No selections available yet. Your builder will set these up soon.</p>
+</div>
+{% endif %}
+{% endblock %}

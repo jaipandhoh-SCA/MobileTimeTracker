@@ -1,0 +1,28 @@
+{% extends "portal/base.html" %}
+{% block title %}Photos — {{ client.name }}{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Construction Photos</h1>
+
+{% if photos %}
+<div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+    {% for photo in photos %}
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+        <div class="aspect-square bg-gray-100">
+            <img src="{{ generate_presigned_url(photo.storage_key) if photo.storage_key else '' }}"
+                 alt="{{ photo.caption or 'Construction photo' }}"
+                 class="w-full h-full object-cover" loading="lazy">
+        </div>
+        {% if photo.caption %}
+        <div class="p-2">
+            <p class="text-xs text-gray-600">{{ photo.caption }}</p>
+            <p class="text-[10px] text-gray-400 mt-0.5">{{ photo.created_at.strftime('%m/%d/%Y') if photo.created_at }}</p>
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-12 text-gray-400">No photos shared yet.</div>
+{% endif %}
+{% endblock %}

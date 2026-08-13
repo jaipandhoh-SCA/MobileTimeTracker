@@ -26,6 +26,8 @@ from models import (
     Invoice, InvoiceLineItem, Payment,
     INVOICE_STATUSES, PAYMENT_METHODS,
     QBOToken, QBOMapping, QBOSyncLog,
+    ClientUser, MagicLink, SelectionCategory, SelectionOption,
+    ClientSelection, PortalMessage, SELECTION_STATUSES,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -38,6 +40,9 @@ from utils import (
 from utils import PACIFIC_TZ
 
 app.register_blueprint(google_auth)
+
+from client_portal import portal as client_portal_bp
+app.register_blueprint(client_portal_bp)
 
 
 def build_daily_hours(entries, period_start, period_end):
@@ -7322,3 +7327,148 @@ def qbo_sync_dashboard():
                            last_sync=AppSetting.get('qbo_last_sync'),
                            last_sync_result=AppSetting.get('qbo_sync_result'),
                            last_sync_success=AppSetting.get('qbo_sync_success') == 'true')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  STAFF: CLIENT PORTAL USER MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/clients/<int:client_id>/portal-users', methods=['POST'])
+@require_supervisor
+def add_portal_user(client_id):
+    """Create a ClientUser for the client portal."""
+    client = Client.query.get_or_404(client_id)
+    email = request.form.get('email', '').strip().lower()
+    name = request.form.get('name', '').strip()
+    if not email:
+        flash('Email is required.', 'error')
+        return redirect(url_for('view_client', client_id=client_id))
+
+    existing = ClientUser.query.filter_by(email=email).first()
+    if existing:
+        flash(f'{email} already has portal access.', 'error')
+        return redirect(url_for('view_client', client_id=client_id))
+
+    cu = ClientUser(client_id=client.id, email=email, name=name or client.contact_name)
+    db.session.add(cu)
+    db.session.commit()
+    flash(f'Portal access created for {email}.', 'success')
+    return redirect(url_for('view_client', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/portal-users/<int:cu_id>/delete', methods=['POST'])
+@require_supervisor
+def remove_portal_user(client_id, cu_id):
+    cu = ClientUser.query.get_or_404(cu_id)
+    if cu.client_id != client_id:
+        abort(403)
+    cu.is_active = False
+    db.session.commit()
+    flash(f'Portal access revoked for {cu.email}.', 'info')
+    return redirect(url_for('view_client', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/portal-message', methods=['POST'])
+@require_login
+def send_portal_message(client_id):
+    """Staff sends a message to client via portal."""
+    client = Client.query.get_or_404(client_id)
+    text = request.form.get('message', '').strip()
+    if not text:
+        flash('Message cannot be empty.', 'error')
+        return redirect(url_for('view_client', client_id=client_id))
+
+    msg = PortalMessage(
+        client_id=client.id,
+        sender_type='staff',
+        sender_name=current_user.display_name,
+        message=text,
+    )
+    db.session.add(msg)
+    db.session.commit()
+    flash('Message sent to client portal.', 'success')
+    return redirect(url_for('view_client', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/selections/<int:sel_id>/approve', methods=['POST'])
+@require_login
+def approve_selection(client_id, sel_id):
+    """Approve a client's selection — optionally create a change order for price delta."""
+    sel = ClientSelection.query.get_or_404(sel_id)
+    if sel.client_id != client_id:
+        abort(403)
+
+    sel.status = 'Approved'
+    sel.approved_at = datetime.now(timezone.utc)
+
+    option = sel.option
+    if option.price_delta and option.price_delta != 0:
+        # Auto-create a change order for the price delta
+        from client_portal import _current_client_user  # not used here but keep import clean
+        project = sel.client.default_project()
+        co_number = f'CO-SEL-{sel.id:03d}'
+        co = ChangeOrder(
+            client_id=client_id,
+            project_id=project.id,
+            co_number=co_number,
+            title=f'Selection: {sel.category.name} — {option.name}',
+            description=f'Price adjustment for {sel.category.name} selection: {option.name}',
+            price_to_client=option.price_delta,
+            status='Approved',
+            approved_at=datetime.now(timezone.utc),
+            approved_name='Auto-approved via selection',
+            created_by_user_id=current_user.id,
+        )
+        db.session.add(co)
+        db.session.flush()
+        sel.change_order_id = co.id
+
+        # Apply budget/contract value adjustment (reuse the approval helper)
+        from routes import _apply_change_order_approval
+        # Budget + contract value already handled inline since CO is created as Approved
+        if option.cost_code_id:
+            from models import Budget
+            existing = Budget.query.filter_by(
+                project_id=project.id, cost_code_id=option.cost_code_id,
+                cost_type='Material').first()
+            if existing:
+                existing.amount += option.price_delta
+            else:
+                db.session.add(Budget(
+                    project_id=project.id, cost_code_id=option.cost_code_id,
+                    cost_type='Material', amount=option.price_delta,
+                    notes=f'Selection: {option.name}',
+                ))
+        if project.contract_value:
+            project.contract_value += option.price_delta
+        else:
+            project.contract_value = option.price_delta
+        client_obj = Client.query.get(client_id)
+        if client_obj.final_contract_value:
+            client_obj.final_contract_value += option.price_delta
+        else:
+            client_obj.final_contract_value = option.price_delta
+
+    activity = ClientActivity(
+        client_id=client_id,
+        user_id=current_user.id,
+        activity_type='Selection Approved',
+        note_text=f'{sel.category.name}: {option.name}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+    flash(f'Selection approved: {sel.category.name} — {option.name}', 'success')
+    return redirect(url_for('view_client', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/selections/<int:sel_id>/reject', methods=['POST'])
+@require_login
+def reject_selection(client_id, sel_id):
+    sel = ClientSelection.query.get_or_404(sel_id)
+    if sel.client_id != client_id:
+        abort(403)
+    sel.status = 'Rejected'
+    db.session.commit()
+    flash(f'Selection rejected: {sel.category.name}', 'info')
+    return redirect(url_for('view_client', client_id=client_id))

@@ -1,0 +1,97 @@
+{% extends "portal/base.html" %}
+{% block title %}{{ client.name }} — Portal{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Welcome, {{ client.contact_name or client.name }}</h1>
+    <p class="text-gray-500 mt-1">{{ client.address }}</p>
+</div>
+
+{# ── Quick Stats ─────────────────────────────────────────────── #}
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 text-center">
+        <div class="text-2xl font-bold text-gray-900">
+            {% set total_tasks = 0 %}{% set done_tasks = 0 %}
+            {% for p in phases %}{% set total_tasks = total_tasks + p._total %}{% set done_tasks = done_tasks + p._done %}{% endfor %}
+            {% if total_tasks %}{{ ((done_tasks / total_tasks) * 100)|round|int }}%{% else %}—{% endif %}
+        </div>
+        <div class="text-xs text-gray-500 mt-1">Complete</div>
+    </div>
+    <a href="{{ url_for('portal.selections') }}" class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 text-center hover:shadow-md transition-shadow">
+        <div class="text-2xl font-bold {% if pending_selections %}text-amber-600{% else %}text-gray-900{% endif %}">{{ pending_selections }}</div>
+        <div class="text-xs text-gray-500 mt-1">Pending Selections</div>
+    </a>
+    <a href="{{ url_for('portal.messages') }}" class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 text-center hover:shadow-md transition-shadow">
+        <div class="text-2xl font-bold {% if unread_count %}text-blue-600{% else %}text-gray-900{% endif %}">{{ unread_count }}</div>
+        <div class="text-xs text-gray-500 mt-1">Unread Messages</div>
+    </a>
+    <a href="{{ url_for('portal.documents') }}" class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 text-center hover:shadow-md transition-shadow">
+        <div class="text-2xl font-bold text-gray-900">{{ draws|length }}</div>
+        <div class="text-xs text-gray-500 mt-1">Milestones</div>
+    </a>
+</div>
+
+{# ── Phase Progress ──────────────────────────────────────────── #}
+{% if phases %}
+<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 mb-6">
+    <h2 class="text-sm font-semibold text-gray-900 mb-4">Project Progress</h2>
+    <div class="space-y-3">
+        {% for phase in phases %}
+        <div>
+            <div class="flex justify-between text-sm mb-1">
+                <span class="font-medium text-gray-700">{{ phase.name }}</span>
+                <span class="text-gray-400">{{ phase._done }}/{{ phase._total }}</span>
+            </div>
+            <div class="w-full bg-gray-100 rounded-full h-2">
+                {% set pct = (phase._done / phase._total * 100) if phase._total else 0 %}
+                <div class="h-2 rounded-full transition-all duration-500 {% if pct == 100 %}bg-green-500{% elif pct > 0 %}bg-blue-500{% else %}bg-gray-200{% endif %}"
+                     style="width: {{ pct|round|int }}%"></div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{# ── Milestones ──────────────────────────────────────────────── #}
+{% if draws %}
+<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 mb-6">
+    <h2 class="text-sm font-semibold text-gray-900 mb-4">Payment Milestones</h2>
+    <div class="space-y-2">
+        {% for draw in draws %}
+        <div class="flex items-center justify-between text-sm p-2 rounded-lg {% if draw.paid_at %}bg-green-50{% else %}bg-gray-50{% endif %}">
+            <div class="flex items-center gap-2">
+                {% if draw.paid_at %}
+                <svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd"/></svg>
+                {% else %}
+                <div class="w-4 h-4 border-2 border-gray-300 rounded-full"></div>
+                {% endif %}
+                <span class="text-gray-700">{{ draw.milestone }}</span>
+            </div>
+            <span class="text-gray-500 font-medium">${{ '{:,.0f}'.format(draw.amount) }}</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{# ── Recent Photos ───────────────────────────────────────────── #}
+{% if shared_photos %}
+<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-sm font-semibold text-gray-900">Recent Photos</h2>
+        <a href="{{ url_for('portal.photos') }}" class="text-xs text-blue-600 hover:underline">View all</a>
+    </div>
+    <div class="grid grid-cols-3 gap-2">
+        {% for photo in shared_photos %}
+        <div class="aspect-square bg-gray-100 rounded-lg overflow-hidden">
+            <img src="{{ generate_presigned_url(photo.storage_key) if photo.storage_key else '' }}"
+                 alt="{{ photo.caption or 'Photo' }}"
+                 class="w-full h-full object-cover"
+                 loading="lazy">
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}

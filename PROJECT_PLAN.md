@@ -50,6 +50,33 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-13 — Client-Facing Portal
+
+**Scope:** Fully isolated client portal with magic-link email auth (no Google OAuth dependency). Clients see their own project: progress/phases, shared photos, documents (contracts, approved COs, invoices), finish/fixture selections with price deltas, and a messaging thread. Staff get notified on client actions.
+
+**Architecture — auth isolation:**
+- `ClientUser` model is completely separate from `User` (staff). Different table, different PK type, no `UserMixin`.
+- Client sessions use `session['client_user_id']` — never flask-login. `user_loader` only queries `User`, structurally impossible for `ClientUser`.
+- Staff decorators (`@require_login`, `@require_supervisor`) check `current_user.is_authenticated` via flask-login — a client session can never satisfy these.
+- Portal blueprint (`client_portal.py`) with `/portal` prefix, `@require_client_login` decorator.
+- 8 automated tests (`test_portal_isolation.py`) verify: client can't reach staff routes, client can't see other client's data, unauthenticated visitors redirected, staff session can't use portal, inactive client rejected, magic link single-use.
+
+**Models (models.py):** Added `ClientUser`, `MagicLink`, `SelectionCategory`, `SelectionOption`, `ClientSelection`, `PortalMessage`. Constants: `SELECTION_STATUSES`.
+
+**Migration:** `j1d3e4f25g86_add_client_portal.py` — 6 new tables with indexes + unique constraints.
+
+**Files:** `client_portal.py` (Blueprint with 10 routes), `test_portal_isolation.py` (8 tests).
+
+**Portal routes (client_portal.py):** Login (magic link request), magic link auth, logout, dashboard (progress stats + milestones + photos), documents (contracts/COs/invoices/shared docs), selections list, selection detail (choose + submit), messages (chat thread + compose), progress (phase/task view), photos (shared photo grid).
+
+**Staff routes (routes.py):** `add_portal_user` (create ClientUser for a client), `remove_portal_user`, `send_portal_message`, `approve_selection` (auto-creates ChangeOrder for price deltas), `reject_selection`.
+
+**Templates (9):** `portal/base.html` (standalone layout, separate nav), `portal/login.html`, `portal/dashboard.html`, `portal/documents.html`, `portal/selections.html`, `portal/selection_detail.html`, `portal/messages.html`, `portal/progress.html`, `portal/photos.html`.
+
+**Selections workflow:** Categories → options (with images + price deltas) → client picks → staff approves → auto-creates change order if price delta ≠ 0 → updates Budget/contract values.
+
+---
+
 ### 2026-08-13 — QuickBooks Online Two-Way Sync
 
 **Scope:** Full two-way sync with QBO: customers, invoices, payments, cost data. OAuth 2.0 connect with explicit token refresh. Cost code → QBO account/item configurable mapping. Idempotent syncs (mappings track QBO IDs, no duplicates on retry). Push clients/invoices/payments to QBO; pull payments and new customers back. Sync-status dashboard with full audit log, error surfacing, and per-entity sync buttons.
