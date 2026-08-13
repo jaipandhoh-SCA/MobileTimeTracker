@@ -25,6 +25,7 @@ from models import (
     ChangeOrder, ChangeOrderItem, CHANGE_ORDER_STATUSES,
     Invoice, InvoiceLineItem, Payment,
     INVOICE_STATUSES, PAYMENT_METHODS,
+    QBOToken, QBOMapping, QBOSyncLog,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -2977,6 +2978,7 @@ def delete_channel_spend(spend_id):
 
 import ghl_helper
 import meta_ads_helper
+import qbo_helper
 
 # Session keys for storing sync results and lead source mappings
 _GHL_LEAD_SOURCE_KEY = 'ghl_lead_source_id'
@@ -3033,13 +3035,25 @@ def integrations_settings():
 
     lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
 
+    # QBO status
+    qbo_token = QBOToken.query.first()
+    qbo_status = {
+        'connected': qbo_token is not None,
+        'company_name': qbo_token.company_name if qbo_token else '',
+        'configured': qbo_helper.is_configured(),
+        'last_sync': AppSetting.get('qbo_last_sync'),
+        'last_sync_result': AppSetting.get('qbo_sync_result'),
+        'last_sync_success': AppSetting.get('qbo_sync_success') == 'true',
+    }
+
     return render_template('integrations_settings.html',
                          ghl_status=ghl_status,
                          meta_status=meta_status,
                          meta_campaigns=meta_campaigns,
                          lead_sources=lead_sources,
                          ghl_lead_source_id=AppSetting.get(_GHL_LEAD_SOURCE_KEY),
-                         meta_lead_source_id=AppSetting.get(_META_LEAD_SOURCE_KEY))
+                         meta_lead_source_id=AppSetting.get(_META_LEAD_SOURCE_KEY),
+                         qbo_status=qbo_status)
 
 
 @app.route('/settings/integrations/ghl/test', methods=['POST'])
@@ -6616,3 +6630,695 @@ def stripe_webhook():
                 db.session.commit()
 
     return jsonify(received=True), 200
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  QUICKBOOKS ONLINE — TWO-WAY SYNC
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_qbo_client():
+    """Build a QBOClient from the stored token, or return None."""
+    tok = QBOToken.query.first()
+    if not tok:
+        return None
+
+    def _on_refreshed(data):
+        tok.access_token = data['access_token']
+        tok.refresh_token = data['refresh_token']
+        tok.access_token_expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=data.get('expires_in', 3600))
+        db.session.commit()
+
+    return qbo_helper.QBOClient(
+        realm_id=tok.realm_id,
+        access_token=tok.access_token,
+        refresh_tok=tok.refresh_token,
+        token_expires_at=tok.access_token_expires_at.replace(
+            tzinfo=timezone.utc).timestamp() if tok.access_token_expires_at else 0,
+        on_token_refreshed=_on_refreshed,
+    )
+
+
+def _get_or_create_mapping(entity_type, local_id):
+    m = QBOMapping.query.filter_by(entity_type=entity_type, local_id=str(local_id)).first()
+    if not m:
+        m = QBOMapping(entity_type=entity_type, local_id=str(local_id))
+        db.session.add(m)
+        db.session.flush()
+    return m
+
+
+def _log_sync(direction, entity_type, entity_id, qbo_id, action, status, detail=None):
+    entry = QBOSyncLog(
+        direction=direction, entity_type=entity_type,
+        entity_id=str(entity_id) if entity_id else None,
+        qbo_id=str(qbo_id) if qbo_id else None,
+        action=action, status=status, detail=detail,
+    )
+    db.session.add(entry)
+    return entry
+
+
+# ── OAuth Connect ───────────────────────────────────────────────────────
+
+@app.route('/settings/qbo/connect')
+@require_supervisor
+def qbo_connect():
+    """Redirect to Intuit OAuth 2.0 consent page."""
+    if not qbo_helper.is_configured():
+        flash('QBO credentials not configured. Set QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI.', 'error')
+        return redirect(url_for('integrations_settings'))
+    import secrets
+    state = secrets.token_urlsafe(16)
+    session['qbo_oauth_state'] = state
+    return redirect(qbo_helper.auth_url(state))
+
+
+@app.route('/settings/qbo/callback')
+@require_supervisor
+def qbo_callback():
+    """Handle the OAuth 2.0 callback from Intuit."""
+    error = request.args.get('error')
+    if error:
+        flash(f'QBO authorization failed: {error}', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    state = request.args.get('state', '')
+    if state != session.pop('qbo_oauth_state', ''):
+        flash('Invalid OAuth state. Try again.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    code = request.args.get('code')
+    realm_id = request.args.get('realmId')
+    if not code or not realm_id:
+        flash('Missing authorization code.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    try:
+        data = qbo_helper.exchange_code(code)
+    except Exception as e:
+        flash(f'Token exchange failed: {e}', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=data.get('expires_in', 3600))
+    refresh_expires = now + timedelta(days=100)  # QBO refresh tokens last ~100 days
+
+    # Upsert the token (only one row)
+    tok = QBOToken.query.first()
+    if tok:
+        tok.realm_id = realm_id
+        tok.access_token = data['access_token']
+        tok.refresh_token = data['refresh_token']
+        tok.access_token_expires_at = expires_at
+        tok.refresh_token_expires_at = refresh_expires
+        tok.connected_at = now
+    else:
+        tok = QBOToken(
+            realm_id=realm_id,
+            access_token=data['access_token'],
+            refresh_token=data['refresh_token'],
+            access_token_expires_at=expires_at,
+            refresh_token_expires_at=refresh_expires,
+            connected_at=now,
+        )
+        db.session.add(tok)
+
+    # Fetch company name
+    try:
+        client = _get_qbo_client()
+        if not client:
+            # Token was just added, create client manually
+            client = qbo_helper.QBOClient(
+                realm_id=realm_id,
+                access_token=data['access_token'],
+                refresh_tok=data['refresh_token'],
+                token_expires_at=expires_at.timestamp(),
+            )
+        info = client.company_info()
+        tok.company_name = info.get('CompanyName', 'Connected')
+    except Exception:
+        tok.company_name = 'Connected'
+
+    db.session.commit()
+    flash(f'QuickBooks Online connected: {tok.company_name}', 'success')
+    return redirect(url_for('integrations_settings'))
+
+
+@app.route('/settings/qbo/disconnect', methods=['POST'])
+@require_supervisor
+def qbo_disconnect():
+    """Remove QBO tokens (disconnect)."""
+    QBOToken.query.delete()
+    db.session.commit()
+    flash('QuickBooks Online disconnected.', 'info')
+    return redirect(url_for('integrations_settings'))
+
+
+# ── Cost Code → QBO Account/Item Mapping ────────────────────────────────
+
+@app.route('/settings/qbo/mappings')
+@require_supervisor
+def qbo_mappings():
+    """Configure cost code → QBO account/item mappings."""
+    client = _get_qbo_client()
+    if not client:
+        flash('Connect to QuickBooks first.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+
+    # Current mappings
+    cc_mappings = {}
+    for cc in cost_codes:
+        m = QBOMapping.query.filter_by(entity_type='cost_code', local_id=str(cc.id)).first()
+        cc_mappings[cc.id] = m
+
+    # Fetch QBO accounts and items
+    try:
+        qbo_income_accounts = client.get_accounts('Income')
+        qbo_expense_accounts = client.get_accounts('Expense')
+        qbo_items = client.get_items()
+    except Exception as e:
+        flash(f'Failed to fetch QBO data: {e}', 'error')
+        qbo_income_accounts = []
+        qbo_expense_accounts = []
+        qbo_items = []
+
+    return render_template('qbo_mappings.html',
+                           cost_codes=cost_codes, cc_mappings=cc_mappings,
+                           qbo_income_accounts=qbo_income_accounts,
+                           qbo_expense_accounts=qbo_expense_accounts,
+                           qbo_items=qbo_items)
+
+
+@app.route('/settings/qbo/mappings/save', methods=['POST'])
+@require_supervisor
+def qbo_mappings_save():
+    """Save cost code → QBO item mappings."""
+    cost_codes = CostCode.query.filter_by(is_active=True).all()
+    for cc in cost_codes:
+        qbo_item_id = request.form.get(f'cc_{cc.id}_item_id', '').strip()
+        qbo_item_name = request.form.get(f'cc_{cc.id}_item_name', '').strip()
+        if qbo_item_id:
+            m = _get_or_create_mapping('cost_code', cc.id)
+            m.qbo_id = qbo_item_id
+            m.qbo_name = qbo_item_name or None
+        else:
+            # Remove mapping if cleared
+            existing = QBOMapping.query.filter_by(entity_type='cost_code', local_id=str(cc.id)).first()
+            if existing:
+                db.session.delete(existing)
+    db.session.commit()
+    flash('QBO mappings saved.', 'success')
+    return redirect(url_for('qbo_mappings'))
+
+
+# ── Sync Engine ─────────────────────────────────────────────────────────
+
+def _push_customer(client_obj, qbo_client):
+    """Push a Client → QBO Customer.  Idempotent."""
+    m = _get_or_create_mapping('customer', client_obj.id)
+
+    if m.qbo_id:
+        # Already synced — update
+        try:
+            existing = qbo_client.get_customer(m.qbo_id)
+            qbo_cust = qbo_client.update_customer(
+                m.qbo_id, existing['SyncToken'],
+                DisplayName=client_obj.name,
+                PrimaryEmailAddr={'Address': client_obj.email} if client_obj.email else None,
+                PrimaryPhone={'FreeFormNumber': client_obj.phone} if client_obj.phone else None,
+            )
+            m.qbo_sync_token = qbo_cust['SyncToken']
+            m.qbo_name = qbo_cust['DisplayName']
+            m.last_synced_at = datetime.now(timezone.utc)
+            _log_sync('push', 'customer', client_obj.id, m.qbo_id, 'update', 'success')
+            return m
+        except Exception as e:
+            _log_sync('push', 'customer', client_obj.id, m.qbo_id, 'update', 'error', str(e))
+            raise
+
+    # Check if customer already exists by name (prevent duplicates)
+    try:
+        existing = qbo_client.find_customer_by_name(client_obj.name)
+        if existing:
+            m.qbo_id = str(existing['Id'])
+            m.qbo_sync_token = existing.get('SyncToken')
+            m.qbo_name = existing['DisplayName']
+            m.last_synced_at = datetime.now(timezone.utc)
+            _log_sync('push', 'customer', client_obj.id, m.qbo_id, 'skip', 'success',
+                       'Already exists in QBO')
+            return m
+    except Exception:
+        pass
+
+    # Create new
+    try:
+        addr_parts = (client_obj.address or '').split(',')
+        qbo_cust = qbo_client.create_customer(
+            display_name=client_obj.name,
+            email=client_obj.email,
+            phone=client_obj.phone,
+            address_line=addr_parts[0].strip() if addr_parts else None,
+        )
+        m.qbo_id = str(qbo_cust['Id'])
+        m.qbo_sync_token = qbo_cust.get('SyncToken')
+        m.qbo_name = qbo_cust['DisplayName']
+        m.last_synced_at = datetime.now(timezone.utc)
+        _log_sync('push', 'customer', client_obj.id, m.qbo_id, 'create', 'success')
+        return m
+    except Exception as e:
+        _log_sync('push', 'customer', client_obj.id, None, 'create', 'error', str(e))
+        raise
+
+
+def _push_invoice(invoice_obj, qbo_client):
+    """Push an Invoice → QBO Invoice.  Idempotent."""
+    m = _get_or_create_mapping('invoice', invoice_obj.id)
+
+    if m.qbo_id:
+        _log_sync('push', 'invoice', invoice_obj.id, m.qbo_id, 'skip', 'skipped',
+                   'Already synced')
+        return m
+
+    # Ensure customer is synced
+    cust_mapping = _get_or_create_mapping('customer', invoice_obj.client_id)
+    if not cust_mapping.qbo_id:
+        client_obj = Client.query.get(invoice_obj.client_id)
+        _push_customer(client_obj, qbo_client)
+        cust_mapping = QBOMapping.query.filter_by(
+            entity_type='customer', local_id=str(invoice_obj.client_id)).first()
+
+    if not cust_mapping or not cust_mapping.qbo_id:
+        _log_sync('push', 'invoice', invoice_obj.id, None, 'create', 'error',
+                   'Customer not synced to QBO')
+        raise ValueError('Customer not synced to QBO')
+
+    # Build line items
+    lines = []
+    for li in invoice_obj.line_items.all():
+        line = {'description': li.description, 'amount': li.amount}
+        # Check for cost code → QBO item mapping
+        if li.source_type == 'draw' and li.draw_item_id:
+            pass  # Use description as-is
+        if li.source_type == 'change_order' and li.change_order_id:
+            co = li.change_order
+            if co:
+                for co_item in co.items.all():
+                    if co_item.cost_code_id:
+                        cc_map = QBOMapping.query.filter_by(
+                            entity_type='cost_code', local_id=str(co_item.cost_code_id)).first()
+                        if cc_map and cc_map.qbo_id:
+                            line['item_id'] = cc_map.qbo_id
+                            break
+        lines.append(line)
+
+    try:
+        qbo_inv = qbo_client.create_invoice(
+            customer_id=cust_mapping.qbo_id,
+            line_items=lines,
+            doc_number=invoice_obj.invoice_number,
+            due_date=invoice_obj.due_date.isoformat() if invoice_obj.due_date else None,
+            txn_date=invoice_obj.issued_date.isoformat() if invoice_obj.issued_date else None,
+            memo=invoice_obj.notes,
+        )
+        m.qbo_id = str(qbo_inv['Id'])
+        m.qbo_sync_token = qbo_inv.get('SyncToken')
+        m.last_synced_at = datetime.now(timezone.utc)
+        _log_sync('push', 'invoice', invoice_obj.id, m.qbo_id, 'create', 'success')
+        return m
+    except Exception as e:
+        _log_sync('push', 'invoice', invoice_obj.id, None, 'create', 'error', str(e))
+        raise
+
+
+def _push_payment(payment_obj, qbo_client):
+    """Push a Payment → QBO Payment.  Idempotent."""
+    m = _get_or_create_mapping('payment', payment_obj.id)
+
+    if m.qbo_id:
+        _log_sync('push', 'payment', payment_obj.id, m.qbo_id, 'skip', 'skipped',
+                   'Already synced')
+        return m
+
+    # Ensure invoice is synced
+    inv_mapping = QBOMapping.query.filter_by(
+        entity_type='invoice', local_id=str(payment_obj.invoice_id)).first()
+    invoice_qbo_id = inv_mapping.qbo_id if inv_mapping else None
+
+    # Ensure customer is synced
+    cust_mapping = QBOMapping.query.filter_by(
+        entity_type='customer', local_id=str(payment_obj.client_id)).first()
+    if not cust_mapping or not cust_mapping.qbo_id:
+        _log_sync('push', 'payment', payment_obj.id, None, 'create', 'error',
+                   'Customer not synced to QBO')
+        raise ValueError('Customer not synced to QBO')
+
+    try:
+        qbo_pmt = qbo_client.create_payment(
+            customer_id=cust_mapping.qbo_id,
+            amount=payment_obj.amount,
+            invoice_qbo_id=invoice_qbo_id,
+            txn_date=payment_obj.received_date.isoformat() if payment_obj.received_date else None,
+            memo=payment_obj.note or f'{payment_obj.method} payment',
+        )
+        m.qbo_id = str(qbo_pmt['Id'])
+        m.qbo_sync_token = qbo_pmt.get('SyncToken')
+        m.last_synced_at = datetime.now(timezone.utc)
+        _log_sync('push', 'payment', payment_obj.id, m.qbo_id, 'create', 'success')
+        return m
+    except Exception as e:
+        _log_sync('push', 'payment', payment_obj.id, None, 'create', 'error', str(e))
+        raise
+
+
+def _pull_payments(qbo_client, since_date=None):
+    """Pull payments from QBO → local.  Match by invoice mapping."""
+    if not since_date:
+        last = AppSetting.get('qbo_last_pull_payments')
+        since_date = last or '2020-01-01'
+
+    pulled = 0
+    try:
+        qbo_payments = qbo_client.get_payments_since(since_date)
+    except Exception as e:
+        _log_sync('pull', 'payment', None, None, 'fetch', 'error', str(e))
+        return 0
+
+    for qbo_pmt in qbo_payments:
+        qbo_id = str(qbo_pmt['Id'])
+        # Already mapped?
+        existing_map = QBOMapping.query.filter_by(entity_type='payment', qbo_id=qbo_id).first()
+        if existing_map:
+            continue  # Already linked
+
+        # Find linked invoice
+        invoice_id = None
+        for line in qbo_pmt.get('Line', []):
+            for txn in line.get('LinkedTxn', []):
+                if txn.get('TxnType') == 'Invoice':
+                    inv_qbo_id = txn['TxnId']
+                    inv_map = QBOMapping.query.filter_by(
+                        entity_type='invoice', qbo_id=str(inv_qbo_id)).first()
+                    if inv_map:
+                        invoice_id = int(inv_map.local_id)
+
+        if not invoice_id:
+            _log_sync('pull', 'payment', None, qbo_id, 'skip', 'skipped',
+                       'No matching local invoice')
+            continue
+
+        invoice = Invoice.query.get(invoice_id)
+        if not invoice:
+            continue
+
+        # Check if we already have this payment
+        existing_pmt = Payment.query.filter_by(
+            invoice_id=invoice_id,
+            stripe_payment_intent_id=f'qbo:{qbo_id}',  # Use this field as dedup key
+        ).first()
+        if existing_pmt:
+            continue
+
+        amount = Decimal(str(qbo_pmt.get('TotalAmt', 0)))
+        txn_date = qbo_pmt.get('TxnDate')
+        received = None
+        if txn_date:
+            try:
+                received = datetime.strptime(txn_date, '%Y-%m-%d').date()
+            except ValueError:
+                received = date.today()
+
+        payment = Payment(
+            invoice_id=invoice_id,
+            client_id=invoice.client_id,
+            amount=amount,
+            method='other',
+            status='succeeded',
+            reference=f'QBO Payment #{qbo_id}',
+            stripe_payment_intent_id=f'qbo:{qbo_id}',
+            received_date=received or date.today(),
+            note='Synced from QuickBooks',
+        )
+        db.session.add(payment)
+        invoice.recalculate()
+
+        # Create mapping
+        m = QBOMapping(entity_type='payment', local_id=str(payment.id), qbo_id=qbo_id)
+        db.session.add(m)
+
+        _log_sync('pull', 'payment', payment.id, qbo_id, 'create', 'success')
+        pulled += 1
+
+    AppSetting.set('qbo_last_pull_payments', datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S'))
+    db.session.commit()
+    return pulled
+
+
+def _pull_customers(qbo_client, since_date=None):
+    """Pull new/updated customers from QBO.  Creates local Clients only for
+    customers that don't already have a mapping (no overwrite)."""
+    if not since_date:
+        last = AppSetting.get('qbo_last_pull_customers')
+        since_date = last or '2020-01-01'
+
+    pulled = 0
+    try:
+        qbo_custs = qbo_client.get_customers_since(since_date)
+    except Exception as e:
+        _log_sync('pull', 'customer', None, None, 'fetch', 'error', str(e))
+        return 0
+
+    for qbo_cust in qbo_custs:
+        qbo_id = str(qbo_cust['Id'])
+        existing_map = QBOMapping.query.filter_by(entity_type='customer', qbo_id=qbo_id).first()
+        if existing_map:
+            # Update name if changed
+            local_client = Client.query.get(int(existing_map.local_id))
+            if local_client:
+                display = qbo_cust.get('DisplayName', '')
+                if display and display != local_client.name:
+                    local_client.name = display
+                    existing_map.qbo_name = display
+                    _log_sync('pull', 'customer', local_client.id, qbo_id, 'update', 'success')
+            continue
+
+        # New customer from QBO — create a local Client
+        name = qbo_cust.get('DisplayName', qbo_cust.get('CompanyName', 'QBO Customer'))
+        email = None
+        if qbo_cust.get('PrimaryEmailAddr'):
+            email = qbo_cust['PrimaryEmailAddr'].get('Address')
+        phone = None
+        if qbo_cust.get('PrimaryPhone'):
+            phone = qbo_cust['PrimaryPhone'].get('FreeFormNumber')
+        address = ''
+        if qbo_cust.get('BillAddr'):
+            addr = qbo_cust['BillAddr']
+            parts = [addr.get('Line1', ''), addr.get('City', ''),
+                     addr.get('CountrySubDivisionCode', ''), addr.get('PostalCode', '')]
+            address = ', '.join(p for p in parts if p)
+
+        new_client = Client(
+            name=name,
+            address=address or 'Imported from QBO',
+            email=email,
+            phone=phone,
+            status='Lead',
+        )
+        db.session.add(new_client)
+        db.session.flush()
+
+        m = QBOMapping(entity_type='customer', local_id=str(new_client.id),
+                        qbo_id=qbo_id, qbo_name=name,
+                        last_synced_at=datetime.now(timezone.utc))
+        db.session.add(m)
+        _log_sync('pull', 'customer', new_client.id, qbo_id, 'create', 'success')
+        pulled += 1
+
+    AppSetting.set('qbo_last_pull_customers', datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S'))
+    db.session.commit()
+    return pulled
+
+
+# ── Sync Trigger Routes ─────────────────────────────────────────────────
+
+@app.route('/settings/qbo/sync', methods=['POST'])
+@require_supervisor
+def qbo_sync_all():
+    """Run a full two-way sync."""
+    qbo = _get_qbo_client()
+    if not qbo:
+        flash('QuickBooks not connected.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    results = {'push_customers': 0, 'push_invoices': 0, 'push_payments': 0,
+               'pull_customers': 0, 'pull_payments': 0, 'errors': []}
+
+    # 1. Push customers (all active clients)
+    for client_obj in Client.query.filter_by(is_active=True).all():
+        try:
+            _push_customer(client_obj, qbo)
+            results['push_customers'] += 1
+        except Exception as e:
+            results['errors'].append(f'Customer {client_obj.name}: {e}')
+
+    # 2. Push invoices (Sent, Partial, Paid — skip Draft/Voided)
+    for inv in Invoice.query.filter(Invoice.status.in_(['Sent', 'Viewed', 'Partial', 'Paid', 'Overdue'])).all():
+        try:
+            _push_invoice(inv, qbo)
+            results['push_invoices'] += 1
+        except Exception as e:
+            results['errors'].append(f'Invoice {inv.invoice_number}: {e}')
+
+    # 3. Push payments
+    for pmt in Payment.query.filter_by(status='succeeded').all():
+        try:
+            _push_payment(pmt, qbo)
+            results['push_payments'] += 1
+        except Exception as e:
+            results['errors'].append(f'Payment #{pmt.id}: {e}')
+
+    # 4. Pull customers from QBO
+    try:
+        results['pull_customers'] = _pull_customers(qbo)
+    except Exception as e:
+        results['errors'].append(f'Pull customers: {e}')
+
+    # 5. Pull payments from QBO
+    try:
+        results['pull_payments'] = _pull_payments(qbo)
+    except Exception as e:
+        results['errors'].append(f'Pull payments: {e}')
+
+    db.session.commit()
+
+    now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    AppSetting.set('qbo_last_sync', now_str)
+    summary = (f"Push: {results['push_customers']} customers, {results['push_invoices']} invoices, "
+               f"{results['push_payments']} payments. "
+               f"Pull: {results['pull_customers']} customers, {results['pull_payments']} payments.")
+    if results['errors']:
+        summary += f" Errors: {len(results['errors'])}"
+    AppSetting.set('qbo_sync_result', summary)
+    AppSetting.set('qbo_sync_success', 'false' if results['errors'] else 'true')
+
+    if results['errors']:
+        flash(f'Sync completed with {len(results["errors"])} error(s). {summary}', 'warning')
+    else:
+        flash(f'Sync completed. {summary}', 'success')
+
+    return redirect(url_for('qbo_sync_dashboard'))
+
+
+@app.route('/settings/qbo/sync/customers', methods=['POST'])
+@require_supervisor
+def qbo_sync_customers():
+    """Push all active clients to QBO."""
+    qbo = _get_qbo_client()
+    if not qbo:
+        flash('QuickBooks not connected.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    count = 0
+    errors = 0
+    for client_obj in Client.query.filter_by(is_active=True).all():
+        try:
+            _push_customer(client_obj, qbo)
+            count += 1
+        except Exception:
+            errors += 1
+    db.session.commit()
+    flash(f'Synced {count} customers to QBO. {errors} error(s).' if errors
+          else f'Synced {count} customers to QBO.', 'success' if not errors else 'warning')
+    return redirect(url_for('qbo_sync_dashboard'))
+
+
+@app.route('/settings/qbo/sync/invoices', methods=['POST'])
+@require_supervisor
+def qbo_sync_invoices():
+    """Push all non-draft invoices to QBO."""
+    qbo = _get_qbo_client()
+    if not qbo:
+        flash('QuickBooks not connected.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    count = 0
+    errors = 0
+    for inv in Invoice.query.filter(Invoice.status.in_(['Sent', 'Viewed', 'Partial', 'Paid', 'Overdue'])).all():
+        try:
+            _push_invoice(inv, qbo)
+            count += 1
+        except Exception:
+            errors += 1
+    db.session.commit()
+    flash(f'Synced {count} invoices to QBO. {errors} error(s).' if errors
+          else f'Synced {count} invoices to QBO.', 'success' if not errors else 'warning')
+    return redirect(url_for('qbo_sync_dashboard'))
+
+
+@app.route('/settings/qbo/sync/pull-payments', methods=['POST'])
+@require_supervisor
+def qbo_pull_payments():
+    """Pull new payments from QBO into local."""
+    qbo = _get_qbo_client()
+    if not qbo:
+        flash('QuickBooks not connected.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    try:
+        count = _pull_payments(qbo)
+        flash(f'Pulled {count} new payment(s) from QBO.', 'success')
+    except Exception as e:
+        flash(f'Failed to pull payments: {e}', 'error')
+    return redirect(url_for('qbo_sync_dashboard'))
+
+
+# ── Sync Dashboard ──────────────────────────────────────────────────────
+
+@app.route('/settings/qbo/dashboard')
+@require_supervisor
+def qbo_sync_dashboard():
+    """Sync status dashboard with log history."""
+    tok = QBOToken.query.first()
+    connected = tok is not None
+
+    # Mapping counts
+    mapping_counts = {}
+    for etype in ['customer', 'invoice', 'payment', 'cost_code']:
+        mapping_counts[etype] = QBOMapping.query.filter_by(entity_type=etype).filter(
+            QBOMapping.qbo_id.isnot(None)).count()
+
+    # Recent logs
+    recent_logs = QBOSyncLog.query.order_by(QBOSyncLog.created_at.desc()).limit(100).all()
+
+    # Error summary
+    error_count = QBOSyncLog.query.filter_by(status='error').count()
+    recent_errors = QBOSyncLog.query.filter_by(status='error').order_by(
+        QBOSyncLog.created_at.desc()).limit(20).all()
+
+    # Unsynced counts
+    synced_client_ids = {int(m.local_id) for m in QBOMapping.query.filter_by(entity_type='customer').filter(
+        QBOMapping.qbo_id.isnot(None)).all()}
+    unsynced_clients = Client.query.filter_by(is_active=True).filter(
+        ~Client.id.in_(synced_client_ids) if synced_client_ids else Client.id.isnot(None)
+    ).count()
+
+    synced_inv_ids = {int(m.local_id) for m in QBOMapping.query.filter_by(entity_type='invoice').filter(
+        QBOMapping.qbo_id.isnot(None)).all()}
+    unsynced_invoices = Invoice.query.filter(
+        Invoice.status.in_(['Sent', 'Viewed', 'Partial', 'Paid', 'Overdue']),
+        ~Invoice.id.in_(synced_inv_ids) if synced_inv_ids else Invoice.id.isnot(None)
+    ).count()
+
+    return render_template('qbo_dashboard.html',
+                           connected=connected, token=tok,
+                           mapping_counts=mapping_counts,
+                           recent_logs=recent_logs,
+                           error_count=error_count,
+                           recent_errors=recent_errors,
+                           unsynced_clients=unsynced_clients,
+                           unsynced_invoices=unsynced_invoices,
+                           last_sync=AppSetting.get('qbo_last_sync'),
+                           last_sync_result=AppSetting.get('qbo_sync_result'),
+                           last_sync_success=AppSetting.get('qbo_sync_success') == 'true')

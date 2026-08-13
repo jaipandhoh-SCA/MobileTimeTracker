@@ -1348,6 +1348,64 @@ class Payment(db.Model):
     )
 
 
+QBO_SYNC_DIRECTIONS = ['push', 'pull', 'both']
+QBO_ENTITY_TYPES = ['customer', 'invoice', 'payment', 'account', 'item']
+QBO_SYNC_STATUSES = ['success', 'error', 'skipped']
+
+
+class QBOToken(db.Model):
+    """OAuth 2.0 tokens for QuickBooks Online — single row."""
+    __tablename__ = 'qbo_tokens'
+    id = db.Column(db.Integer, primary_key=True)
+    realm_id = db.Column(db.String(50), nullable=False)
+    access_token = db.Column(db.Text, nullable=False)
+    refresh_token = db.Column(db.Text, nullable=False)
+    access_token_expires_at = db.Column(db.DateTime, nullable=False)
+    refresh_token_expires_at = db.Column(db.DateTime, nullable=True)
+    company_name = db.Column(db.String(200), nullable=True)
+    connected_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class QBOMapping(db.Model):
+    """Map our cost codes to QBO accounts/items.  Also customer/invoice ID links."""
+    __tablename__ = 'qbo_mappings'
+    id = db.Column(db.Integer, primary_key=True)
+    entity_type = db.Column(db.String(30), nullable=False)     # customer, invoice, payment, cost_code
+    local_id = db.Column(db.String(50), nullable=False)        # our PK (string for flexibility)
+    qbo_id = db.Column(db.String(50), nullable=True)           # QBO entity ID
+    qbo_sync_token = db.Column(db.String(20), nullable=True)   # QBO SyncToken for updates
+    qbo_name = db.Column(db.String(300), nullable=True)        # display label from QBO
+    extra = db.Column(db.Text, nullable=True)                  # JSON blob for misc data
+    last_synced_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('entity_type', 'local_id', name='uq_qbo_mapping'),
+        Index('idx_qbo_map_type', 'entity_type'),
+        Index('idx_qbo_map_qbo_id', 'qbo_id'),
+    )
+
+
+class QBOSyncLog(db.Model):
+    """Audit trail for every sync operation."""
+    __tablename__ = 'qbo_sync_logs'
+    id = db.Column(db.Integer, primary_key=True)
+    direction = db.Column(db.String(10), nullable=False)       # push, pull
+    entity_type = db.Column(db.String(30), nullable=False)     # customer, invoice, payment
+    entity_id = db.Column(db.String(50), nullable=True)        # our local ID
+    qbo_id = db.Column(db.String(50), nullable=True)
+    action = db.Column(db.String(20), nullable=False)          # create, update, skip, error
+    status = db.Column(db.String(20), nullable=False)          # success, error, skipped
+    detail = db.Column(db.Text, nullable=True)                 # error message or summary
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index('idx_qbo_log_time', 'created_at'),
+        Index('idx_qbo_log_type', 'entity_type', 'status'),
+    )
+
+
 class AppSetting(db.Model):
     __tablename__ = 'app_settings'
     key = db.Column(db.String(100), primary_key=True)

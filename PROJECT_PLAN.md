@@ -50,6 +50,24 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-13 — QuickBooks Online Two-Way Sync
+
+**Scope:** Full two-way sync with QBO: customers, invoices, payments, cost data. OAuth 2.0 connect with explicit token refresh. Cost code → QBO account/item configurable mapping. Idempotent syncs (mappings track QBO IDs, no duplicates on retry). Push clients/invoices/payments to QBO; pull payments and new customers back. Sync-status dashboard with full audit log, error surfacing, and per-entity sync buttons.
+
+**Models (models.py):** Added `QBOToken`, `QBOMapping`, `QBOSyncLog`. Constants: `QBO_SYNC_DIRECTIONS`, `QBO_ENTITY_TYPES`, `QBO_SYNC_STATUSES`.
+
+**Migration:** `i0c2d3e14f75_add_qbo_sync.py` — 3 new tables with indexes + unique constraints.
+
+**Files:** `qbo_helper.py` (QBOClient with auto token refresh, CRUD for customers/invoices/payments/accounts/items, query helpers).
+
+**Routes (routes.py):** OAuth connect/callback/disconnect, cost code mapping CRUD, full sync + per-entity sync triggers, pull payments/customers, sync dashboard.
+
+**Templates:** `qbo_dashboard.html` (sync status, action buttons, stats, error list, full log table), `qbo_mappings.html` (cost code → QBO item mapping grid). QBO section added to `integrations_settings.html`.
+
+**Env vars needed:** `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, `QBO_ENVIRONMENT` (sandbox/production).
+
+---
+
 ### 2026-08-11 — Change Orders
 
 **Scope:** Change orders wired into job costing, contract value, and billing. Create from a client with cost breakdown by cost code. Status workflow: Draft → Sent → Approved → Rejected. On approval: additively updates Budget, adjusts project.contract_value and client.final_contract_value. Portal approval with e-signature canvas. Unbilled tracking with filtered list view. Logged to ClientActivity timeline.

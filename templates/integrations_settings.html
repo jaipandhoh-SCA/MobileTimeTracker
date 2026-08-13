@@ -246,7 +246,94 @@
                 <span class="text-accent mt-0.5">4.</span>
                 <span><strong>Meta Ads:</strong> "Sync Spend" pulls total ad spend for the current month into Channel Spend (creates or updates the entry)</span>
             </li>
+            <li class="flex items-start gap-2">
+                <span class="text-accent mt-0.5">5.</span>
+                <span><strong>QBO:</strong> Two-way sync of customers, invoices, and payments with QuickBooks Online</span>
+            </li>
         </ul>
+    </div>
+</div>
+
+<!-- ========== QuickBooks Online ========== -->
+<div class="bg-white rounded-2xl shadow-card overflow-hidden">
+    <div class="px-5 py-4 bg-pill border-b border-hairline">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                    <svg class="w-5 h-5 text-green-700" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
+                </div>
+                <h2 class="text-lg font-sans font-bold text-txt-primary">QuickBooks Online</h2>
+            </div>
+            {% if qbo_status.connected %}
+            <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-pos/10 text-pos text-xs font-semibold">
+                <span class="w-1.5 h-1.5 bg-pos rounded-full"></span> Connected
+            </span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="p-5 space-y-4">
+        {% if qbo_status.connected %}
+        <div>
+            <p class="text-sm text-txt-secondary">Company: <span class="font-semibold text-txt-primary">{{ qbo_status.company_name }}</span></p>
+            {% if qbo_status.last_sync %}
+            <p class="text-xs text-txt-muted mt-0.5">Last sync: {{ qbo_status.last_sync }}</p>
+            {% endif %}
+        </div>
+
+        {% if qbo_status.last_sync_result %}
+        <div class="text-sm p-3 rounded-lg {{ 'bg-emerald-50 text-pos border border-pos/20' if qbo_status.last_sync_success else 'bg-red-50 text-neg border border-neg/20' }}">
+            {{ qbo_status.last_sync_result }}
+        </div>
+        {% endif %}
+
+        <div class="flex flex-wrap gap-2">
+            <a href="{{ url_for('qbo_sync_dashboard') }}"
+               class="inline-flex items-center px-4 py-2 rounded-xl text-sm font-medium bg-txt-primary text-white hover:bg-txt-primary/80 transition-colors touch-target">
+                Sync Dashboard
+            </a>
+            <a href="{{ url_for('qbo_mappings') }}"
+               class="inline-flex items-center px-4 py-2 rounded-xl text-sm font-medium bg-pill text-txt-secondary hover:bg-gray-200 transition-colors touch-target">
+                Configure Mappings
+            </a>
+            <form method="POST" action="{{ url_for('qbo_disconnect') }}" class="inline"
+                  onsubmit="return confirm('Disconnect QuickBooks Online?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                <button type="submit" class="inline-flex items-center px-4 py-2 rounded-xl text-sm font-medium text-neg bg-neg/10 hover:bg-neg/20 transition-colors touch-target">
+                    Disconnect
+                </button>
+            </form>
+        </div>
+
+        {% elif qbo_status.configured %}
+        <p class="text-sm text-txt-secondary">QBO credentials are configured. Click below to connect.</p>
+        <a href="{{ url_for('qbo_connect') }}"
+           class="inline-flex items-center px-4 py-2 rounded-xl text-sm font-medium bg-green-600 text-white hover:bg-green-700 transition-colors touch-target">
+            Connect QuickBooks
+        </a>
+
+        {% else %}
+        <div class="text-sm text-txt-muted space-y-2">
+            <p>Set the following environment variables to enable QuickBooks Online sync:</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <div class="flex justify-between p-2 bg-pill rounded-lg">
+                    <span class="font-mono">QBO_CLIENT_ID</span>
+                    <span class="text-txt-muted">Missing</span>
+                </div>
+                <div class="flex justify-between p-2 bg-pill rounded-lg">
+                    <span class="font-mono">QBO_CLIENT_SECRET</span>
+                    <span class="text-txt-muted">Missing</span>
+                </div>
+                <div class="flex justify-between p-2 bg-pill rounded-lg">
+                    <span class="font-mono">QBO_REDIRECT_URI</span>
+                    <span class="text-txt-muted">Missing</span>
+                </div>
+                <div class="flex justify-between p-2 bg-pill rounded-lg">
+                    <span class="font-mono">QBO_ENVIRONMENT</span>
+                    <span class="text-txt-muted">sandbox or production</span>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}
