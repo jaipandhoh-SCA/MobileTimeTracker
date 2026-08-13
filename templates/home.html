@@ -297,6 +297,154 @@
 
 
     <!-- ============================================================
+         TODAY'S ASSIGNMENTS (field + all users)
+         ============================================================ -->
+    {% if today_tasks or week_tasks %}
+    <section class="bg-white rounded-2xl shadow-card p-6">
+        <h2 class="text-base font-semibold text-txt-primary mb-4">My Assignments</h2>
+
+        {% if today_tasks %}
+        <div class="mb-4">
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide mb-2">Today</p>
+            <div class="space-y-2">
+                {% for item in today_tasks %}
+                <div class="flex items-center justify-between p-3 rounded-xl bg-blue-50 border border-blue-100">
+                    <div class="min-w-0 flex-1">
+                        <p class="text-sm font-semibold text-txt-primary truncate">{{ item.task.name }}</p>
+                        <p class="text-xs text-txt-muted">{{ item.client_name }}{% if item.task.end_date %} · Due {{ item.task.end_date.strftime('%m/%d') }}{% endif %}</p>
+                    </div>
+                    <span class="px-2 py-0.5 text-[10px] font-medium rounded-full
+                        {% if item.task.status == 'In Progress' %}bg-blue-100 text-blue-700
+                        {% elif item.task.status == 'Not Started' %}bg-gray-100 text-txt-muted
+                        {% else %}bg-pill text-txt-secondary{% endif %}">{{ item.task.status }}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if week_tasks %}
+        <div>
+            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide mb-2">This Week</p>
+            <div class="space-y-1.5">
+                {% for item in week_tasks %}
+                <div class="flex items-center justify-between p-2.5 rounded-lg bg-pill">
+                    <div class="min-w-0 flex-1">
+                        <p class="text-sm text-txt-secondary truncate">{{ item.task.name }}</p>
+                        <p class="text-xs text-txt-muted">{{ item.client_name }}{% if item.task.start_date %} · {{ item.task.start_date.strftime('%m/%d') }}{% endif %}</p>
+                    </div>
+                    <span class="text-[10px] text-txt-muted">{{ item.task.status }}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </section>
+    {% endif %}
+
+
+    <!-- ============================================================
+         PORTFOLIO FINANCIALS (supervisor only)
+         ============================================================ -->
+    {% if current_user.is_supervisor and financials %}
+    <section class="bg-white rounded-2xl shadow-card overflow-hidden">
+        <button @click="toggle('financials')"
+                class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-pill/50 transition-colors duration-150">
+            <div class="flex items-center gap-3">
+                <h2 class="text-base font-semibold text-txt-primary">Portfolio Financials</h2>
+                {% if financials.totals.gross_margin < 0 %}
+                <span class="px-2 py-0.5 text-[10px] font-medium rounded-full bg-red-50 text-neg">Margin Alert</span>
+                {% endif %}
+            </div>
+            <svg :class="{ 'rotate-180': sections.financials }" class="w-5 h-5 text-txt-muted transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <div x-show="sections.financials" x-collapse x-cloak>
+            <div class="px-6 pb-6 space-y-5">
+
+                {# Summary stats row #}
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div class="rounded-xl bg-pill p-3">
+                        <p class="text-xs text-txt-muted">Contract Value</p>
+                        <p class="text-xl font-bold text-txt-primary">${{ '{:,.0f}'.format(financials.totals.contract) }}</p>
+                    </div>
+                    <div class="rounded-xl bg-pill p-3">
+                        <p class="text-xs text-txt-muted">Budget vs Actual</p>
+                        <p class="text-xl font-bold text-txt-primary">${{ '{:,.0f}'.format(financials.totals.actual) }} <span class="text-sm font-medium text-txt-muted">/ ${{ '{:,.0f}'.format(financials.totals.budget) }}</span></p>
+                    </div>
+                    <div class="rounded-xl bg-pill p-3">
+                        <p class="text-xs text-txt-muted">Gross Margin</p>
+                        <p class="text-xl font-bold {% if financials.totals.gross_margin >= 0 %}text-pos{% else %}text-neg{% endif %}">
+                            ${{ '{:,.0f}'.format(financials.totals.gross_margin) }}
+                            <span class="text-sm">({{ financials.totals.margin_pct }}%)</span>
+                        </p>
+                    </div>
+                    <div class="rounded-xl bg-pill p-3">
+                        <p class="text-xs text-txt-muted">AR Outstanding</p>
+                        <p class="text-xl font-bold {% if financials.ar_total > 0 %}text-amber-600{% else %}text-txt-primary{% endif %}">${{ '{:,.0f}'.format(financials.ar_total) }}</p>
+                    </div>
+                </div>
+
+                {# WIP mini-table (top 5 + link to full) #}
+                {% if financials.wip_projects %}
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <p class="text-sm font-semibold text-txt-primary">WIP — Active Projects</p>
+                        <a href="{{ url_for('financials_report') }}" class="text-xs text-accent hover:underline">Full report →</a>
+                    </div>
+                    <div class="space-y-1.5">
+                        {% for p in financials.wip_projects[:5] %}
+                        <div class="flex items-center gap-3 p-2.5 rounded-lg bg-pill">
+                            <div class="flex-1 min-w-0">
+                                <a href="{{ url_for('edit_client', client_id=p.client_id) }}" class="text-sm font-medium text-txt-primary hover:text-accent truncate block">{{ p.client_name }}</a>
+                            </div>
+                            <div class="flex items-center gap-2 flex-shrink-0">
+                                <div class="w-16 bg-gray-200 rounded-full h-1.5">
+                                    <div class="h-1.5 rounded-full {% if p.health == 'over' %}bg-neg{% elif p.health == 'warning' %}bg-amber-500{% else %}bg-pos{% endif %}"
+                                         style="width: {{ [p.pct_complete, 100]|min }}%"></div>
+                                </div>
+                                <span class="text-xs font-medium text-txt-secondary w-10 text-right">{{ p.pct_complete }}%</span>
+                            </div>
+                            <span class="text-xs font-medium text-txt-primary w-20 text-right">${{ '{:,.0f}'.format(p.actual) }}/${{ '{:,.0f}'.format(p.budget) }}</span>
+                        </div>
+                        {% endfor %}
+                        {% if financials.wip_projects|length > 5 %}
+                        <p class="text-xs text-txt-muted text-center pt-1">+ {{ financials.wip_projects|length - 5 }} more — <a href="{{ url_for('financials_report') }}" class="text-accent hover:underline">view all</a></p>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+
+                {# AR aging buckets #}
+                {% if financials.ar_total > 0 %}
+                <div>
+                    <p class="text-sm font-semibold text-txt-primary mb-2">AR Aging</p>
+                    <div class="grid grid-cols-5 gap-2">
+                        {% set bucket_data = [('Current', 'current', 'text-pos'), ('1-30', '1_30', 'text-blue-600'),
+                                               ('31-60', '31_60', 'text-amber-600'), ('61-90', '61_90', 'text-orange-600'),
+                                               ('90+', 'over_90', 'text-neg')] %}
+                        {% for label, key, cls in bucket_data %}
+                        <div class="text-center">
+                            <p class="text-[10px] text-txt-muted">{{ label }}</p>
+                            <p class="text-sm font-semibold {{ cls }}">${{ '{:,.0f}'.format(financials.ar_buckets[key]) }}</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+
+                {# Export buttons #}
+                <div class="flex gap-2">
+                    <a href="{{ url_for('financials_export', format='csv') }}" class="px-3 py-1.5 text-xs font-medium bg-pill text-txt-secondary rounded-lg hover:bg-gray-200 transition">CSV</a>
+                    <a href="{{ url_for('financials_export', format='pdf') }}" class="px-3 py-1.5 text-xs font-medium bg-pill text-txt-secondary rounded-lg hover:bg-gray-200 transition">PDF</a>
+                </div>
+
+            </div>
+        </div>
+    </section>
+    {% endif %}
+
+
+    <!-- ============================================================
          THIS WEEK — Weekly Brief (collapsible)
          ============================================================ -->
     <section class="bg-white rounded-2xl shadow-card overflow-hidden">
@@ -628,6 +776,7 @@ function hubSections() {
         sections: {
             thisweek: stored.thisweek !== undefined ? stored.thisweek : false,
             channels: stored.channels !== undefined ? stored.channels : true,
+            financials: stored.financials !== undefined ? stored.financials : true,
             pipeline: stored.pipeline !== undefined ? stored.pipeline : true,
             activity: stored.activity !== undefined ? stored.activity : false,
         },

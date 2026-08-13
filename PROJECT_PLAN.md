@@ -50,6 +50,29 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-13 — Financial Hub & Reports
+
+**Scope:** Extend existing hub and reports with financial truth from the job costing spine. Role-aware views: supervisor sees portfolio profitability, WIP, AR aging; rep sees client status + next steps; field sees today's assignments + clock. One-click PDF/CSV export. All numbers read from the C1 cost spine (Budget, CostEntry, Invoice, Payment models).
+
+**Routes (routes.py):**
+- `_build_financial_summary()` — batch-queries budget/actual/committed across active projects, AR aging from outstanding invoices, returns portfolio totals + per-project WIP rows + aging buckets.
+- `/reports/financials` — full financial report page with WIP table + AR aging.
+- `/reports/financials/export?format=csv|pdf` — one-click CSV or PDF export of the financial report.
+- `home()` updated: passes `financials` (supervisor), `today_tasks` + `week_tasks` (all users via TaskAssignment).
+
+**Templates:**
+- `financials_report.html` — summary stat cards, WIP table with progress bars + health badges, AR aging buckets + invoice detail.
+- `home.html` — added "My Assignments" section (today/this week tasks), "Portfolio Financials" collapsible section (supervisor: contract value, budget vs actual, gross margin, AR outstanding, WIP mini-table with top 5 projects, AR aging buckets, CSV/PDF export buttons).
+- `base.html` — Reports nav highlight includes `financials_report`.
+
+**Key details:**
+- WIP health: "On Track" (green), "Watch" (>90% budget, amber), "Over Budget" (red).
+- AR aging: Current / 1-30 / 31-60 / 61-90 / 90+ day buckets.
+- PDF uses fpdf2 (already a dependency).
+- Batch queries (not N+1) for budget/cost/committed by project.
+
+---
+
 ### 2026-08-13 — Client-Facing Portal
 
 **Scope:** Fully isolated client portal with magic-link email auth (no Google OAuth dependency). Clients see their own project: progress/phases, shared photos, documents (contracts, approved COs, invoices), finish/fixture selections with price deltas, and a messaging thread. Staff get notified on client actions.

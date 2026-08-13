@@ -245,6 +245,159 @@ _CHANNEL_SOURCE_PATTERNS = {
 }
 
 
+def _build_financial_summary():
+    """Portfolio-level financial truth from the cost spine.
+
+    Returns dict with:
+    - portfolio: aggregated budget/actual/committed across active projects
+    - wip_projects: per-project WIP rows (budget, actual, committed, pct, contract)
+    - ar_aging: accounts receivable aging buckets
+    - ar_invoices: individual outstanding invoices with aging
+    """
+    from sqlalchemy import case, literal_column
+
+    # Active projects = projects whose client is Active or In Progress
+    active_projects = Project.query.join(Client, Client.id == Project.client_id).filter(
+        Client.is_active == True,
+        Client.status.in_(['Active', 'Prospect']),
+    ).all()
+
+    project_ids = [p.id for p in active_projects]
+
+    # Batch-query budget totals per project
+    budget_by_project = {}
+    if project_ids:
+        budget_rows = db.session.query(
+            Budget.project_id,
+            func.sum(Budget.amount),
+        ).filter(Budget.project_id.in_(project_ids)).group_by(Budget.project_id).all()
+        budget_by_project = {pid: amt or Decimal(0) for pid, amt in budget_rows}
+
+    # Batch-query actual (committed=False) and committed (committed=True) costs
+    actual_by_project = {}
+    committed_by_project = {}
+    if project_ids:
+        cost_rows = db.session.query(
+            CostEntry.project_id,
+            CostEntry.committed,
+            func.sum(CostEntry.amount),
+        ).filter(CostEntry.project_id.in_(project_ids)).group_by(
+            CostEntry.project_id, CostEntry.committed
+        ).all()
+        for pid, is_committed, amt in cost_rows:
+            if is_committed:
+                committed_by_project[pid] = amt or Decimal(0)
+            else:
+                actual_by_project[pid] = amt or Decimal(0)
+
+    # Build WIP rows
+    wip_projects = []
+    totals = {'budget': Decimal(0), 'actual': Decimal(0), 'committed': Decimal(0),
+              'contract': Decimal(0), 'cost_to_complete': Decimal(0)}
+
+    for p in active_projects:
+        budget = budget_by_project.get(p.id, Decimal(0))
+        actual = actual_by_project.get(p.id, Decimal(0))
+        committed = committed_by_project.get(p.id, Decimal(0))
+        contract = p.contract_value or Decimal(0)
+        ctc = budget - actual - committed
+        pct = (actual / budget * 100).quantize(Decimal('0.1')) if budget else Decimal(0)
+
+        # Determine profit/loss status
+        if budget and actual > budget:
+            health = 'over'
+        elif budget and actual > budget * Decimal('0.9'):
+            health = 'warning'
+        else:
+            health = 'ok'
+
+        client = Client.query.get(p.client_id)
+        wip_projects.append({
+            'project_id': p.id,
+            'project_name': p.name,
+            'client_name': client.name if client else '?',
+            'client_id': p.client_id,
+            'budget': budget,
+            'actual': actual,
+            'committed': committed,
+            'contract': contract,
+            'cost_to_complete': ctc,
+            'pct_complete': pct,
+            'health': health,
+        })
+
+        totals['budget'] += budget
+        totals['actual'] += actual
+        totals['committed'] += committed
+        totals['contract'] += contract
+        totals['cost_to_complete'] += ctc
+
+    totals['pct_complete'] = (
+        (totals['actual'] / totals['budget'] * 100).quantize(Decimal('0.1'))
+        if totals['budget'] else Decimal(0)
+    )
+    totals['gross_margin'] = totals['contract'] - totals['actual'] - totals['committed']
+    totals['margin_pct'] = (
+        (totals['gross_margin'] / totals['contract'] * 100).quantize(Decimal('0.1'))
+        if totals['contract'] else Decimal(0)
+    )
+
+    wip_projects.sort(key=lambda x: float(x['pct_complete']), reverse=True)
+
+    # AR Aging — outstanding invoices grouped by aging bucket
+    today = date.today()
+    outstanding_invoices = Invoice.query.filter(
+        Invoice.status.in_(['Sent', 'Overdue', 'Partial']),
+        Invoice.balance_due > 0,
+    ).all()
+
+    ar_buckets = {'current': Decimal(0), '1_30': Decimal(0),
+                  '31_60': Decimal(0), '61_90': Decimal(0), 'over_90': Decimal(0)}
+    ar_invoices = []
+
+    for inv in outstanding_invoices:
+        ref_date = inv.due_date or inv.issued_date or today
+        days = (today - ref_date).days if ref_date <= today else 0
+
+        if days <= 0:
+            bucket = 'current'
+        elif days <= 30:
+            bucket = '1_30'
+        elif days <= 60:
+            bucket = '31_60'
+        elif days <= 90:
+            bucket = '61_90'
+        else:
+            bucket = 'over_90'
+
+        ar_buckets[bucket] += inv.balance_due
+
+        client = Client.query.get(inv.client_id)
+        ar_invoices.append({
+            'invoice_number': inv.invoice_number,
+            'client_name': client.name if client else '?',
+            'client_id': inv.client_id,
+            'total_due': inv.total_due,
+            'balance_due': inv.balance_due,
+            'due_date': inv.due_date,
+            'days_overdue': max(days, 0),
+            'bucket': bucket,
+            'status': inv.status,
+        })
+
+    ar_invoices.sort(key=lambda x: -x['days_overdue'])
+    ar_total = sum(ar_buckets.values())
+
+    return {
+        'totals': totals,
+        'wip_projects': wip_projects,
+        'ar_buckets': ar_buckets,
+        'ar_total': ar_total,
+        'ar_invoices': ar_invoices,
+        'project_count': len(active_projects),
+    }
+
+
 def _build_channel_cards():
     """Build per-channel performance cards for the current month.
 
@@ -689,6 +842,38 @@ def home():
             rep_counts[name] += 1
         attention_rep_summary = sorted(rep_counts.items(), key=lambda x: -x[1])
 
+    # === FINANCIAL SUMMARY (supervisor only — reads from cost spine) ===
+    financials = _build_financial_summary() if current_user.is_supervisor else None
+
+    # === TODAY'S ASSIGNMENTS (field view — tasks assigned to current user) ===
+    today_tasks = []
+    week_tasks = []
+    from utils import PACIFIC_TZ
+    today_date = datetime.now(PACIFIC_TZ).date()
+    week_end_date = today_date + timedelta(days=(6 - today_date.weekday()))
+
+    my_assignments = TaskAssignment.query.filter_by(user_id=current_user.id).all()
+    if my_assignments:
+        my_task_ids = [a.task_id for a in my_assignments]
+        assigned_tasks = ScheduleTask.query.filter(
+            ScheduleTask.id.in_(my_task_ids),
+            ScheduleTask.status != 'Done',
+        ).order_by(ScheduleTask.start_date).all()
+
+        for t in assigned_tasks:
+            task_info = {
+                'task': t,
+                'client_name': Client.query.get(
+                    Project.query.get(t.project_id).client_id
+                ).name if t.project_id else '?',
+            }
+            if t.start_date and t.start_date <= today_date and (not t.end_date or t.end_date >= today_date):
+                today_tasks.append(task_info)
+            elif t.start_date and t.start_date <= week_end_date:
+                week_tasks.append(task_info)
+            elif not t.start_date:
+                week_tasks.append(task_info)
+
     return render_template('home.html',
                          my_clients=my_clients,
                          recent_clients=recent_clients,
@@ -716,7 +901,10 @@ def home():
                          stale_red_days=stale_red_days,
                          missing_source_count=Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count() if current_user.is_supervisor else 0,
                          channel_cards=_build_channel_cards() if current_user.is_supervisor else [],
-                         integrations=_get_integration_status() if current_user.is_supervisor else {})
+                         integrations=_get_integration_status() if current_user.is_supervisor else {},
+                         financials=financials,
+                         today_tasks=today_tasks,
+                         week_tasks=week_tasks)
 
 
 # --- Time Tracking Routes ---
@@ -3600,6 +3788,155 @@ def roi_report_export():
     return Response(
         si.getvalue(), mimetype='text/csv',
         headers={'Content-Disposition': f'attachment; filename={filename}'}
+    )
+
+
+# --- Financial Reports ---
+
+@app.route('/reports/financials')
+@require_supervisor
+def financials_report():
+    """Portfolio profitability, WIP, and AR aging report."""
+    data = _build_financial_summary()
+    return render_template('financials_report.html', **data)
+
+
+@app.route('/reports/financials/export')
+@require_supervisor
+def financials_export():
+    """CSV export of the financial report."""
+    fmt = request.args.get('format', 'csv')
+    data = _build_financial_summary()
+
+    if fmt == 'pdf':
+        return _financials_pdf(data)
+
+    si = StringIO()
+    writer = csv.writer(si)
+
+    # WIP section
+    writer.writerow(['Work In Progress'])
+    writer.writerow(['Client', 'Project', 'Contract', 'Budget', 'Actual', 'Committed',
+                      'Cost to Complete', '% Complete', 'Status'])
+    for p in data['wip_projects']:
+        writer.writerow([
+            p['client_name'], p['project_name'],
+            f"{p['contract']:.2f}", f"{p['budget']:.2f}",
+            f"{p['actual']:.2f}", f"{p['committed']:.2f}",
+            f"{p['cost_to_complete']:.2f}", f"{p['pct_complete']:.1f}%",
+            p['health'],
+        ])
+    t = data['totals']
+    writer.writerow([
+        'TOTALS', '', f"{t['contract']:.2f}", f"{t['budget']:.2f}",
+        f"{t['actual']:.2f}", f"{t['committed']:.2f}",
+        f"{t['cost_to_complete']:.2f}", f"{t['pct_complete']:.1f}%", '',
+    ])
+
+    writer.writerow([])
+    writer.writerow(['Accounts Receivable Aging'])
+    writer.writerow(['Invoice', 'Client', 'Total Due', 'Balance', 'Due Date', 'Days Overdue', 'Bucket'])
+    for inv in data['ar_invoices']:
+        writer.writerow([
+            inv['invoice_number'], inv['client_name'],
+            f"{inv['total_due']:.2f}", f"{inv['balance_due']:.2f}",
+            inv['due_date'].strftime('%m/%d/%Y') if inv['due_date'] else '',
+            inv['days_overdue'], inv['bucket'],
+        ])
+    b = data['ar_buckets']
+    writer.writerow([])
+    writer.writerow(['Bucket', 'Amount'])
+    for label, key in [('Current', 'current'), ('1-30 Days', '1_30'),
+                       ('31-60 Days', '31_60'), ('61-90 Days', '61_90'),
+                       ('90+ Days', 'over_90')]:
+        writer.writerow([label, f"{b[key]:.2f}"])
+    writer.writerow(['TOTAL AR', f"{data['ar_total']:.2f}"])
+
+    today_str = date.today().strftime('%Y%m%d')
+    return Response(
+        si.getvalue(), mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename=financials_{today_str}.csv'}
+    )
+
+
+def _financials_pdf(data):
+    """Generate a PDF summary of the financial report."""
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # Title
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'Portfolio Financial Summary', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    pdf.cell(0, 5, f'Generated: {date.today().strftime("%m/%d/%Y")}', ln=True)
+    pdf.ln(5)
+
+    t = data['totals']
+
+    # Summary stats
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 7, 'Portfolio Overview', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    stats = [
+        f"Active Projects: {data['project_count']}",
+        f"Total Contract Value: ${t['contract']:,.2f}",
+        f"Total Budget: ${t['budget']:,.2f}",
+        f"Actual Costs: ${t['actual']:,.2f}",
+        f"Committed: ${t['committed']:,.2f}",
+        f"Cost to Complete: ${t['cost_to_complete']:,.2f}",
+        f"Gross Margin: ${t['gross_margin']:,.2f} ({t['margin_pct']}%)",
+    ]
+    for s in stats:
+        pdf.cell(0, 5, s, ln=True)
+    pdf.ln(5)
+
+    # WIP table
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 7, 'Work In Progress', ln=True)
+    pdf.set_font('Helvetica', 'B', 7)
+    col_widths = [40, 30, 25, 25, 25, 25, 20]
+    headers = ['Client', 'Contract', 'Budget', 'Actual', 'Committed', 'CTC', '%']
+    for i, h in enumerate(headers):
+        pdf.cell(col_widths[i], 5, h, border=1)
+    pdf.ln()
+
+    pdf.set_font('Helvetica', '', 7)
+    for p in data['wip_projects']:
+        pdf.cell(col_widths[0], 5, p['client_name'][:22], border=1)
+        pdf.cell(col_widths[1], 5, f"${p['contract']:,.0f}", border=1)
+        pdf.cell(col_widths[2], 5, f"${p['budget']:,.0f}", border=1)
+        pdf.cell(col_widths[3], 5, f"${p['actual']:,.0f}", border=1)
+        pdf.cell(col_widths[4], 5, f"${p['committed']:,.0f}", border=1)
+        pdf.cell(col_widths[5], 5, f"${p['cost_to_complete']:,.0f}", border=1)
+        pdf.cell(col_widths[6], 5, f"{p['pct_complete']}%", border=1)
+        pdf.ln()
+    pdf.ln(5)
+
+    # AR Aging
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 7, 'Accounts Receivable Aging', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    b = data['ar_buckets']
+    for label, key in [('Current', 'current'), ('1-30 Days', '1_30'),
+                       ('31-60 Days', '31_60'), ('61-90 Days', '61_90'),
+                       ('90+ Days', 'over_90')]:
+        pdf.cell(40, 5, label)
+        pdf.cell(30, 5, f"${b[key]:,.2f}", ln=True)
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.cell(40, 5, 'TOTAL')
+    pdf.cell(30, 5, f"${data['ar_total']:,.2f}", ln=True)
+
+    buf = BytesIO()
+    pdf.output(buf)
+    buf.seek(0)
+
+    today_str = date.today().strftime('%Y%m%d')
+    return Response(
+        buf.getvalue(), mimetype='application/pdf',
+        headers={'Content-Disposition': f'attachment; filename=financials_{today_str}.pdf'}
     )
 
 
