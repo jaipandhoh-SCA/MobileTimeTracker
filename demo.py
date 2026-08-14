@@ -7,6 +7,7 @@ All demo records are tagged with [DEMO] in their names and a
 from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal
 import secrets
+import logging
 
 from flask import Blueprint, redirect, url_for, session, flash, jsonify
 from flask_login import login_user, current_user
@@ -22,6 +23,8 @@ from models import (
     SelectionCategory, SelectionOption, ClientSelection,
     ClientUser, PortalMessage, AppSetting,
 )
+
+log = logging.getLogger(__name__)
 
 demo_bp = Blueprint('demo', __name__, url_prefix='/demo')
 
@@ -48,6 +51,11 @@ def _seed_demo_data():
     today = _today()
 
     # ── Users ───────────────────────────────────────────────
+    # Clean up any leftover emails from a partial seed
+    User.query.filter(User.email.in_([
+        'demo-supervisor@example.com', 'demo-rep@example.com'
+    ])).delete(synchronize_session=False)
+
     sup = User(
         id=DEMO_USER_ID, email='demo-supervisor@example.com',
         first_name='[DEMO] Sarah', last_name='Martinez',
@@ -390,7 +398,7 @@ def _seed_demo_data():
             ))
 
     # ── Daily Log ───────────────────────────────────────────
-    log = DailyLog(
+    log_entry = DailyLog(
         client_id=client_active.id, project_id=proj_active.id,
         log_date=today - timedelta(days=1), status='Final',
         crew_count=4, crew_names='Jake T., Marco R., Sam L., Tony G.',
@@ -401,7 +409,7 @@ def _seed_demo_data():
         materials_delivered='2x6 SPF lumber (40 pcs), Simpson strong-ties (1 box)',
         created_by_user_id=DEMO_REP_ID,
     )
-    db.session.add(log)
+    db.session.add(log_entry)
 
     # ── Change Order ────────────────────────────────────────
     co = ChangeOrder(
@@ -553,15 +561,15 @@ def _seed_demo_data():
             approved_at=now - timedelta(days=8),
         ))
 
-    # Portal user and messages
-    cu = ClientUser.query.filter_by(email='demo-client@example.com').first()
-    if not cu:
-        cu = ClientUser(
-            client_id=client_active.id, email='demo-client@example.com',
-            name='Michael Johnson',
-        )
-        db.session.add(cu)
-        db.session.flush()
+    # Portal user and messages — clean up any leftover from partial seed
+    ClientUser.query.filter_by(email='demo-client@example.com').delete(synchronize_session=False)
+
+    cu = ClientUser(
+        client_id=client_active.id, email='demo-client@example.com',
+        name='Michael Johnson',
+    )
+    db.session.add(cu)
+    db.session.flush()
 
     db.session.add(PortalMessage(
         client_id=client_active.id, sender_type='client',
@@ -613,9 +621,9 @@ def _cleanup_demo_data():
         TaskAssignment.user_id.in_([DEMO_USER_ID, DEMO_REP_ID])
     ).delete(synchronize_session=False)
 
-    # Delete portal messages for demo clients
+    # Find demo clients by created_by user ID (more reliable than LIKE)
     demo_client_ids = [c.id for c in Client.query.filter(
-        Client.name.like('[DEMO]%')
+        Client.created_by_user_id.in_([DEMO_USER_ID, DEMO_REP_ID])
     ).all()]
 
     if demo_client_ids:
@@ -704,8 +712,11 @@ def _cleanup_demo_data():
 
         # Clients
         Client.query.filter(
-            Client.name.like('[DEMO]%')
+            Client.created_by_user_id.in_([DEMO_USER_ID, DEMO_REP_ID])
         ).delete(synchronize_session=False)
+
+    # Also clean up any orphaned client user
+    ClientUser.query.filter_by(email='demo-client@example.com').delete(synchronize_session=False)
 
     # Channel spend by demo user
     ChannelSpend.query.filter(
@@ -724,9 +735,19 @@ def _cleanup_demo_data():
 @demo_bp.route('/start')
 def start_demo():
     """Seed demo data, log in as demo supervisor, and start the guided tour."""
-    _seed_demo_data()
+    try:
+        _seed_demo_data()
+    except Exception as e:
+        db.session.rollback()
+        log.exception('Demo seed failed')
+        flash(f'Demo setup failed: {e}', 'error')
+        return redirect(url_for('index'))
 
     user = User.query.get(DEMO_USER_ID)
+    if not user:
+        flash('Demo setup failed — could not create demo user.', 'error')
+        return redirect(url_for('index'))
+
     login_user(user)
 
     session['_demo_mode'] = True
@@ -740,7 +761,12 @@ def start_demo():
 @demo_bp.route('/exit')
 def exit_demo():
     """Leave demo mode and clean up demo data."""
-    _cleanup_demo_data()
+    try:
+        _cleanup_demo_data()
+    except Exception as e:
+        db.session.rollback()
+        log.exception('Demo cleanup failed')
+        flash(f'Demo cleanup error: {e}', 'error')
     session.pop('_demo_mode', None)
     session.pop('_demo_tour_step', None)
     session.pop('_demo_tour_page', None)
