@@ -737,6 +737,7 @@ def start_demo():
     """Seed demo data, log in as demo supervisor, and start the guided tour."""
     try:
         _seed_demo_data()
+        log.info('Demo data seeded successfully')
     except Exception as e:
         db.session.rollback()
         log.exception('Demo seed failed')
@@ -748,7 +749,12 @@ def start_demo():
         flash('Demo setup failed — could not create demo user.', 'error')
         return redirect(url_for('index'))
 
-    login_user(user)
+    result = login_user(user)
+    log.info(f'Demo login_user result: {result}, user.is_active: {user.is_active}')
+
+    if not result:
+        flash('Demo login failed — could not authenticate demo user.', 'error')
+        return redirect(url_for('index'))
 
     session['_demo_mode'] = True
     session['_demo_tour_step'] = 0

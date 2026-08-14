@@ -31,6 +31,20 @@
 <body class="bg-[#f3f4f6] min-h-screen flex items-center justify-center px-4 font-sans antialiased text-[#0f172a]">
 
     <div class="max-w-sm w-full space-y-8">
+
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                <div class="p-4 rounded-2xl text-sm font-medium
+                            {% if category == 'error' %}bg-red-50 text-red-600
+                            {% elif category == 'success' %}bg-emerald-50 text-emerald-600
+                            {% else %}bg-blue-50 text-blue-600{% endif %}">
+                    {{ message }}
+                </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
         <!-- Logo + Title -->
         <div class="text-center">
             <div class="mx-auto w-14 h-14 bg-[#0f172a] rounded-2xl flex items-center justify-center mb-6">
