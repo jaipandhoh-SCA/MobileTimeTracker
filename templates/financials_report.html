@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% block title %}Financial Report — All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="w-full max-w-6xl mx-auto space-y-6">
+
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl font-bold text-txt-primary">Portfolio Financials</h1>
+            <p class="text-sm text-txt-muted mt-0.5">Budget vs. actual vs. committed — reads from the cost spine</p>
+        </div>
+        <div class="flex items-center gap-2">
+            <a href="{{ url_for('financials_export', format='csv') }}"
+               class="px-4 py-2 text-sm font-medium bg-white text-txt-secondary border border-hairline rounded-xl hover:bg-pill transition">
+                Export CSV
+            </a>
+            <a href="{{ url_for('financials_export', format='pdf') }}"
+               class="px-4 py-2 text-sm font-medium bg-txt-primary text-white rounded-xl hover:bg-txt-primary/80 transition">
+                Export PDF
+            </a>
+        </div>
+    </div>
+
+    {# ── Portfolio Summary Cards ── #}
+    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+        <div class="bg-white rounded-2xl shadow-card p-4">
+            <p class="text-xs text-txt-muted mb-1">Active Projects</p>
+            <p class="text-2xl font-bold text-txt-primary">{{ project_count }}</p>
+        </div>
+        <div class="bg-white rounded-2xl shadow-card p-4">
+            <p class="text-xs text-txt-muted mb-1">Contract Value</p>
+            <p class="text-xl font-bold text-txt-primary">${{ '{:,.0f}'.format(totals.contract) }}</p>
+        </div>
+        <div class="bg-white rounded-2xl shadow-card p-4">
+            <p class="text-xs text-txt-muted mb-1">Total Budget</p>
+            <p class="text-xl font-bold text-txt-primary">${{ '{:,.0f}'.format(totals.budget) }}</p>
+        </div>
+        <div class="bg-white rounded-2xl shadow-card p-4">
+            <p class="text-xs text-txt-muted mb-1">Actual Costs</p>
+            <p class="text-xl font-bold text-txt-primary">${{ '{:,.0f}'.format(totals.actual) }}</p>
+        </div>
+        <div class="bg-white rounded-2xl shadow-card p-4">
+            <p class="text-xs text-txt-muted mb-1">Committed</p>
+            <p class="text-xl font-bold text-txt-primary">${{ '{:,.0f}'.format(totals.committed) }}</p>
+        </div>
+        <div class="bg-white rounded-2xl shadow-card p-4">
+            <p class="text-xs text-txt-muted mb-1">Cost to Complete</p>
+            <p class="text-xl font-bold text-txt-primary">${{ '{:,.0f}'.format(totals.cost_to_complete) }}</p>
+        </div>
+        <div class="bg-white rounded-2xl shadow-card p-4">
+            <p class="text-xs text-txt-muted mb-1">Gross Margin</p>
+            <p class="text-xl font-bold {% if totals.gross_margin >= 0 %}text-pos{% else %}text-neg{% endif %}">
+                ${{ '{:,.0f}'.format(totals.gross_margin) }}
+                <span class="text-sm font-medium">({{ totals.margin_pct }}%)</span>
+            </p>
+        </div>
+    </div>
+
+    {# ── WIP Table ── #}
+    <div class="bg-white rounded-2xl shadow-card overflow-hidden">
+        <div class="px-5 py-4 border-b border-hairline">
+            <h2 class="text-base font-semibold text-txt-primary">Work In Progress</h2>
+        </div>
+        {% if wip_projects %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-pill text-txt-muted text-xs">
+                    <tr>
+                        <th class="text-left px-4 py-2.5 font-medium">Client</th>
+                        <th class="text-right px-4 py-2.5 font-medium">Contract</th>
+                        <th class="text-right px-4 py-2.5 font-medium">Budget</th>
+                        <th class="text-right px-4 py-2.5 font-medium">Actual</th>
+                        <th class="text-right px-4 py-2.5 font-medium">Committed</th>
+                        <th class="text-right px-4 py-2.5 font-medium">CTC</th>
+                        <th class="text-right px-4 py-2.5 font-medium">%</th>
+                        <th class="text-center px-4 py-2.5 font-medium">Status</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-hairline">
+                    {% for p in wip_projects %}
+                    <tr class="hover:bg-pill/50 transition-colors">
+                        <td class="px-4 py-3">
+                            <a href="{{ url_for('edit_client', client_id=p.client_id) }}" class="font-medium text-txt-primary hover:text-accent">{{ p.client_name }}</a>
+                            <p class="text-xs text-txt-muted">{{ p.project_name }}</p>
+                        </td>
+                        <td class="px-4 py-3 text-right font-medium text-txt-primary">${{ '{:,.0f}'.format(p.contract) }}</td>
+                        <td class="px-4 py-3 text-right text-txt-secondary">${{ '{:,.0f}'.format(p.budget) }}</td>
+                        <td class="px-4 py-3 text-right text-txt-secondary">${{ '{:,.0f}'.format(p.actual) }}</td>
+                        <td class="px-4 py-3 text-right text-txt-muted">${{ '{:,.0f}'.format(p.committed) }}</td>
+                        <td class="px-4 py-3 text-right text-txt-secondary">${{ '{:,.0f}'.format(p.cost_to_complete) }}</td>
+                        <td class="px-4 py-3 text-right">
+                            <div class="flex items-center justify-end gap-2">
+                                <div class="w-16 bg-gray-100 rounded-full h-1.5">
+                                    <div class="h-1.5 rounded-full {% if p.health == 'over' %}bg-neg{% elif p.health == 'warning' %}bg-amber-500{% else %}bg-pos{% endif %}"
+                                         style="width: {{ [p.pct_complete, 100]|min }}%"></div>
+                                </div>
+                                <span class="text-xs font-medium {% if p.health == 'over' %}text-neg{% elif p.health == 'warning' %}text-amber-600{% else %}text-txt-secondary{% endif %}">{{ p.pct_complete }}%</span>
+                            </div>
+                        </td>
+                        <td class="px-4 py-3 text-center">
+                            {% if p.health == 'over' %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-50 text-neg">Over Budget</span>
+                            {% elif p.health == 'warning' %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-600">Watch</span>
+                            {% else %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 text-pos">On Track</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot class="bg-pill font-semibold text-sm">
+                    <tr>
+                        <td class="px-4 py-3 text-txt-primary">Totals ({{ project_count }} projects)</td>
+                        <td class="px-4 py-3 text-right text-txt-primary">${{ '{:,.0f}'.format(totals.contract) }}</td>
+                        <td class="px-4 py-3 text-right text-txt-primary">${{ '{:,.0f}'.format(totals.budget) }}</td>
+                        <td class="px-4 py-3 text-right text-txt-primary">${{ '{:,.0f}'.format(totals.actual) }}</td>
+                        <td class="px-4 py-3 text-right text-txt-muted">${{ '{:,.0f}'.format(totals.committed) }}</td>
+                        <td class="px-4 py-3 text-right text-txt-primary">${{ '{:,.0f}'.format(totals.cost_to_complete) }}</td>
+                        <td class="px-4 py-3 text-right text-txt-primary">{{ totals.pct_complete }}%</td>
+                        <td class="px-4 py-3"></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center py-8 text-txt-muted text-sm">No active projects with budgets.</div>
+        {% endif %}
+    </div>
+
+    {# ── AR Aging ── #}
+    <div class="bg-white rounded-2xl shadow-card overflow-hidden">
+        <div class="px-5 py-4 border-b border-hairline">
+            <h2 class="text-base font-semibold text-txt-primary">Accounts Receivable Aging</h2>
+        </div>
+
+        {# Aging buckets bar #}
+        {% if ar_total > 0 %}
+        <div class="px-5 py-4">
+            <div class="flex items-center gap-3 mb-4">
+                <p class="text-2xl font-bold text-txt-primary">${{ '{:,.0f}'.format(ar_total) }}</p>
+                <p class="text-sm text-txt-muted">total outstanding</p>
+            </div>
+            <div class="grid grid-cols-5 gap-3">
+                {% set bucket_labels = [('Current', 'current', 'bg-emerald-50 text-pos'),
+                                        ('1-30', '1_30', 'bg-blue-50 text-blue-600'),
+                                        ('31-60', '31_60', 'bg-amber-50 text-amber-600'),
+                                        ('61-90', '61_90', 'bg-orange-50 text-orange-600'),
+                                        ('90+', 'over_90', 'bg-red-50 text-neg')] %}
+                {% for label, key, cls in bucket_labels %}
+                <div class="rounded-xl p-3 {{ cls }}">
+                    <p class="text-xs font-medium opacity-70">{{ label }}</p>
+                    <p class="text-lg font-bold">${{ '{:,.0f}'.format(ar_buckets[key]) }}</p>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        {# Invoice detail #}
+        {% if ar_invoices %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-pill text-txt-muted text-xs">
+                    <tr>
+                        <th class="text-left px-4 py-2.5 font-medium">Invoice</th>
+                        <th class="text-left px-4 py-2.5 font-medium">Client</th>
+                        <th class="text-right px-4 py-2.5 font-medium">Total</th>
+                        <th class="text-right px-4 py-2.5 font-medium">Balance</th>
+                        <th class="text-right px-4 py-2.5 font-medium">Due Date</th>
+                        <th class="text-right px-4 py-2.5 font-medium">Days</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-hairline">
+                    {% for inv in ar_invoices %}
+                    <tr class="hover:bg-pill/50 transition-colors">
+                        <td class="px-4 py-3 font-mono text-xs text-txt-secondary">{{ inv.invoice_number }}</td>
+                        <td class="px-4 py-3">
+                            <a href="{{ url_for('edit_client', client_id=inv.client_id) }}" class="text-txt-primary hover:text-accent font-medium">{{ inv.client_name }}</a>
+                        </td>
+                        <td class="px-4 py-3 text-right text-txt-secondary">${{ '{:,.2f}'.format(inv.total_due) }}</td>
+                        <td class="px-4 py-3 text-right font-medium text-txt-primary">${{ '{:,.2f}'.format(inv.balance_due) }}</td>
+                        <td class="px-4 py-3 text-right text-txt-muted">{{ inv.due_date.strftime('%m/%d/%Y') if inv.due_date else '—' }}</td>
+                        <td class="px-4 py-3 text-right">
+                            {% if inv.days_overdue > 60 %}
+                            <span class="text-neg font-semibold">{{ inv.days_overdue }}d</span>
+                            {% elif inv.days_overdue > 30 %}
+                            <span class="text-amber-600 font-medium">{{ inv.days_overdue }}d</span>
+                            {% elif inv.days_overdue > 0 %}
+                            <span class="text-txt-secondary">{{ inv.days_overdue }}d</span>
+                            {% else %}
+                            <span class="text-pos">Current</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        {% else %}
+        <div class="text-center py-8 text-txt-muted text-sm">No outstanding invoices.</div>
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

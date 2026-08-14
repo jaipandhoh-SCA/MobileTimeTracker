@@ -1005,6 +1005,13 @@ class NotificationPreference(db.Model):
     task_assigned = db.Column(db.Boolean, default=True, nullable=False)
     task_changed = db.Column(db.Boolean, default=True, nullable=False)
     task_reminder = db.Column(db.Boolean, default=True, nullable=False)
+    # Financial events
+    invoice_created = db.Column(db.Boolean, default=True, nullable=False)
+    payment_received = db.Column(db.Boolean, default=True, nullable=False)
+    estimate_accepted = db.Column(db.Boolean, default=True, nullable=False)
+    # Client portal events
+    portal_message = db.Column(db.Boolean, default=True, nullable=False)
+    selection_made = db.Column(db.Boolean, default=True, nullable=False)
 
     user = db.relationship('User', backref=db.backref('notification_prefs', uselist=False))
 
@@ -1345,6 +1352,181 @@ class Payment(db.Model):
         Index('idx_pmt_invoice', 'invoice_id'),
         Index('idx_pmt_client', 'client_id'),
         Index('idx_pmt_stripe', 'stripe_payment_intent_id'),
+    )
+
+
+SELECTION_STATUSES = ['Pending', 'Approved', 'Rejected']
+
+
+class ClientUser(db.Model):
+    """Homeowner/client login identity — completely separate from staff User."""
+    __tablename__ = 'client_users'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    email = db.Column(db.String(200), unique=True, nullable=False)
+    name = db.Column(db.String(200), nullable=True)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    last_login = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('client_users', lazy='dynamic'))
+
+    __table_args__ = (
+        Index('idx_cuser_client', 'client_id'),
+        Index('idx_cuser_email', 'email'),
+    )
+
+
+class MagicLink(db.Model):
+    """One-time magic login link for client users."""
+    __tablename__ = 'magic_links'
+    id = db.Column(db.Integer, primary_key=True)
+    client_user_id = db.Column(db.Integer, db.ForeignKey('client_users.id'), nullable=False)
+    token = db.Column(db.String(64), unique=True, nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    client_user = db.relationship('ClientUser')
+
+    __table_args__ = (
+        Index('idx_magic_token', 'token'),
+    )
+
+
+class SelectionCategory(db.Model):
+    """Category of finish/fixture selections (e.g., Flooring, Countertops)."""
+    __tablename__ = 'selection_categories'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+
+    options = db.relationship('SelectionOption', backref='category',
+                               lazy='dynamic', order_by='SelectionOption.sort_order')
+
+
+class SelectionOption(db.Model):
+    """A specific finish/fixture option within a category."""
+    __tablename__ = 'selection_options'
+    id = db.Column(db.Integer, primary_key=True)
+    category_id = db.Column(db.Integer, db.ForeignKey('selection_categories.id'), nullable=False)
+    name = db.Column(db.String(300), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    image_key = db.Column(db.String(500), nullable=True)  # R2 storage key
+    price_delta = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=True)
+    is_default = db.Column(db.Boolean, default=False, nullable=False)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+
+    cost_code = db.relationship('CostCode')
+
+    __table_args__ = (
+        Index('idx_selopt_category', 'category_id'),
+    )
+
+
+class ClientSelection(db.Model):
+    """A client's choice for a selection category — links to option + approval."""
+    __tablename__ = 'client_selections'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    category_id = db.Column(db.Integer, db.ForeignKey('selection_categories.id'), nullable=False)
+    option_id = db.Column(db.Integer, db.ForeignKey('selection_options.id'), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='Pending')
+    change_order_id = db.Column(db.Integer, db.ForeignKey('change_orders.id'), nullable=True)
+    note = db.Column(db.Text, nullable=True)
+    selected_at = db.Column(db.DateTime, default=_utcnow)
+    approved_at = db.Column(db.DateTime, nullable=True)
+
+    client = db.relationship('Client', backref=db.backref('selections', lazy='dynamic'))
+    category = db.relationship('SelectionCategory')
+    option = db.relationship('SelectionOption')
+    change_order = db.relationship('ChangeOrder')
+
+    __table_args__ = (
+        UniqueConstraint('client_id', 'category_id', name='uq_client_selection_category'),
+        Index('idx_csel_client', 'client_id'),
+    )
+
+
+class PortalMessage(db.Model):
+    """Message thread between client and staff via the portal."""
+    __tablename__ = 'portal_messages'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    sender_type = db.Column(db.String(10), nullable=False)   # 'client' or 'staff'
+    sender_name = db.Column(db.String(200), nullable=False)
+    message = db.Column(db.Text, nullable=False)
+    is_read = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    client = db.relationship('Client', backref=db.backref('portal_messages', lazy='dynamic',
+                             order_by='PortalMessage.created_at'))
+
+    __table_args__ = (
+        Index('idx_pmsg_client', 'client_id'),
+        Index('idx_pmsg_unread', 'client_id', 'sender_type', 'is_read'),
+    )
+
+
+QBO_SYNC_DIRECTIONS = ['push', 'pull', 'both']
+QBO_ENTITY_TYPES = ['customer', 'invoice', 'payment', 'account', 'item']
+QBO_SYNC_STATUSES = ['success', 'error', 'skipped']
+
+
+class QBOToken(db.Model):
+    """OAuth 2.0 tokens for QuickBooks Online — single row."""
+    __tablename__ = 'qbo_tokens'
+    id = db.Column(db.Integer, primary_key=True)
+    realm_id = db.Column(db.String(50), nullable=False)
+    access_token = db.Column(db.Text, nullable=False)
+    refresh_token = db.Column(db.Text, nullable=False)
+    access_token_expires_at = db.Column(db.DateTime, nullable=False)
+    refresh_token_expires_at = db.Column(db.DateTime, nullable=True)
+    company_name = db.Column(db.String(200), nullable=True)
+    connected_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class QBOMapping(db.Model):
+    """Map our cost codes to QBO accounts/items.  Also customer/invoice ID links."""
+    __tablename__ = 'qbo_mappings'
+    id = db.Column(db.Integer, primary_key=True)
+    entity_type = db.Column(db.String(30), nullable=False)     # customer, invoice, payment, cost_code
+    local_id = db.Column(db.String(50), nullable=False)        # our PK (string for flexibility)
+    qbo_id = db.Column(db.String(50), nullable=True)           # QBO entity ID
+    qbo_sync_token = db.Column(db.String(20), nullable=True)   # QBO SyncToken for updates
+    qbo_name = db.Column(db.String(300), nullable=True)        # display label from QBO
+    extra = db.Column(db.Text, nullable=True)                  # JSON blob for misc data
+    last_synced_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('entity_type', 'local_id', name='uq_qbo_mapping'),
+        Index('idx_qbo_map_type', 'entity_type'),
+        Index('idx_qbo_map_qbo_id', 'qbo_id'),
+    )
+
+
+class QBOSyncLog(db.Model):
+    """Audit trail for every sync operation."""
+    __tablename__ = 'qbo_sync_logs'
+    id = db.Column(db.Integer, primary_key=True)
+    direction = db.Column(db.String(10), nullable=False)       # push, pull
+    entity_type = db.Column(db.String(30), nullable=False)     # customer, invoice, payment
+    entity_id = db.Column(db.String(50), nullable=True)        # our local ID
+    qbo_id = db.Column(db.String(50), nullable=True)
+    action = db.Column(db.String(20), nullable=False)          # create, update, skip, error
+    status = db.Column(db.String(20), nullable=False)          # success, error, skipped
+    detail = db.Column(db.Text, nullable=True)                 # error message or summary
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index('idx_qbo_log_time', 'created_at'),
+        Index('idx_qbo_log_type', 'entity_type', 'status'),
     )
 
 

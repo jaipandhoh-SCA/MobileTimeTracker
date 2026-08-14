@@ -25,6 +25,9 @@ from models import (
     ChangeOrder, ChangeOrderItem, CHANGE_ORDER_STATUSES,
     Invoice, InvoiceLineItem, Payment,
     INVOICE_STATUSES, PAYMENT_METHODS,
+    QBOToken, QBOMapping, QBOSyncLog,
+    ClientUser, MagicLink, SelectionCategory, SelectionOption,
+    ClientSelection, PortalMessage, SELECTION_STATUSES,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -37,6 +40,9 @@ from utils import (
 from utils import PACIFIC_TZ
 
 app.register_blueprint(google_auth)
+
+from client_portal import portal as client_portal_bp
+app.register_blueprint(client_portal_bp)
 
 
 def build_daily_hours(entries, period_start, period_end):
@@ -184,6 +190,29 @@ def index():
     return render_template('landing.html')
 
 
+@app.route('/dev-login')
+def dev_login():
+    """Dev bypass — creates/reuses a supervisor account and logs in directly."""
+    from flask_login import login_user as _login_user
+
+    user = User.query.filter_by(role='supervisor').first()
+    if user is None:
+        user = User(
+            id='dev_admin_sub', email='admin@example.com',
+            first_name='Dev', last_name='Admin',
+            role='supervisor', profile_image_url='',
+        )
+        user.last_login = datetime.now(timezone.utc)
+        db.session.add(user)
+        db.session.commit()
+    else:
+        user.last_login = datetime.now(timezone.utc)
+        db.session.commit()
+
+    _login_user(user)
+    return redirect(url_for('home'))
+
+
 @app.route('/fresh-login')
 def fresh_login():
     """Force a completely fresh login by clearing all session data and redirecting to Google account selection"""
@@ -237,6 +266,159 @@ _CHANNEL_SOURCE_PATTERNS = {
     'crm':        ['repeat client', 'other'],
     'referral':   ['referral'],
 }
+
+
+def _build_financial_summary():
+    """Portfolio-level financial truth from the cost spine.
+
+    Returns dict with:
+    - portfolio: aggregated budget/actual/committed across active projects
+    - wip_projects: per-project WIP rows (budget, actual, committed, pct, contract)
+    - ar_aging: accounts receivable aging buckets
+    - ar_invoices: individual outstanding invoices with aging
+    """
+    from sqlalchemy import case, literal_column
+
+    # Active projects = projects whose client is Active or In Progress
+    active_projects = Project.query.join(Client, Client.id == Project.client_id).filter(
+        Client.is_active == True,
+        Client.status.in_(['Active', 'Prospect']),
+    ).all()
+
+    project_ids = [p.id for p in active_projects]
+
+    # Batch-query budget totals per project
+    budget_by_project = {}
+    if project_ids:
+        budget_rows = db.session.query(
+            Budget.project_id,
+            func.sum(Budget.amount),
+        ).filter(Budget.project_id.in_(project_ids)).group_by(Budget.project_id).all()
+        budget_by_project = {pid: amt or Decimal(0) for pid, amt in budget_rows}
+
+    # Batch-query actual (committed=False) and committed (committed=True) costs
+    actual_by_project = {}
+    committed_by_project = {}
+    if project_ids:
+        cost_rows = db.session.query(
+            CostEntry.project_id,
+            CostEntry.committed,
+            func.sum(CostEntry.amount),
+        ).filter(CostEntry.project_id.in_(project_ids)).group_by(
+            CostEntry.project_id, CostEntry.committed
+        ).all()
+        for pid, is_committed, amt in cost_rows:
+            if is_committed:
+                committed_by_project[pid] = amt or Decimal(0)
+            else:
+                actual_by_project[pid] = amt or Decimal(0)
+
+    # Build WIP rows
+    wip_projects = []
+    totals = {'budget': Decimal(0), 'actual': Decimal(0), 'committed': Decimal(0),
+              'contract': Decimal(0), 'cost_to_complete': Decimal(0)}
+
+    for p in active_projects:
+        budget = budget_by_project.get(p.id, Decimal(0))
+        actual = actual_by_project.get(p.id, Decimal(0))
+        committed = committed_by_project.get(p.id, Decimal(0))
+        contract = p.contract_value or Decimal(0)
+        ctc = budget - actual - committed
+        pct = (actual / budget * 100).quantize(Decimal('0.1')) if budget else Decimal(0)
+
+        # Determine profit/loss status
+        if budget and actual > budget:
+            health = 'over'
+        elif budget and actual > budget * Decimal('0.9'):
+            health = 'warning'
+        else:
+            health = 'ok'
+
+        client = Client.query.get(p.client_id)
+        wip_projects.append({
+            'project_id': p.id,
+            'project_name': p.name,
+            'client_name': client.name if client else '?',
+            'client_id': p.client_id,
+            'budget': budget,
+            'actual': actual,
+            'committed': committed,
+            'contract': contract,
+            'cost_to_complete': ctc,
+            'pct_complete': pct,
+            'health': health,
+        })
+
+        totals['budget'] += budget
+        totals['actual'] += actual
+        totals['committed'] += committed
+        totals['contract'] += contract
+        totals['cost_to_complete'] += ctc
+
+    totals['pct_complete'] = (
+        (totals['actual'] / totals['budget'] * 100).quantize(Decimal('0.1'))
+        if totals['budget'] else Decimal(0)
+    )
+    totals['gross_margin'] = totals['contract'] - totals['actual'] - totals['committed']
+    totals['margin_pct'] = (
+        (totals['gross_margin'] / totals['contract'] * 100).quantize(Decimal('0.1'))
+        if totals['contract'] else Decimal(0)
+    )
+
+    wip_projects.sort(key=lambda x: float(x['pct_complete']), reverse=True)
+
+    # AR Aging — outstanding invoices grouped by aging bucket
+    today = date.today()
+    outstanding_invoices = Invoice.query.filter(
+        Invoice.status.in_(['Sent', 'Overdue', 'Partial']),
+        Invoice.balance_due > 0,
+    ).all()
+
+    ar_buckets = {'current': Decimal(0), '1_30': Decimal(0),
+                  '31_60': Decimal(0), '61_90': Decimal(0), 'over_90': Decimal(0)}
+    ar_invoices = []
+
+    for inv in outstanding_invoices:
+        ref_date = inv.due_date or inv.issued_date or today
+        days = (today - ref_date).days if ref_date <= today else 0
+
+        if days <= 0:
+            bucket = 'current'
+        elif days <= 30:
+            bucket = '1_30'
+        elif days <= 60:
+            bucket = '31_60'
+        elif days <= 90:
+            bucket = '61_90'
+        else:
+            bucket = 'over_90'
+
+        ar_buckets[bucket] += inv.balance_due
+
+        client = Client.query.get(inv.client_id)
+        ar_invoices.append({
+            'invoice_number': inv.invoice_number,
+            'client_name': client.name if client else '?',
+            'client_id': inv.client_id,
+            'total_due': inv.total_due,
+            'balance_due': inv.balance_due,
+            'due_date': inv.due_date,
+            'days_overdue': max(days, 0),
+            'bucket': bucket,
+            'status': inv.status,
+        })
+
+    ar_invoices.sort(key=lambda x: -x['days_overdue'])
+    ar_total = sum(ar_buckets.values())
+
+    return {
+        'totals': totals,
+        'wip_projects': wip_projects,
+        'ar_buckets': ar_buckets,
+        'ar_total': ar_total,
+        'ar_invoices': ar_invoices,
+        'project_count': len(active_projects),
+    }
 
 
 def _build_channel_cards():
@@ -683,6 +865,38 @@ def home():
             rep_counts[name] += 1
         attention_rep_summary = sorted(rep_counts.items(), key=lambda x: -x[1])
 
+    # === FINANCIAL SUMMARY (supervisor only — reads from cost spine) ===
+    financials = _build_financial_summary() if current_user.is_supervisor else None
+
+    # === TODAY'S ASSIGNMENTS (field view — tasks assigned to current user) ===
+    today_tasks = []
+    week_tasks = []
+    from utils import PACIFIC_TZ
+    today_date = datetime.now(PACIFIC_TZ).date()
+    week_end_date = today_date + timedelta(days=(6 - today_date.weekday()))
+
+    my_assignments = TaskAssignment.query.filter_by(user_id=current_user.id).all()
+    if my_assignments:
+        my_task_ids = [a.task_id for a in my_assignments]
+        assigned_tasks = ScheduleTask.query.filter(
+            ScheduleTask.id.in_(my_task_ids),
+            ScheduleTask.status != 'Done',
+        ).order_by(ScheduleTask.start_date).all()
+
+        for t in assigned_tasks:
+            task_info = {
+                'task': t,
+                'client_name': Client.query.get(
+                    Project.query.get(t.project_id).client_id
+                ).name if t.project_id else '?',
+            }
+            if t.start_date and t.start_date <= today_date and (not t.end_date or t.end_date >= today_date):
+                today_tasks.append(task_info)
+            elif t.start_date and t.start_date <= week_end_date:
+                week_tasks.append(task_info)
+            elif not t.start_date:
+                week_tasks.append(task_info)
+
     return render_template('home.html',
                          my_clients=my_clients,
                          recent_clients=recent_clients,
@@ -710,7 +924,10 @@ def home():
                          stale_red_days=stale_red_days,
                          missing_source_count=Client.query.filter(Client.lead_source_id.is_(None), Client.is_active == True).count() if current_user.is_supervisor else 0,
                          channel_cards=_build_channel_cards() if current_user.is_supervisor else [],
-                         integrations=_get_integration_status() if current_user.is_supervisor else {})
+                         integrations=_get_integration_status() if current_user.is_supervisor else {},
+                         financials=financials,
+                         today_tasks=today_tasks,
+                         week_tasks=week_tasks)
 
 
 # --- Time Tracking Routes ---
@@ -2977,6 +3194,7 @@ def delete_channel_spend(spend_id):
 
 import ghl_helper
 import meta_ads_helper
+import qbo_helper
 
 # Session keys for storing sync results and lead source mappings
 _GHL_LEAD_SOURCE_KEY = 'ghl_lead_source_id'
@@ -3004,6 +3222,10 @@ def integrations_settings():
         'last_sync': AppSetting.get('ghl_last_sync'),
         'last_sync_result': AppSetting.get('ghl_sync_result'),
         'last_sync_success': AppSetting.get('ghl_sync_success') == 'true',
+        'health': AppSetting.get('ghl_health_status'),
+        'health_error': AppSetting.get('ghl_health_error'),
+        'health_checked_at': AppSetting.get('ghl_health_checked_at'),
+        'opp_sync_result': AppSetting.get('ghl_opp_sync_result'),
     }
 
     # Meta status
@@ -3033,13 +3255,25 @@ def integrations_settings():
 
     lead_sources = LeadSource.query.filter_by(is_active=True).order_by(LeadSource.name).all()
 
+    # QBO status
+    qbo_token = QBOToken.query.first()
+    qbo_status = {
+        'connected': qbo_token is not None,
+        'company_name': qbo_token.company_name if qbo_token else '',
+        'configured': qbo_helper.is_configured(),
+        'last_sync': AppSetting.get('qbo_last_sync'),
+        'last_sync_result': AppSetting.get('qbo_sync_result'),
+        'last_sync_success': AppSetting.get('qbo_sync_success') == 'true',
+    }
+
     return render_template('integrations_settings.html',
                          ghl_status=ghl_status,
                          meta_status=meta_status,
                          meta_campaigns=meta_campaigns,
                          lead_sources=lead_sources,
                          ghl_lead_source_id=AppSetting.get(_GHL_LEAD_SOURCE_KEY),
-                         meta_lead_source_id=AppSetting.get(_META_LEAD_SOURCE_KEY))
+                         meta_lead_source_id=AppSetting.get(_META_LEAD_SOURCE_KEY),
+                         qbo_status=qbo_status)
 
 
 @app.route('/settings/integrations/ghl/test', methods=['POST'])
@@ -3080,9 +3314,22 @@ def ghl_sync_contacts():
         flash('GoHighLevel is not configured.', 'error')
         return redirect(url_for('integrations_settings'))
 
-    contacts = ghl_helper.fetch_all_contacts()
+    try:
+        contacts = ghl_helper.fetch_all_contacts()
+    except Exception as e:
+        result = f'Sync failed: {e}'
+        AppSetting.set('ghl_last_sync', format_datetime_for_display(datetime.now(timezone.utc)))
+        AppSetting.set('ghl_sync_result', result)
+        AppSetting.set('ghl_sync_success', 'false')
+        flash(result, 'error')
+        return redirect(url_for('integrations_settings'))
+
     if not contacts:
-        flash(f'GHL returned 0 contacts. Check that your sub-account has contacts and that your API key has contacts read permission.', 'warning')
+        result = 'GHL returned 0 contacts. Check that your sub-account has contacts and that your API key has contacts.readonly scope.'
+        AppSetting.set('ghl_last_sync', format_datetime_for_display(datetime.now(timezone.utc)))
+        AppSetting.set('ghl_sync_result', result)
+        AppSetting.set('ghl_sync_success', 'false')
+        flash(result, 'warning')
         return redirect(url_for('integrations_settings'))
 
     created = 0
@@ -3142,6 +3389,103 @@ def ghl_sync_contacts():
     return redirect(url_for('integrations_settings'))
 
 
+@app.route('/settings/integrations/ghl/sync-opportunities', methods=['POST'])
+@require_supervisor
+def ghl_sync_opportunities():
+    """Sync won GHL opportunities → update matching Client records."""
+    if not ghl_helper.is_configured():
+        flash('GoHighLevel is not configured.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    try:
+        opps = ghl_helper.fetch_all_opportunities()
+    except Exception as e:
+        flash(f'Failed to fetch opportunities: {e}', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    updated = 0
+    skipped = 0
+
+    for opp in opps:
+        update_data = ghl_helper.map_opportunity_to_client_update(opp)
+        if not update_data:
+            continue  # not won
+
+        # Find matching client by GHL contact ID
+        contact_id = opp.get('contactId') or (opp.get('contact', {}).get('id'))
+        if not contact_id:
+            skipped += 1
+            continue
+
+        client = Client.query.filter_by(ghl_contact_id=contact_id).first()
+        if not client:
+            skipped += 1
+            continue
+
+        # Update client fields
+        changed = False
+        if client.status not in ('Active', 'Completed'):
+            old_status = client.status
+            client.status = update_data['status']
+            sc = ClientStatusChange(
+                client_id=client.id,
+                from_status=old_status,
+                to_status=update_data['status'],
+                changed_by_user_id=current_user.id,
+            )
+            db.session.add(sc)
+            changed = True
+
+        if 'opportunity_value' in update_data and not client.opportunity_value:
+            client.opportunity_value = update_data['opportunity_value']
+            changed = True
+
+        if changed:
+            updated += 1
+        else:
+            skipped += 1
+
+    db.session.commit()
+
+    result = f'Opportunities: {updated} client{"s" if updated != 1 else ""} updated'
+    if skipped:
+        result += f', {skipped} skipped'
+    AppSetting.set('ghl_opp_sync_result', result)
+    flash(result, 'success')
+    return redirect(url_for('integrations_settings'))
+
+
+@app.route('/settings/integrations/ghl/health', methods=['POST'])
+@require_supervisor
+def ghl_health_check():
+    """Run a GHL integration health check."""
+    ok, details = ghl_helper.health_check()
+
+    checks = []
+    checks.append(('API Key', details['has_api_key']))
+    checks.append(('Location ID', details['has_location_id']))
+    checks.append(('API Reachable', details['api_reachable']))
+    checks.append(('Location Valid', details['location_valid']))
+    checks.append(('Contacts Readable', details['contacts_readable']))
+
+    passed = sum(1 for _, v in checks if v)
+    total = len(checks)
+
+    if ok:
+        result = f'Health check passed ({passed}/{total} checks OK)'
+        AppSetting.set('ghl_health_status', 'healthy')
+        flash(result, 'success')
+    else:
+        result = f'Health check failed ({passed}/{total}): {details.get("error", "Unknown error")}'
+        AppSetting.set('ghl_health_status', 'unhealthy')
+        AppSetting.set('ghl_health_error', details.get('error', ''))
+        flash(result, 'error')
+
+    AppSetting.set('ghl_health_checked_at', format_datetime_for_display(datetime.now(timezone.utc)))
+    AppSetting.set('ghl_health_detail', str(details))
+    return redirect(url_for('integrations_settings'))
+
+
 @app.route('/settings/integrations/meta/test', methods=['POST'])
 @require_supervisor
 def meta_test_connection():
@@ -3185,7 +3529,15 @@ def meta_sync_spend():
     year, month = now_pacific.year, now_pacific.month
     period_month = date(year, month, 1)
 
-    spend, leads, impressions, clicks = meta_ads_helper.fetch_monthly_spend(year, month)
+    try:
+        spend, leads, impressions, clicks = meta_ads_helper.fetch_monthly_spend(year, month)
+    except Exception as e:
+        result = f'Sync failed: {e}'
+        AppSetting.set('meta_last_sync', format_datetime_for_display(datetime.now(timezone.utc)))
+        AppSetting.set('meta_sync_result', result)
+        AppSetting.set('meta_sync_success', 'false')
+        flash(result, 'error')
+        return redirect(url_for('integrations_settings'))
 
     # Upsert: find existing entry or create
     existing = ChannelSpend.query.filter_by(
@@ -3459,6 +3811,155 @@ def roi_report_export():
     return Response(
         si.getvalue(), mimetype='text/csv',
         headers={'Content-Disposition': f'attachment; filename={filename}'}
+    )
+
+
+# --- Financial Reports ---
+
+@app.route('/reports/financials')
+@require_supervisor
+def financials_report():
+    """Portfolio profitability, WIP, and AR aging report."""
+    data = _build_financial_summary()
+    return render_template('financials_report.html', **data)
+
+
+@app.route('/reports/financials/export')
+@require_supervisor
+def financials_export():
+    """CSV export of the financial report."""
+    fmt = request.args.get('format', 'csv')
+    data = _build_financial_summary()
+
+    if fmt == 'pdf':
+        return _financials_pdf(data)
+
+    si = StringIO()
+    writer = csv.writer(si)
+
+    # WIP section
+    writer.writerow(['Work In Progress'])
+    writer.writerow(['Client', 'Project', 'Contract', 'Budget', 'Actual', 'Committed',
+                      'Cost to Complete', '% Complete', 'Status'])
+    for p in data['wip_projects']:
+        writer.writerow([
+            p['client_name'], p['project_name'],
+            f"{p['contract']:.2f}", f"{p['budget']:.2f}",
+            f"{p['actual']:.2f}", f"{p['committed']:.2f}",
+            f"{p['cost_to_complete']:.2f}", f"{p['pct_complete']:.1f}%",
+            p['health'],
+        ])
+    t = data['totals']
+    writer.writerow([
+        'TOTALS', '', f"{t['contract']:.2f}", f"{t['budget']:.2f}",
+        f"{t['actual']:.2f}", f"{t['committed']:.2f}",
+        f"{t['cost_to_complete']:.2f}", f"{t['pct_complete']:.1f}%", '',
+    ])
+
+    writer.writerow([])
+    writer.writerow(['Accounts Receivable Aging'])
+    writer.writerow(['Invoice', 'Client', 'Total Due', 'Balance', 'Due Date', 'Days Overdue', 'Bucket'])
+    for inv in data['ar_invoices']:
+        writer.writerow([
+            inv['invoice_number'], inv['client_name'],
+            f"{inv['total_due']:.2f}", f"{inv['balance_due']:.2f}",
+            inv['due_date'].strftime('%m/%d/%Y') if inv['due_date'] else '',
+            inv['days_overdue'], inv['bucket'],
+        ])
+    b = data['ar_buckets']
+    writer.writerow([])
+    writer.writerow(['Bucket', 'Amount'])
+    for label, key in [('Current', 'current'), ('1-30 Days', '1_30'),
+                       ('31-60 Days', '31_60'), ('61-90 Days', '61_90'),
+                       ('90+ Days', 'over_90')]:
+        writer.writerow([label, f"{b[key]:.2f}"])
+    writer.writerow(['TOTAL AR', f"{data['ar_total']:.2f}"])
+
+    today_str = date.today().strftime('%Y%m%d')
+    return Response(
+        si.getvalue(), mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename=financials_{today_str}.csv'}
+    )
+
+
+def _financials_pdf(data):
+    """Generate a PDF summary of the financial report."""
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # Title
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'Portfolio Financial Summary', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    pdf.cell(0, 5, f'Generated: {date.today().strftime("%m/%d/%Y")}', ln=True)
+    pdf.ln(5)
+
+    t = data['totals']
+
+    # Summary stats
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 7, 'Portfolio Overview', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    stats = [
+        f"Active Projects: {data['project_count']}",
+        f"Total Contract Value: ${t['contract']:,.2f}",
+        f"Total Budget: ${t['budget']:,.2f}",
+        f"Actual Costs: ${t['actual']:,.2f}",
+        f"Committed: ${t['committed']:,.2f}",
+        f"Cost to Complete: ${t['cost_to_complete']:,.2f}",
+        f"Gross Margin: ${t['gross_margin']:,.2f} ({t['margin_pct']}%)",
+    ]
+    for s in stats:
+        pdf.cell(0, 5, s, ln=True)
+    pdf.ln(5)
+
+    # WIP table
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 7, 'Work In Progress', ln=True)
+    pdf.set_font('Helvetica', 'B', 7)
+    col_widths = [40, 30, 25, 25, 25, 25, 20]
+    headers = ['Client', 'Contract', 'Budget', 'Actual', 'Committed', 'CTC', '%']
+    for i, h in enumerate(headers):
+        pdf.cell(col_widths[i], 5, h, border=1)
+    pdf.ln()
+
+    pdf.set_font('Helvetica', '', 7)
+    for p in data['wip_projects']:
+        pdf.cell(col_widths[0], 5, p['client_name'][:22], border=1)
+        pdf.cell(col_widths[1], 5, f"${p['contract']:,.0f}", border=1)
+        pdf.cell(col_widths[2], 5, f"${p['budget']:,.0f}", border=1)
+        pdf.cell(col_widths[3], 5, f"${p['actual']:,.0f}", border=1)
+        pdf.cell(col_widths[4], 5, f"${p['committed']:,.0f}", border=1)
+        pdf.cell(col_widths[5], 5, f"${p['cost_to_complete']:,.0f}", border=1)
+        pdf.cell(col_widths[6], 5, f"{p['pct_complete']}%", border=1)
+        pdf.ln()
+    pdf.ln(5)
+
+    # AR Aging
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 7, 'Accounts Receivable Aging', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    b = data['ar_buckets']
+    for label, key in [('Current', 'current'), ('1-30 Days', '1_30'),
+                       ('31-60 Days', '31_60'), ('61-90 Days', '61_90'),
+                       ('90+ Days', 'over_90')]:
+        pdf.cell(40, 5, label)
+        pdf.cell(30, 5, f"${b[key]:,.2f}", ln=True)
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.cell(40, 5, 'TOTAL')
+    pdf.cell(30, 5, f"${data['ar_total']:,.2f}", ln=True)
+
+    buf = BytesIO()
+    pdf.output(buf)
+    buf.seek(0)
+
+    today_str = date.today().strftime('%Y%m%d')
+    return Response(
+        buf.getvalue(), mimetype='application/pdf',
+        headers={'Content-Disposition': f'attachment; filename=financials_{today_str}.pdf'}
     )
 
 
@@ -3768,6 +4269,15 @@ def accept_estimate(estimate_id):
     client.final_contract_value = estimate.total
 
     _carry_estimate_to_budget(estimate, project)
+
+    activity = ClientActivity(
+        client_id=client.id,
+        user_id=current_user.id,
+        activity_type='Estimate accepted',
+        note_text=f'Estimate "{estimate.name}" accepted — contract value ${estimate.total:,.2f}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
     db.session.commit()
 
     budget_count = Budget.query.filter_by(project_id=project.id).count()
@@ -4836,6 +5346,29 @@ def delete_permit(client_id, permit_id):
 # SCHEDULING
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _notify_supervisors(notif_type, title, message, link, exclude_user_id=None):
+    """Send in-app notification to supervisors, respecting preferences.
+
+    notif_type: matches a NotificationPreference column name
+                (invoice_created, payment_received, estimate_accepted,
+                 portal_message, selection_made)
+    """
+    for sup in User.query.filter_by(role='supervisor').all():
+        if exclude_user_id and sup.id == exclude_user_id:
+            continue
+        prefs = NotificationPreference.query.filter_by(user_id=sup.id).first()
+        if prefs and not getattr(prefs, notif_type, True):
+            continue
+        notif = Notification(
+            user_id=sup.id,
+            type=notif_type,
+            title=title,
+            message=message,
+            link=link,
+        )
+        db.session.add(notif)
+
+
 def _notify_task(task, notif_type, actor, extra_msg=''):
     """Send in-app notification to task assignees (respecting preferences).
 
@@ -5210,6 +5743,11 @@ def notification_settings():
         prefs.task_assigned = 'task_assigned' in request.form
         prefs.task_changed = 'task_changed' in request.form
         prefs.task_reminder = 'task_reminder' in request.form
+        prefs.invoice_created = 'invoice_created' in request.form
+        prefs.payment_received = 'payment_received' in request.form
+        prefs.estimate_accepted = 'estimate_accepted' in request.form
+        prefs.portal_message = 'portal_message' in request.form
+        prefs.selection_made = 'selection_made' in request.form
         db.session.commit()
         flash('Notification preferences saved.', 'success')
         return redirect(url_for('notification_settings'))
@@ -6463,6 +7001,15 @@ def void_invoice(invoice_id):
                     co.billed = False
                     co.billed_at = None
         invoice.status = 'Voided'
+
+        activity = ClientActivity(
+            client_id=invoice.client_id,
+            user_id=current_user.id,
+            activity_type='Invoice voided',
+            note_text=f'Invoice {invoice.invoice_number} voided — ${invoice.total_due:,.2f}',
+            activity_date=datetime.now(timezone.utc),
+        )
+        db.session.add(activity)
         db.session.commit()
         flash('Invoice voided.', 'success')
     return redirect(url_for('view_invoice', invoice_id=invoice.id))
@@ -6616,3 +7163,840 @@ def stripe_webhook():
                 db.session.commit()
 
     return jsonify(received=True), 200
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  QUICKBOOKS ONLINE — TWO-WAY SYNC
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_qbo_client():
+    """Build a QBOClient from the stored token, or return None."""
+    tok = QBOToken.query.first()
+    if not tok:
+        return None
+
+    def _on_refreshed(data):
+        tok.access_token = data['access_token']
+        tok.refresh_token = data['refresh_token']
+        tok.access_token_expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=data.get('expires_in', 3600))
+        db.session.commit()
+
+    return qbo_helper.QBOClient(
+        realm_id=tok.realm_id,
+        access_token=tok.access_token,
+        refresh_tok=tok.refresh_token,
+        token_expires_at=tok.access_token_expires_at.replace(
+            tzinfo=timezone.utc).timestamp() if tok.access_token_expires_at else 0,
+        on_token_refreshed=_on_refreshed,
+    )
+
+
+def _get_or_create_mapping(entity_type, local_id):
+    m = QBOMapping.query.filter_by(entity_type=entity_type, local_id=str(local_id)).first()
+    if not m:
+        m = QBOMapping(entity_type=entity_type, local_id=str(local_id))
+        db.session.add(m)
+        db.session.flush()
+    return m
+
+
+def _log_sync(direction, entity_type, entity_id, qbo_id, action, status, detail=None):
+    entry = QBOSyncLog(
+        direction=direction, entity_type=entity_type,
+        entity_id=str(entity_id) if entity_id else None,
+        qbo_id=str(qbo_id) if qbo_id else None,
+        action=action, status=status, detail=detail,
+    )
+    db.session.add(entry)
+    return entry
+
+
+# ── OAuth Connect ───────────────────────────────────────────────────────
+
+@app.route('/settings/qbo/connect')
+@require_supervisor
+def qbo_connect():
+    """Redirect to Intuit OAuth 2.0 consent page."""
+    if not qbo_helper.is_configured():
+        flash('QBO credentials not configured. Set QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI.', 'error')
+        return redirect(url_for('integrations_settings'))
+    import secrets
+    state = secrets.token_urlsafe(16)
+    session['qbo_oauth_state'] = state
+    return redirect(qbo_helper.auth_url(state))
+
+
+@app.route('/settings/qbo/callback')
+@require_supervisor
+def qbo_callback():
+    """Handle the OAuth 2.0 callback from Intuit."""
+    error = request.args.get('error')
+    if error:
+        flash(f'QBO authorization failed: {error}', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    state = request.args.get('state', '')
+    if state != session.pop('qbo_oauth_state', ''):
+        flash('Invalid OAuth state. Try again.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    code = request.args.get('code')
+    realm_id = request.args.get('realmId')
+    if not code or not realm_id:
+        flash('Missing authorization code.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    try:
+        data = qbo_helper.exchange_code(code)
+    except Exception as e:
+        flash(f'Token exchange failed: {e}', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=data.get('expires_in', 3600))
+    refresh_expires = now + timedelta(days=100)  # QBO refresh tokens last ~100 days
+
+    # Upsert the token (only one row)
+    tok = QBOToken.query.first()
+    if tok:
+        tok.realm_id = realm_id
+        tok.access_token = data['access_token']
+        tok.refresh_token = data['refresh_token']
+        tok.access_token_expires_at = expires_at
+        tok.refresh_token_expires_at = refresh_expires
+        tok.connected_at = now
+    else:
+        tok = QBOToken(
+            realm_id=realm_id,
+            access_token=data['access_token'],
+            refresh_token=data['refresh_token'],
+            access_token_expires_at=expires_at,
+            refresh_token_expires_at=refresh_expires,
+            connected_at=now,
+        )
+        db.session.add(tok)
+
+    # Fetch company name
+    try:
+        client = _get_qbo_client()
+        if not client:
+            # Token was just added, create client manually
+            client = qbo_helper.QBOClient(
+                realm_id=realm_id,
+                access_token=data['access_token'],
+                refresh_tok=data['refresh_token'],
+                token_expires_at=expires_at.timestamp(),
+            )
+        info = client.company_info()
+        tok.company_name = info.get('CompanyName', 'Connected')
+    except Exception:
+        tok.company_name = 'Connected'
+
+    db.session.commit()
+    flash(f'QuickBooks Online connected: {tok.company_name}', 'success')
+    return redirect(url_for('integrations_settings'))
+
+
+@app.route('/settings/qbo/disconnect', methods=['POST'])
+@require_supervisor
+def qbo_disconnect():
+    """Remove QBO tokens (disconnect)."""
+    QBOToken.query.delete()
+    db.session.commit()
+    flash('QuickBooks Online disconnected.', 'info')
+    return redirect(url_for('integrations_settings'))
+
+
+# ── Cost Code → QBO Account/Item Mapping ────────────────────────────────
+
+@app.route('/settings/qbo/mappings')
+@require_supervisor
+def qbo_mappings():
+    """Configure cost code → QBO account/item mappings."""
+    client = _get_qbo_client()
+    if not client:
+        flash('Connect to QuickBooks first.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+
+    # Current mappings
+    cc_mappings = {}
+    for cc in cost_codes:
+        m = QBOMapping.query.filter_by(entity_type='cost_code', local_id=str(cc.id)).first()
+        cc_mappings[cc.id] = m
+
+    # Fetch QBO accounts and items
+    try:
+        qbo_income_accounts = client.get_accounts('Income')
+        qbo_expense_accounts = client.get_accounts('Expense')
+        qbo_items = client.get_items()
+    except Exception as e:
+        flash(f'Failed to fetch QBO data: {e}', 'error')
+        qbo_income_accounts = []
+        qbo_expense_accounts = []
+        qbo_items = []
+
+    return render_template('qbo_mappings.html',
+                           cost_codes=cost_codes, cc_mappings=cc_mappings,
+                           qbo_income_accounts=qbo_income_accounts,
+                           qbo_expense_accounts=qbo_expense_accounts,
+                           qbo_items=qbo_items)
+
+
+@app.route('/settings/qbo/mappings/save', methods=['POST'])
+@require_supervisor
+def qbo_mappings_save():
+    """Save cost code → QBO item mappings."""
+    cost_codes = CostCode.query.filter_by(is_active=True).all()
+    for cc in cost_codes:
+        qbo_item_id = request.form.get(f'cc_{cc.id}_item_id', '').strip()
+        qbo_item_name = request.form.get(f'cc_{cc.id}_item_name', '').strip()
+        if qbo_item_id:
+            m = _get_or_create_mapping('cost_code', cc.id)
+            m.qbo_id = qbo_item_id
+            m.qbo_name = qbo_item_name or None
+        else:
+            # Remove mapping if cleared
+            existing = QBOMapping.query.filter_by(entity_type='cost_code', local_id=str(cc.id)).first()
+            if existing:
+                db.session.delete(existing)
+    db.session.commit()
+    flash('QBO mappings saved.', 'success')
+    return redirect(url_for('qbo_mappings'))
+
+
+# ── Sync Engine ─────────────────────────────────────────────────────────
+
+def _push_customer(client_obj, qbo_client):
+    """Push a Client → QBO Customer.  Idempotent."""
+    m = _get_or_create_mapping('customer', client_obj.id)
+
+    if m.qbo_id:
+        # Already synced — update
+        try:
+            existing = qbo_client.get_customer(m.qbo_id)
+            qbo_cust = qbo_client.update_customer(
+                m.qbo_id, existing['SyncToken'],
+                DisplayName=client_obj.name,
+                PrimaryEmailAddr={'Address': client_obj.email} if client_obj.email else None,
+                PrimaryPhone={'FreeFormNumber': client_obj.phone} if client_obj.phone else None,
+            )
+            m.qbo_sync_token = qbo_cust['SyncToken']
+            m.qbo_name = qbo_cust['DisplayName']
+            m.last_synced_at = datetime.now(timezone.utc)
+            _log_sync('push', 'customer', client_obj.id, m.qbo_id, 'update', 'success')
+            return m
+        except Exception as e:
+            _log_sync('push', 'customer', client_obj.id, m.qbo_id, 'update', 'error', str(e))
+            raise
+
+    # Check if customer already exists by name (prevent duplicates)
+    try:
+        existing = qbo_client.find_customer_by_name(client_obj.name)
+        if existing:
+            m.qbo_id = str(existing['Id'])
+            m.qbo_sync_token = existing.get('SyncToken')
+            m.qbo_name = existing['DisplayName']
+            m.last_synced_at = datetime.now(timezone.utc)
+            _log_sync('push', 'customer', client_obj.id, m.qbo_id, 'skip', 'success',
+                       'Already exists in QBO')
+            return m
+    except Exception:
+        pass
+
+    # Create new
+    try:
+        addr_parts = (client_obj.address or '').split(',')
+        qbo_cust = qbo_client.create_customer(
+            display_name=client_obj.name,
+            email=client_obj.email,
+            phone=client_obj.phone,
+            address_line=addr_parts[0].strip() if addr_parts else None,
+        )
+        m.qbo_id = str(qbo_cust['Id'])
+        m.qbo_sync_token = qbo_cust.get('SyncToken')
+        m.qbo_name = qbo_cust['DisplayName']
+        m.last_synced_at = datetime.now(timezone.utc)
+        _log_sync('push', 'customer', client_obj.id, m.qbo_id, 'create', 'success')
+        return m
+    except Exception as e:
+        _log_sync('push', 'customer', client_obj.id, None, 'create', 'error', str(e))
+        raise
+
+
+def _push_invoice(invoice_obj, qbo_client):
+    """Push an Invoice → QBO Invoice.  Idempotent."""
+    m = _get_or_create_mapping('invoice', invoice_obj.id)
+
+    if m.qbo_id:
+        _log_sync('push', 'invoice', invoice_obj.id, m.qbo_id, 'skip', 'skipped',
+                   'Already synced')
+        return m
+
+    # Ensure customer is synced
+    cust_mapping = _get_or_create_mapping('customer', invoice_obj.client_id)
+    if not cust_mapping.qbo_id:
+        client_obj = Client.query.get(invoice_obj.client_id)
+        _push_customer(client_obj, qbo_client)
+        cust_mapping = QBOMapping.query.filter_by(
+            entity_type='customer', local_id=str(invoice_obj.client_id)).first()
+
+    if not cust_mapping or not cust_mapping.qbo_id:
+        _log_sync('push', 'invoice', invoice_obj.id, None, 'create', 'error',
+                   'Customer not synced to QBO')
+        raise ValueError('Customer not synced to QBO')
+
+    # Build line items
+    lines = []
+    for li in invoice_obj.line_items.all():
+        line = {'description': li.description, 'amount': li.amount}
+        # Check for cost code → QBO item mapping
+        if li.source_type == 'draw' and li.draw_item_id:
+            pass  # Use description as-is
+        if li.source_type == 'change_order' and li.change_order_id:
+            co = li.change_order
+            if co:
+                for co_item in co.items.all():
+                    if co_item.cost_code_id:
+                        cc_map = QBOMapping.query.filter_by(
+                            entity_type='cost_code', local_id=str(co_item.cost_code_id)).first()
+                        if cc_map and cc_map.qbo_id:
+                            line['item_id'] = cc_map.qbo_id
+                            break
+        lines.append(line)
+
+    try:
+        qbo_inv = qbo_client.create_invoice(
+            customer_id=cust_mapping.qbo_id,
+            line_items=lines,
+            doc_number=invoice_obj.invoice_number,
+            due_date=invoice_obj.due_date.isoformat() if invoice_obj.due_date else None,
+            txn_date=invoice_obj.issued_date.isoformat() if invoice_obj.issued_date else None,
+            memo=invoice_obj.notes,
+        )
+        m.qbo_id = str(qbo_inv['Id'])
+        m.qbo_sync_token = qbo_inv.get('SyncToken')
+        m.last_synced_at = datetime.now(timezone.utc)
+        _log_sync('push', 'invoice', invoice_obj.id, m.qbo_id, 'create', 'success')
+        return m
+    except Exception as e:
+        _log_sync('push', 'invoice', invoice_obj.id, None, 'create', 'error', str(e))
+        raise
+
+
+def _push_payment(payment_obj, qbo_client):
+    """Push a Payment → QBO Payment.  Idempotent."""
+    m = _get_or_create_mapping('payment', payment_obj.id)
+
+    if m.qbo_id:
+        _log_sync('push', 'payment', payment_obj.id, m.qbo_id, 'skip', 'skipped',
+                   'Already synced')
+        return m
+
+    # Ensure invoice is synced
+    inv_mapping = QBOMapping.query.filter_by(
+        entity_type='invoice', local_id=str(payment_obj.invoice_id)).first()
+    invoice_qbo_id = inv_mapping.qbo_id if inv_mapping else None
+
+    # Ensure customer is synced
+    cust_mapping = QBOMapping.query.filter_by(
+        entity_type='customer', local_id=str(payment_obj.client_id)).first()
+    if not cust_mapping or not cust_mapping.qbo_id:
+        _log_sync('push', 'payment', payment_obj.id, None, 'create', 'error',
+                   'Customer not synced to QBO')
+        raise ValueError('Customer not synced to QBO')
+
+    try:
+        qbo_pmt = qbo_client.create_payment(
+            customer_id=cust_mapping.qbo_id,
+            amount=payment_obj.amount,
+            invoice_qbo_id=invoice_qbo_id,
+            txn_date=payment_obj.received_date.isoformat() if payment_obj.received_date else None,
+            memo=payment_obj.note or f'{payment_obj.method} payment',
+        )
+        m.qbo_id = str(qbo_pmt['Id'])
+        m.qbo_sync_token = qbo_pmt.get('SyncToken')
+        m.last_synced_at = datetime.now(timezone.utc)
+        _log_sync('push', 'payment', payment_obj.id, m.qbo_id, 'create', 'success')
+        return m
+    except Exception as e:
+        _log_sync('push', 'payment', payment_obj.id, None, 'create', 'error', str(e))
+        raise
+
+
+def _pull_payments(qbo_client, since_date=None):
+    """Pull payments from QBO → local.  Match by invoice mapping."""
+    if not since_date:
+        last = AppSetting.get('qbo_last_pull_payments')
+        since_date = last or '2020-01-01'
+
+    pulled = 0
+    try:
+        qbo_payments = qbo_client.get_payments_since(since_date)
+    except Exception as e:
+        _log_sync('pull', 'payment', None, None, 'fetch', 'error', str(e))
+        return 0
+
+    for qbo_pmt in qbo_payments:
+        qbo_id = str(qbo_pmt['Id'])
+        # Already mapped?
+        existing_map = QBOMapping.query.filter_by(entity_type='payment', qbo_id=qbo_id).first()
+        if existing_map:
+            continue  # Already linked
+
+        # Find linked invoice
+        invoice_id = None
+        for line in qbo_pmt.get('Line', []):
+            for txn in line.get('LinkedTxn', []):
+                if txn.get('TxnType') == 'Invoice':
+                    inv_qbo_id = txn['TxnId']
+                    inv_map = QBOMapping.query.filter_by(
+                        entity_type='invoice', qbo_id=str(inv_qbo_id)).first()
+                    if inv_map:
+                        invoice_id = int(inv_map.local_id)
+
+        if not invoice_id:
+            _log_sync('pull', 'payment', None, qbo_id, 'skip', 'skipped',
+                       'No matching local invoice')
+            continue
+
+        invoice = Invoice.query.get(invoice_id)
+        if not invoice:
+            continue
+
+        # Check if we already have this payment
+        existing_pmt = Payment.query.filter_by(
+            invoice_id=invoice_id,
+            stripe_payment_intent_id=f'qbo:{qbo_id}',  # Use this field as dedup key
+        ).first()
+        if existing_pmt:
+            continue
+
+        amount = Decimal(str(qbo_pmt.get('TotalAmt', 0)))
+        txn_date = qbo_pmt.get('TxnDate')
+        received = None
+        if txn_date:
+            try:
+                received = datetime.strptime(txn_date, '%Y-%m-%d').date()
+            except ValueError:
+                received = date.today()
+
+        payment = Payment(
+            invoice_id=invoice_id,
+            client_id=invoice.client_id,
+            amount=amount,
+            method='other',
+            status='succeeded',
+            reference=f'QBO Payment #{qbo_id}',
+            stripe_payment_intent_id=f'qbo:{qbo_id}',
+            received_date=received or date.today(),
+            note='Synced from QuickBooks',
+        )
+        db.session.add(payment)
+        invoice.recalculate()
+
+        # Create mapping
+        m = QBOMapping(entity_type='payment', local_id=str(payment.id), qbo_id=qbo_id)
+        db.session.add(m)
+
+        _log_sync('pull', 'payment', payment.id, qbo_id, 'create', 'success')
+        pulled += 1
+
+    AppSetting.set('qbo_last_pull_payments', datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S'))
+    db.session.commit()
+    return pulled
+
+
+def _pull_customers(qbo_client, since_date=None):
+    """Pull new/updated customers from QBO.  Creates local Clients only for
+    customers that don't already have a mapping (no overwrite)."""
+    if not since_date:
+        last = AppSetting.get('qbo_last_pull_customers')
+        since_date = last or '2020-01-01'
+
+    pulled = 0
+    try:
+        qbo_custs = qbo_client.get_customers_since(since_date)
+    except Exception as e:
+        _log_sync('pull', 'customer', None, None, 'fetch', 'error', str(e))
+        return 0
+
+    for qbo_cust in qbo_custs:
+        qbo_id = str(qbo_cust['Id'])
+        existing_map = QBOMapping.query.filter_by(entity_type='customer', qbo_id=qbo_id).first()
+        if existing_map:
+            # Update name if changed
+            local_client = Client.query.get(int(existing_map.local_id))
+            if local_client:
+                display = qbo_cust.get('DisplayName', '')
+                if display and display != local_client.name:
+                    local_client.name = display
+                    existing_map.qbo_name = display
+                    _log_sync('pull', 'customer', local_client.id, qbo_id, 'update', 'success')
+            continue
+
+        # New customer from QBO — create a local Client
+        name = qbo_cust.get('DisplayName', qbo_cust.get('CompanyName', 'QBO Customer'))
+        email = None
+        if qbo_cust.get('PrimaryEmailAddr'):
+            email = qbo_cust['PrimaryEmailAddr'].get('Address')
+        phone = None
+        if qbo_cust.get('PrimaryPhone'):
+            phone = qbo_cust['PrimaryPhone'].get('FreeFormNumber')
+        address = ''
+        if qbo_cust.get('BillAddr'):
+            addr = qbo_cust['BillAddr']
+            parts = [addr.get('Line1', ''), addr.get('City', ''),
+                     addr.get('CountrySubDivisionCode', ''), addr.get('PostalCode', '')]
+            address = ', '.join(p for p in parts if p)
+
+        new_client = Client(
+            name=name,
+            address=address or 'Imported from QBO',
+            email=email,
+            phone=phone,
+            status='Lead',
+        )
+        db.session.add(new_client)
+        db.session.flush()
+
+        m = QBOMapping(entity_type='customer', local_id=str(new_client.id),
+                        qbo_id=qbo_id, qbo_name=name,
+                        last_synced_at=datetime.now(timezone.utc))
+        db.session.add(m)
+        _log_sync('pull', 'customer', new_client.id, qbo_id, 'create', 'success')
+        pulled += 1
+
+    AppSetting.set('qbo_last_pull_customers', datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S'))
+    db.session.commit()
+    return pulled
+
+
+# ── Sync Trigger Routes ─────────────────────────────────────────────────
+
+@app.route('/settings/qbo/sync', methods=['POST'])
+@require_supervisor
+def qbo_sync_all():
+    """Run a full two-way sync."""
+    qbo = _get_qbo_client()
+    if not qbo:
+        flash('QuickBooks not connected.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    results = {'push_customers': 0, 'push_invoices': 0, 'push_payments': 0,
+               'pull_customers': 0, 'pull_payments': 0, 'errors': []}
+
+    # 1. Push customers (all active clients)
+    for client_obj in Client.query.filter_by(is_active=True).all():
+        try:
+            _push_customer(client_obj, qbo)
+            results['push_customers'] += 1
+        except Exception as e:
+            results['errors'].append(f'Customer {client_obj.name}: {e}')
+
+    # 2. Push invoices (Sent, Partial, Paid — skip Draft/Voided)
+    for inv in Invoice.query.filter(Invoice.status.in_(['Sent', 'Viewed', 'Partial', 'Paid', 'Overdue'])).all():
+        try:
+            _push_invoice(inv, qbo)
+            results['push_invoices'] += 1
+        except Exception as e:
+            results['errors'].append(f'Invoice {inv.invoice_number}: {e}')
+
+    # 3. Push payments
+    for pmt in Payment.query.filter_by(status='succeeded').all():
+        try:
+            _push_payment(pmt, qbo)
+            results['push_payments'] += 1
+        except Exception as e:
+            results['errors'].append(f'Payment #{pmt.id}: {e}')
+
+    # 4. Pull customers from QBO
+    try:
+        results['pull_customers'] = _pull_customers(qbo)
+    except Exception as e:
+        results['errors'].append(f'Pull customers: {e}')
+
+    # 5. Pull payments from QBO
+    try:
+        results['pull_payments'] = _pull_payments(qbo)
+    except Exception as e:
+        results['errors'].append(f'Pull payments: {e}')
+
+    db.session.commit()
+
+    now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    AppSetting.set('qbo_last_sync', now_str)
+    summary = (f"Push: {results['push_customers']} customers, {results['push_invoices']} invoices, "
+               f"{results['push_payments']} payments. "
+               f"Pull: {results['pull_customers']} customers, {results['pull_payments']} payments.")
+    if results['errors']:
+        summary += f" Errors: {len(results['errors'])}"
+    AppSetting.set('qbo_sync_result', summary)
+    AppSetting.set('qbo_sync_success', 'false' if results['errors'] else 'true')
+
+    if results['errors']:
+        flash(f'Sync completed with {len(results["errors"])} error(s). {summary}', 'warning')
+    else:
+        flash(f'Sync completed. {summary}', 'success')
+
+    return redirect(url_for('qbo_sync_dashboard'))
+
+
+@app.route('/settings/qbo/sync/customers', methods=['POST'])
+@require_supervisor
+def qbo_sync_customers():
+    """Push all active clients to QBO."""
+    qbo = _get_qbo_client()
+    if not qbo:
+        flash('QuickBooks not connected.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    count = 0
+    errors = 0
+    for client_obj in Client.query.filter_by(is_active=True).all():
+        try:
+            _push_customer(client_obj, qbo)
+            count += 1
+        except Exception:
+            errors += 1
+    db.session.commit()
+    flash(f'Synced {count} customers to QBO. {errors} error(s).' if errors
+          else f'Synced {count} customers to QBO.', 'success' if not errors else 'warning')
+    return redirect(url_for('qbo_sync_dashboard'))
+
+
+@app.route('/settings/qbo/sync/invoices', methods=['POST'])
+@require_supervisor
+def qbo_sync_invoices():
+    """Push all non-draft invoices to QBO."""
+    qbo = _get_qbo_client()
+    if not qbo:
+        flash('QuickBooks not connected.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    count = 0
+    errors = 0
+    for inv in Invoice.query.filter(Invoice.status.in_(['Sent', 'Viewed', 'Partial', 'Paid', 'Overdue'])).all():
+        try:
+            _push_invoice(inv, qbo)
+            count += 1
+        except Exception:
+            errors += 1
+    db.session.commit()
+    flash(f'Synced {count} invoices to QBO. {errors} error(s).' if errors
+          else f'Synced {count} invoices to QBO.', 'success' if not errors else 'warning')
+    return redirect(url_for('qbo_sync_dashboard'))
+
+
+@app.route('/settings/qbo/sync/pull-payments', methods=['POST'])
+@require_supervisor
+def qbo_pull_payments():
+    """Pull new payments from QBO into local."""
+    qbo = _get_qbo_client()
+    if not qbo:
+        flash('QuickBooks not connected.', 'error')
+        return redirect(url_for('integrations_settings'))
+
+    try:
+        count = _pull_payments(qbo)
+        flash(f'Pulled {count} new payment(s) from QBO.', 'success')
+    except Exception as e:
+        flash(f'Failed to pull payments: {e}', 'error')
+    return redirect(url_for('qbo_sync_dashboard'))
+
+
+# ── Sync Dashboard ──────────────────────────────────────────────────────
+
+@app.route('/settings/qbo/dashboard')
+@require_supervisor
+def qbo_sync_dashboard():
+    """Sync status dashboard with log history."""
+    tok = QBOToken.query.first()
+    connected = tok is not None
+
+    # Mapping counts
+    mapping_counts = {}
+    for etype in ['customer', 'invoice', 'payment', 'cost_code']:
+        mapping_counts[etype] = QBOMapping.query.filter_by(entity_type=etype).filter(
+            QBOMapping.qbo_id.isnot(None)).count()
+
+    # Recent logs
+    recent_logs = QBOSyncLog.query.order_by(QBOSyncLog.created_at.desc()).limit(100).all()
+
+    # Error summary
+    error_count = QBOSyncLog.query.filter_by(status='error').count()
+    recent_errors = QBOSyncLog.query.filter_by(status='error').order_by(
+        QBOSyncLog.created_at.desc()).limit(20).all()
+
+    # Unsynced counts
+    synced_client_ids = {int(m.local_id) for m in QBOMapping.query.filter_by(entity_type='customer').filter(
+        QBOMapping.qbo_id.isnot(None)).all()}
+    unsynced_clients = Client.query.filter_by(is_active=True).filter(
+        ~Client.id.in_(synced_client_ids) if synced_client_ids else Client.id.isnot(None)
+    ).count()
+
+    synced_inv_ids = {int(m.local_id) for m in QBOMapping.query.filter_by(entity_type='invoice').filter(
+        QBOMapping.qbo_id.isnot(None)).all()}
+    unsynced_invoices = Invoice.query.filter(
+        Invoice.status.in_(['Sent', 'Viewed', 'Partial', 'Paid', 'Overdue']),
+        ~Invoice.id.in_(synced_inv_ids) if synced_inv_ids else Invoice.id.isnot(None)
+    ).count()
+
+    return render_template('qbo_dashboard.html',
+                           connected=connected, token=tok,
+                           mapping_counts=mapping_counts,
+                           recent_logs=recent_logs,
+                           error_count=error_count,
+                           recent_errors=recent_errors,
+                           unsynced_clients=unsynced_clients,
+                           unsynced_invoices=unsynced_invoices,
+                           last_sync=AppSetting.get('qbo_last_sync'),
+                           last_sync_result=AppSetting.get('qbo_sync_result'),
+                           last_sync_success=AppSetting.get('qbo_sync_success') == 'true')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  STAFF: CLIENT PORTAL USER MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/clients/<int:client_id>/portal-users', methods=['POST'])
+@require_supervisor
+def add_portal_user(client_id):
+    """Create a ClientUser for the client portal."""
+    client = Client.query.get_or_404(client_id)
+    email = request.form.get('email', '').strip().lower()
+    name = request.form.get('name', '').strip()
+    if not email:
+        flash('Email is required.', 'error')
+        return redirect(url_for('view_client', client_id=client_id))
+
+    existing = ClientUser.query.filter_by(email=email).first()
+    if existing:
+        flash(f'{email} already has portal access.', 'error')
+        return redirect(url_for('view_client', client_id=client_id))
+
+    cu = ClientUser(client_id=client.id, email=email, name=name or client.contact_name)
+    db.session.add(cu)
+    db.session.commit()
+    flash(f'Portal access created for {email}.', 'success')
+    return redirect(url_for('view_client', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/portal-users/<int:cu_id>/delete', methods=['POST'])
+@require_supervisor
+def remove_portal_user(client_id, cu_id):
+    cu = ClientUser.query.get_or_404(cu_id)
+    if cu.client_id != client_id:
+        abort(403)
+    cu.is_active = False
+    db.session.commit()
+    flash(f'Portal access revoked for {cu.email}.', 'info')
+    return redirect(url_for('view_client', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/portal-message', methods=['POST'])
+@require_login
+def send_portal_message(client_id):
+    """Staff sends a message to client via portal."""
+    client = Client.query.get_or_404(client_id)
+    text = request.form.get('message', '').strip()
+    if not text:
+        flash('Message cannot be empty.', 'error')
+        return redirect(url_for('view_client', client_id=client_id))
+
+    msg = PortalMessage(
+        client_id=client.id,
+        sender_type='staff',
+        sender_name=current_user.display_name,
+        message=text,
+    )
+    db.session.add(msg)
+    db.session.commit()
+    flash('Message sent to client portal.', 'success')
+    return redirect(url_for('view_client', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/selections/<int:sel_id>/approve', methods=['POST'])
+@require_login
+def approve_selection(client_id, sel_id):
+    """Approve a client's selection — optionally create a change order for price delta."""
+    sel = ClientSelection.query.get_or_404(sel_id)
+    if sel.client_id != client_id:
+        abort(403)
+
+    sel.status = 'Approved'
+    sel.approved_at = datetime.now(timezone.utc)
+
+    option = sel.option
+    if option.price_delta and option.price_delta != 0:
+        # Auto-create a change order for the price delta
+        from client_portal import _current_client_user  # not used here but keep import clean
+        project = sel.client.default_project()
+        co_number = f'CO-SEL-{sel.id:03d}'
+        co = ChangeOrder(
+            client_id=client_id,
+            project_id=project.id,
+            co_number=co_number,
+            title=f'Selection: {sel.category.name} — {option.name}',
+            description=f'Price adjustment for {sel.category.name} selection: {option.name}',
+            price_to_client=option.price_delta,
+            status='Approved',
+            approved_at=datetime.now(timezone.utc),
+            approved_name='Auto-approved via selection',
+            created_by_user_id=current_user.id,
+        )
+        db.session.add(co)
+        db.session.flush()
+        sel.change_order_id = co.id
+
+        # Apply budget/contract value adjustment (reuse the approval helper)
+        from routes import _apply_change_order_approval
+        # Budget + contract value already handled inline since CO is created as Approved
+        if option.cost_code_id:
+            from models import Budget
+            existing = Budget.query.filter_by(
+                project_id=project.id, cost_code_id=option.cost_code_id,
+                cost_type='Material').first()
+            if existing:
+                existing.amount += option.price_delta
+            else:
+                db.session.add(Budget(
+                    project_id=project.id, cost_code_id=option.cost_code_id,
+                    cost_type='Material', amount=option.price_delta,
+                    notes=f'Selection: {option.name}',
+                ))
+        if project.contract_value:
+            project.contract_value += option.price_delta
+        else:
+            project.contract_value = option.price_delta
+        client_obj = Client.query.get(client_id)
+        if client_obj.final_contract_value:
+            client_obj.final_contract_value += option.price_delta
+        else:
+            client_obj.final_contract_value = option.price_delta
+
+    activity = ClientActivity(
+        client_id=client_id,
+        user_id=current_user.id,
+        activity_type='Selection Approved',
+        note_text=f'{sel.category.name}: {option.name}',
+        activity_date=datetime.now(timezone.utc),
+    )
+    db.session.add(activity)
+    db.session.commit()
+    flash(f'Selection approved: {sel.category.name} — {option.name}', 'success')
+    return redirect(url_for('view_client', client_id=client_id))
+
+
+@app.route('/clients/<int:client_id>/selections/<int:sel_id>/reject', methods=['POST'])
+@require_login
+def reject_selection(client_id, sel_id):
+    sel = ClientSelection.query.get_or_404(sel_id)
+    if sel.client_id != client_id:
+        abort(403)
+    sel.status = 'Rejected'
+    db.session.commit()
+    flash(f'Selection rejected: {sel.category.name}', 'info')
+    return redirect(url_for('view_client', client_id=client_id))

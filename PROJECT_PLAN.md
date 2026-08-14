@@ -50,6 +50,125 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-13 — Prod Hardening: Auth, PWA, Notifications, Audit, Tests, Accessibility
+
+**Access-control tests** (`test_access_control.py` — 11 tests):
+- Rep vs supervisor: reps get 403 on supervisor-only routes, supervisors get 200.
+- Unauthenticated: redirected to login on all protected routes.
+- Client isolation: client A cannot see client B messages, portal data scoped per client.
+- Session tampering: injecting `_user_id` into client session doesn't grant staff access.
+- Magic links: expired, invalid, and used tokens all rejected.
+
+**Cost math tests** (`test_cost_math.py` — 20 tests):
+- Project budget/actual/committed aggregation, CTC = budget - actual - committed.
+- `budget_used_pct` handles zero budget without division error.
+- `CostEntry.upsert_for_time_entry` idempotency: second call updates, doesn't duplicate.
+- Estimate math: line item extended cost with waste, subtotal + markup/overhead/contingency.
+- Invoice recalculate: retainage, partial/full payment, failed payments ignored.
+- Change order item_total aggregation.
+- Client.total_contract_value sums all projects.
+
+**Mobile/PWA** (`static/manifest.json`, `static/sw.js`):
+- Web app manifest for installability (standalone display, icons, theme color).
+- Service worker: cache-first for CDN assets, network-first for API and pages.
+- Offline fallback page when network unavailable.
+- IndexedDB sync queue for offline mutations (POST/PUT/DELETE).
+- Background Sync to replay queued requests on reconnect.
+- `base.html`: PWA meta tags (apple-mobile-web-app, theme-color), offline banner.
+
+**Notifications** (extended `NotificationPreference`, `notification_settings.html`):
+- Added financial event preferences: invoice_created, payment_received, estimate_accepted.
+- Added portal event preferences: portal_message, selection_made.
+- `_notify_supervisors()` helper respects per-user preferences.
+- Portal notification dispatch (selections, messages) checks preferences before sending.
+
+**Audit trails** (routes.py):
+- Added ClientActivity entry for `accept_estimate` (was missing).
+- Added ClientActivity entry for `void_invoice` (was missing).
+- (Already existed: invoice created, invoice sent, payment received, all COs, status changes.)
+
+**Accessibility** (`base.html`):
+- Skip-to-content link for keyboard navigation.
+- `role="main"` + `id="main-content"` on main element.
+- Touch targets: 44px minimum for interactive elements on coarse pointer devices.
+- Label contrast: form labels set to slate-700 (7:1 ratio on white).
+- `prefers-reduced-motion` respected globally.
+- Focus-visible outlines on all interactive elements.
+
+**Dev login** (`routes.py`, `landing.html`):
+- Always-available `/dev-login` route (creates/reuses supervisor account).
+- Landing page shows "Sign In (Dev)" button without needing env var.
+
+---
+
+### 2026-08-13 — Financial Hub & Reports
+
+**Scope:** Extend existing hub and reports with financial truth from the job costing spine. Role-aware views: supervisor sees portfolio profitability, WIP, AR aging; rep sees client status + next steps; field sees today's assignments + clock. One-click PDF/CSV export. All numbers read from the C1 cost spine (Budget, CostEntry, Invoice, Payment models).
+
+**Routes (routes.py):**
+- `_build_financial_summary()` — batch-queries budget/actual/committed across active projects, AR aging from outstanding invoices, returns portfolio totals + per-project WIP rows + aging buckets.
+- `/reports/financials` — full financial report page with WIP table + AR aging.
+- `/reports/financials/export?format=csv|pdf` — one-click CSV or PDF export of the financial report.
+- `home()` updated: passes `financials` (supervisor), `today_tasks` + `week_tasks` (all users via TaskAssignment).
+
+**Templates:**
+- `financials_report.html` — summary stat cards, WIP table with progress bars + health badges, AR aging buckets + invoice detail.
+- `home.html` — added "My Assignments" section (today/this week tasks), "Portfolio Financials" collapsible section (supervisor: contract value, budget vs actual, gross margin, AR outstanding, WIP mini-table with top 5 projects, AR aging buckets, CSV/PDF export buttons).
+- `base.html` — Reports nav highlight includes `financials_report`.
+
+**Key details:**
+- WIP health: "On Track" (green), "Watch" (>90% budget, amber), "Over Budget" (red).
+- AR aging: Current / 1-30 / 31-60 / 61-90 / 90+ day buckets.
+- PDF uses fpdf2 (already a dependency).
+- Batch queries (not N+1) for budget/cost/committed by project.
+
+---
+
+### 2026-08-13 — Client-Facing Portal
+
+**Scope:** Fully isolated client portal with magic-link email auth (no Google OAuth dependency). Clients see their own project: progress/phases, shared photos, documents (contracts, approved COs, invoices), finish/fixture selections with price deltas, and a messaging thread. Staff get notified on client actions.
+
+**Architecture — auth isolation:**
+- `ClientUser` model is completely separate from `User` (staff). Different table, different PK type, no `UserMixin`.
+- Client sessions use `session['client_user_id']` — never flask-login. `user_loader` only queries `User`, structurally impossible for `ClientUser`.
+- Staff decorators (`@require_login`, `@require_supervisor`) check `current_user.is_authenticated` via flask-login — a client session can never satisfy these.
+- Portal blueprint (`client_portal.py`) with `/portal` prefix, `@require_client_login` decorator.
+- 8 automated tests (`test_portal_isolation.py`) verify: client can't reach staff routes, client can't see other client's data, unauthenticated visitors redirected, staff session can't use portal, inactive client rejected, magic link single-use.
+
+**Models (models.py):** Added `ClientUser`, `MagicLink`, `SelectionCategory`, `SelectionOption`, `ClientSelection`, `PortalMessage`. Constants: `SELECTION_STATUSES`.
+
+**Migration:** `j1d3e4f25g86_add_client_portal.py` — 6 new tables with indexes + unique constraints.
+
+**Files:** `client_portal.py` (Blueprint with 10 routes), `test_portal_isolation.py` (8 tests).
+
+**Portal routes (client_portal.py):** Login (magic link request), magic link auth, logout, dashboard (progress stats + milestones + photos), documents (contracts/COs/invoices/shared docs), selections list, selection detail (choose + submit), messages (chat thread + compose), progress (phase/task view), photos (shared photo grid).
+
+**Staff routes (routes.py):** `add_portal_user` (create ClientUser for a client), `remove_portal_user`, `send_portal_message`, `approve_selection` (auto-creates ChangeOrder for price deltas), `reject_selection`.
+
+**Templates (9):** `portal/base.html` (standalone layout, separate nav), `portal/login.html`, `portal/dashboard.html`, `portal/documents.html`, `portal/selections.html`, `portal/selection_detail.html`, `portal/messages.html`, `portal/progress.html`, `portal/photos.html`.
+
+**Selections workflow:** Categories → options (with images + price deltas) → client picks → staff approves → auto-creates change order if price delta ≠ 0 → updates Budget/contract values.
+
+---
+
+### 2026-08-13 — QuickBooks Online Two-Way Sync
+
+**Scope:** Full two-way sync with QBO: customers, invoices, payments, cost data. OAuth 2.0 connect with explicit token refresh. Cost code → QBO account/item configurable mapping. Idempotent syncs (mappings track QBO IDs, no duplicates on retry). Push clients/invoices/payments to QBO; pull payments and new customers back. Sync-status dashboard with full audit log, error surfacing, and per-entity sync buttons.
+
+**Models (models.py):** Added `QBOToken`, `QBOMapping`, `QBOSyncLog`. Constants: `QBO_SYNC_DIRECTIONS`, `QBO_ENTITY_TYPES`, `QBO_SYNC_STATUSES`.
+
+**Migration:** `i0c2d3e14f75_add_qbo_sync.py` — 3 new tables with indexes + unique constraints.
+
+**Files:** `qbo_helper.py` (QBOClient with auto token refresh, CRUD for customers/invoices/payments/accounts/items, query helpers).
+
+**Routes (routes.py):** OAuth connect/callback/disconnect, cost code mapping CRUD, full sync + per-entity sync triggers, pull payments/customers, sync dashboard.
+
+**Templates:** `qbo_dashboard.html` (sync status, action buttons, stats, error list, full log table), `qbo_mappings.html` (cost code → QBO item mapping grid). QBO section added to `integrations_settings.html`.
+
+**Env vars needed:** `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, `QBO_ENVIRONMENT` (sandbox/production).
+
+---
+
 ### 2026-08-11 — Change Orders
 
 **Scope:** Change orders wired into job costing, contract value, and billing. Create from a client with cost breakdown by cost code. Status workflow: Draft → Sent → Approved → Rejected. On approval: additively updates Budget, adjusts project.contract_value and client.final_contract_value. Portal approval with e-signature canvas. Unbilled tracking with filtered list view. Logged to ClientActivity timeline.

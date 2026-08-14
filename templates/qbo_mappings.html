@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from "ui/macros.html" import btn, card, page_header, form_actions %}
+
+{% block title %}QBO Mappings{% endblock %}
+
+{% block content %}
+{{ page_header("Cost Code → QBO Mappings",
+               subtitle="Map your cost codes to QuickBooks items",
+               back_text="QBO Dashboard", back_href=url_for('qbo_sync_dashboard')) }}
+
+<form method="POST" action="{{ url_for('qbo_mappings_save') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+    {% call card(title="Mappings") %}
+    <p class="text-xs text-txt-muted mb-4">
+        Select a QBO Item for each cost code.  When invoices are synced, line items linked to
+        cost codes will use the mapped QBO Item.  Unmapped codes use a generic line.
+    </p>
+    <div class="overflow-x-auto -mx-4 sm:mx-0">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-hairline text-left">
+                    <th class="px-3 py-2 text-xs font-medium text-txt-muted">Code</th>
+                    <th class="px-3 py-2 text-xs font-medium text-txt-muted">Name</th>
+                    <th class="px-3 py-2 text-xs font-medium text-txt-muted">QBO Item</th>
+                    <th class="px-3 py-2 text-xs font-medium text-txt-muted">Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cc in cost_codes %}
+                {% set m = cc_mappings.get(cc.id) %}
+                <tr class="border-b border-hairline/50">
+                    <td class="px-3 py-2 font-mono text-txt-secondary">{{ cc.code }}</td>
+                    <td class="px-3 py-2 text-txt-primary">{{ cc.name }}</td>
+                    <td class="px-3 py-2">
+                        <select name="cc_{{ cc.id }}_item_id"
+                                onchange="this.form['cc_{{ cc.id }}_item_name'].value = this.options[this.selectedIndex].text;"
+                                class="w-full p-1.5 text-xs border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary">
+                            <option value="">-- Not Mapped --</option>
+                            {% for item in qbo_items %}
+                            <option value="{{ item.Id }}" {% if m and m.qbo_id == item.Id|string %}selected{% endif %}>
+                                {{ item.Name }}{% if item.get('Description') %} — {{ item.Description[:40] }}{% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <input type="hidden" name="cc_{{ cc.id }}_item_name" value="{{ m.qbo_name or '' if m else '' }}">
+                    </td>
+                    <td class="px-3 py-2 text-center">
+                        {% if m and m.qbo_id %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-pos/10 text-pos">Mapped</span>
+                        {% else %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-pill text-txt-muted">—</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endcall %}
+
+    {{ form_actions(submit_text="Save Mappings", cancel_href=url_for('qbo_sync_dashboard')) }}
+</form>
+{% endblock %}

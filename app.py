@@ -103,3 +103,7 @@ with app.app_context():
         logging.info("Added approved_at column to time_entries")
 
     db.session.commit()
+
+    # Register demo blueprint
+    from demo import demo_bp
+    app.register_blueprint(demo_bp)

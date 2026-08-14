@@ -6,6 +6,14 @@
     <title>{% block title %}All Inclusive ADU Portal{% endblock %}</title>
     <link rel="icon" type="image/jpeg" href="{{ url_for('static', filename='favicon.jpg') }}">
 
+    <!-- PWA -->
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="ADU Portal">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.jpg') }}">
+
     <!-- Tailwind CSS (Play CDN) -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -48,7 +56,14 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 
     <style>
+        /* Touch targets: 44px minimum per WCAG 2.5.8 */
         .touch-target { min-width: 44px; min-height: 44px; }
+        @media (pointer: coarse) {
+            button, a, input[type="checkbox"], input[type="radio"], select {
+                min-height: 44px;
+            }
+            a { padding-top: max(0.25rem, calc((44px - 1em) / 2)); padding-bottom: max(0.25rem, calc((44px - 1em) / 2)); }
+        }
 
         @media (prefers-reduced-motion: reduce) {
             *, *::before, *::after {
@@ -65,10 +80,35 @@
         }
 
         [x-cloak] { display: none !important; }
+
+        /* Ensure form labels have adequate contrast (WCAG AA 4.5:1) */
+        label { color: #334155; } /* slate-700 — 7:1 on white */
     </style>
     {% block head %}{% endblock %}
 </head>
 <body class="font-sans antialiased bg-canvas text-txt-primary" style="min-height: 100vh;">
+
+    <!-- Skip to content (accessibility) -->
+    <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-txt-primary focus:text-white focus:rounded-lg focus:text-sm focus:font-medium">
+        Skip to content
+    </a>
+
+    <!-- Offline banner -->
+    <div id="offline-banner" class="hidden bg-amber-500 text-white text-center text-sm py-2 font-medium" role="status" aria-live="polite">
+        You are offline. Changes will sync when reconnected.
+    </div>
+
+    <!-- Demo mode banner -->
+    {% if session.get('_demo_mode') %}
+    <div id="demo-banner" class="bg-gradient-to-r from-[#D6246E] to-[#e84393] text-white text-center text-sm py-2 font-medium z-50 flex items-center justify-center gap-4 px-4">
+        <span class="inline-flex items-center gap-1.5">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            DEMO MODE — Sample data shown
+        </span>
+        <button id="demo-restart-tour" class="underline underline-offset-2 hover:text-white/80 text-xs font-medium">Restart Tour</button>
+        <a href="{{ url_for('demo.exit_demo') }}" class="bg-white/20 hover:bg-white/30 text-white text-xs font-semibold px-3 py-1 rounded-full transition">Exit Demo</a>
+    </div>
+    {% endif %}
 
     {% if current_user.is_authenticated %}
     <!-- Navigation -->
@@ -127,7 +167,7 @@
                         </a>
                         <a href="{{ url_for('channel_spend') }}"
                            class="px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150
-                                  {{ 'bg-pill text-txt-primary' if current_endpoint in ['channel_spend', 'roi_report'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
+                                  {{ 'bg-pill text-txt-primary' if current_endpoint in ['channel_spend', 'roi_report', 'financials_report'] else 'text-txt-muted hover:text-txt-primary hover:bg-pill' }}">
                             Reports
                         </a>
                         <a href="{{ url_for('edit_profile') }}"
@@ -462,7 +502,7 @@
     </div>
 
     <!-- Main Content -->
-    <main class="w-full max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+    <main id="main-content" class="w-full max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8" role="main">
         {% block content %}{% endblock %}
     </main>
 
@@ -607,5 +647,71 @@
         requestAnimationFrame(tick);
     }
     </script>
+
+    <!-- Service Worker + Offline Sync Queue -->
+    <script>
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/static/sw.js', { scope: '/' })
+            .catch(() => {});
+    }
+
+    // --- Offline mutation queue ---
+    // For field actions (time entries, daily logs, photos) that must survive
+    // loss of connectivity. Queues failed POST/PUT in IndexedDB and replays
+    // via Background Sync when reconnected.
+    window.offlineQueue = {
+        _dbPromise: null,
+
+        openDB() {
+            if (this._dbPromise) return this._dbPromise;
+            this._dbPromise = new Promise((resolve, reject) => {
+                const req = indexedDB.open('adu-sync', 1);
+                req.onupgradeneeded = () => {
+                    req.result.createObjectStore('queue', { keyPath: 'id', autoIncrement: true });
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            return this._dbPromise;
+        },
+
+        async enqueue(url, method, headers, body) {
+            const db = await this.openDB();
+            const tx = db.transaction('queue', 'readwrite');
+            tx.objectStore('queue').add({ url, method, headers, body, ts: Date.now() });
+        },
+
+        // Wraps fetch: on network failure, queues the request and registers sync
+        async fetchOrQueue(url, options) {
+            try {
+                const resp = await fetch(url, options);
+                return resp;
+            } catch (e) {
+                if (options && options.method && options.method !== 'GET') {
+                    await this.enqueue(url, options.method, options.headers || {}, options.body);
+                    if ('serviceWorker' in navigator && 'SyncManager' in window) {
+                        const reg = await navigator.serviceWorker.ready;
+                        await reg.sync.register('sync-queue');
+                    }
+                }
+                throw e;
+            }
+        }
+    };
+
+    // --- Offline indicator ---
+    window.addEventListener('offline', () => {
+        const banner = document.getElementById('offline-banner');
+        if (banner) banner.classList.remove('hidden');
+    });
+    window.addEventListener('online', () => {
+        const banner = document.getElementById('offline-banner');
+        if (banner) banner.classList.add('hidden');
+    });
+    </script>
+
+    {% if session.get('_demo_mode') %}
+    <script src="{{ url_for('static', filename='demo-tour.js') }}"></script>
+    {% endif %}
 </body>
 </html>
