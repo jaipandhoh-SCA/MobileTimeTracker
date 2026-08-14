@@ -39,7 +39,7 @@ _No items currently active. See Backlog for next candidates._
 
 ## 3. Backlog
 
-- **Run `migration_phase_a.sql` against Neon** — drops `time_entries`, `active_clocks` tables and `hourly_rate` columns. Back up DB first.
+- ~~**Run `migration_phase_a.sql` against Neon**~~ — removed; time-tracking tables were resurrected and hold live data. Use Alembic for future schema changes.
 - **Hosting** — decide where the app runs off Replit (Render, Railway, Fly.io, or self-hosted). Set env vars/secrets there; configure the OAuth redirect URI to match the new domain.
 - **Replit cleanup** — remove `.replit`, `replit.nix`, and any Replit-specific config once the app is confirmed running elsewhere.
 - **Google Maps** — decide whether to keep the Maps embed (needs an API key) or switch address links to a plain `maps.google.com?q=` URL (no key). Minor.
@@ -341,7 +341,7 @@ _No items currently active. See Backlog for next candidates._
 
 **Utils stripped:** Removed `calculate_duration`, `round_to_quarter_hour`, `format_hours`, all `get_*_period_dates` helpers. Kept timezone and date formatting only.
 
-**Migration script:** `migration_phase_a.sql` — `DROP TABLE time_entries, active_clocks; ALTER TABLE users/authorized_users DROP COLUMN hourly_rate`. Must be run against Neon manually (no Alembic).
+**Migration script:** `migration_phase_a.sql` was removed — time-tracking tables were later resurrected with live data. Schema changes now use Alembic.
 
 ### 2026-07-19 — Full Channel ROI Report
 
