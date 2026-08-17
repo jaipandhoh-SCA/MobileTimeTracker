@@ -60,7 +60,7 @@
       title: 'Estimates',
       text: 'Detailed construction cost breakdowns. Click an estimate to see line items, markup, and totals.',
       actions: [
-        { label: 'Open an estimate', desc: 'Click a row to see the full cost breakdown', clickTarget: 'table tbody tr:first-child, .divide-y a:first-child' },
+        { label: 'Open an estimate', desc: 'Click any row to see the full cost breakdown', clickTarget: 'table tbody tr:first-child' },
         { label: 'Check status badges', desc: 'Draft, Sent, Accepted, or Rejected' },
       ],
     },

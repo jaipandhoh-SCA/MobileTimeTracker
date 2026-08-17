@@ -49,9 +49,9 @@
         {"text": "Actions"}
     ]) %}
         {% for est in estimates %}
-        {% call tr() %}
+        <tr class="hover:bg-pill transition-colors duration-150 cursor-pointer" onclick="window.location='{{ url_for('view_estimate', estimate_id=est.id) }}';">
             {% call td() %}
-                <a href="{{ url_for('view_estimate', estimate_id=est.id) }}" class="font-medium text-txt-primary hover:underline">{{ est.name }}</a>
+                <a href="{{ url_for('view_estimate', estimate_id=est.id) }}" class="font-medium text-txt-primary hover:underline" onclick="event.stopPropagation()">{{ est.name }}</a>
             {% endcall %}
             {% call td() %}<span class="text-txt-secondary">{{ est.client.name }}</span>{% endcall %}
             {% call td() %}
@@ -78,11 +78,11 @@
             {% call td() %}<span class="text-txt-muted text-xs">{{ est.updated_at|format_date }}</span>{% endcall %}
             {% call td() %}
                 <div class="flex gap-2">
-                    <a href="{{ url_for('edit_estimate', estimate_id=est.id) }}" class="text-txt-secondary hover:text-txt-primary text-sm hover:underline">Edit</a>
-                    <a href="{{ url_for('view_estimate', estimate_id=est.id) }}" class="text-txt-secondary hover:text-txt-primary text-sm hover:underline">View</a>
+                    <a href="{{ url_for('edit_estimate', estimate_id=est.id) }}" class="text-txt-secondary hover:text-txt-primary text-sm hover:underline" onclick="event.stopPropagation()">Edit</a>
+                    <a href="{{ url_for('view_estimate', estimate_id=est.id) }}" class="text-txt-secondary hover:text-txt-primary text-sm hover:underline" onclick="event.stopPropagation()">View</a>
                 </div>
             {% endcall %}
-        {% endcall %}
+        </tr>
         {% endfor %}
     {% endcall %}
     {% else %}
