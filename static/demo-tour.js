@@ -13,13 +13,14 @@
 
   /* ═══════════════════════ Feature Checklist ═══════════════════════ */
 
+  // Ordered tour sequence. `path` is the direct URL; `pathFn` resolves dynamically.
   const FEATURES = [
     { id: 'hub',            label: 'Hub / Dashboard',    page: 'home',           path: '/home' },
     { id: 'clients',        label: 'Client List',        page: 'clients',        path: '/clients' },
-    { id: 'client_detail',  label: 'Client Record',      page: 'client_detail',  path: null },
+    { id: 'client_detail',  label: 'Client Record',      page: 'client_detail',  path: null, pathFn: 'firstDemoClient' },
     { id: 'estimates',      label: 'Estimates',          page: 'estimates',      path: '/estimates' },
-    { id: 'estimate_detail',label: 'Estimate Breakdown', page: 'estimate_detail',path: null },
-    { id: 'schedule',       label: 'Project Schedule',   page: 'schedule',       path: null },
+    { id: 'estimate_detail',label: 'Estimate Breakdown', page: 'estimate_detail',path: null, pathFn: 'firstEstimate' },
+    { id: 'schedule',       label: 'Project Schedule',   page: 'schedule',       path: null, pathFn: 'firstSchedule' },
     { id: 'daily_logs',     label: 'Daily Logs',         page: 'daily_logs',     path: '/daily-logs' },
     { id: 'change_orders',  label: 'Change Orders',      page: 'change_orders',  path: '/change-orders' },
     { id: 'admin',          label: 'Payroll & Admin',    page: 'admin',          path: '/admin' },
@@ -254,6 +255,31 @@
     var visitedCount = getVisitedCount();
     var total = FEATURES.length;
 
+    // Build Next button
+    var nextFeature = getNextFeature();
+    var nextBtnHtml = '';
+    if (visitedCount >= total) {
+      nextBtnHtml =
+        '<div style="margin-top:12px;padding:10px 12px;border-radius:10px;background:linear-gradient(135deg,#f0fdf4,#ecfdf5);text-align:center;">' +
+          '<p style="font-size:13px;font-weight:600;color:#16a34a;margin:0;">You\'ve explored everything!</p>' +
+          '<a href="/demo/exit" style="display:inline-block;margin-top:6px;font-size:12px;color:#16a34a;text-decoration:underline;">Exit demo &amp; remove sample data</a>' +
+        '</div>';
+    } else if (nextFeature) {
+      nextBtnHtml =
+        '<div style="margin-top:12px;border-top:1px solid #f1f5f9;padding-top:12px;display:flex;align-items:center;justify-content:space-between;">' +
+          '<span style="font-size:12px;color:#94a3b8;">Next: ' + nextFeature.label + '</span>' +
+          '<a id="demo-next-btn" href="' + nextFeature.href + '" style="' +
+            'display:inline-flex;align-items:center;gap:6px;padding:8px 18px;' +
+            'border-radius:10px;background:linear-gradient(135deg,#D6246E,#e84393);' +
+            'color:white;font-size:13px;font-weight:600;text-decoration:none;' +
+            'transition:opacity 0.15s;box-shadow:0 2px 8px rgba(214,36,110,0.3);"' +
+            ' onmouseenter="this.style.opacity=\'0.9\'" onmouseleave="this.style.opacity=\'1\'">' +
+            'Next' +
+            '<svg style="width:14px;height:14px" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/></svg>' +
+          '</a>' +
+        '</div>';
+    }
+
     hintEl.innerHTML =
       '<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px;">' +
         '<div style="display:flex;align-items:center;gap:6px;">' +
@@ -267,10 +293,7 @@
       '<h3 style="font-size:16px;font-weight:700;color:#0f172a;margin:0 0 4px;">' + hint.title + '</h3>' +
       '<p style="font-size:13px;color:#475569;margin:0 0 12px;line-height:1.5;">' + hint.text + '</p>' +
       '<div style="border-top:1px solid #f1f5f9;padding-top:10px;">' + actionsHtml + '</div>' +
-      (visitedCount >= total ? '<div style="margin-top:12px;padding:10px 12px;border-radius:10px;background:linear-gradient(135deg,#f0fdf4,#ecfdf5);text-align:center;">' +
-        '<p style="font-size:13px;font-weight:600;color:#16a34a;margin:0;">You\'ve explored everything!</p>' +
-        '<a href="/demo/exit" style="display:inline-block;margin-top:6px;font-size:12px;color:#16a34a;text-decoration:underline;">Exit demo &amp; remove sample data</a>' +
-      '</div>' : '');
+      nextBtnHtml;
 
     document.body.appendChild(hintEl);
 
@@ -305,12 +328,94 @@
     }
   }
 
+  /**
+   * Scan the current page DOM for demo-relevant links and cache them
+   * in sessionStorage so they're available from any page.
+   */
+  function cachePageLinks() {
+    // Client detail link
+    var clientRow = document.querySelector('table tbody tr[onclick*="/clients/"]');
+    if (clientRow) {
+      var m = clientRow.getAttribute('onclick').match(/\/clients\/\d+\/edit/);
+      if (m) sessionStorage.setItem('demoLink_client', m[0]);
+    }
+    var clientLink = document.querySelector('a[href*="/clients/"][href$="/edit"]');
+    if (clientLink) sessionStorage.setItem('demoLink_client', clientLink.getAttribute('href'));
+
+    // Estimate detail link
+    var estRow = document.querySelector('table tbody tr[onclick*="/estimates/"]');
+    if (estRow) {
+      var m2 = estRow.getAttribute('onclick').match(/\/estimates\/\d+/);
+      if (m2) sessionStorage.setItem('demoLink_estimate', m2[0]);
+    }
+    var estLink = document.querySelector('a[href*="/estimates/"][href$=""]');
+    if (estLink && /\/estimates\/\d+$/.test(estLink.getAttribute('href'))) {
+      sessionStorage.setItem('demoLink_estimate', estLink.getAttribute('href'));
+    }
+
+    // Schedule link
+    var schedLink = document.querySelector('a[href*="/schedule/"]');
+    if (schedLink) sessionStorage.setItem('demoLink_schedule', schedLink.getAttribute('href'));
+  }
+
   function findSpecialLink(fnName) {
-    if (fnName === 'findScheduleLink') {
+    if (fnName === 'findScheduleLink' || fnName === 'firstSchedule') {
       var link = document.querySelector('a[href*="/schedule/"]');
-      return link ? link.getAttribute('href') : null;
+      if (link) return link.getAttribute('href');
+      return sessionStorage.getItem('demoLink_schedule');
+    }
+    if (fnName === 'firstDemoClient') {
+      var row = document.querySelector('table tbody tr[onclick*="/clients/"]');
+      if (row) {
+        var match = row.getAttribute('onclick').match(/\/clients\/\d+\/edit/);
+        if (match) return match[0];
+      }
+      var aLink = document.querySelector('a[href*="/clients/"][href$="/edit"]');
+      if (aLink) return aLink.getAttribute('href');
+      return sessionStorage.getItem('demoLink_client');
+    }
+    if (fnName === 'firstEstimate') {
+      var row2 = document.querySelector('table tbody tr[onclick*="/estimates/"]');
+      if (row2) {
+        var match2 = row2.getAttribute('onclick').match(/\/estimates\/\d+/);
+        if (match2) return match2[0];
+      }
+      return sessionStorage.getItem('demoLink_estimate');
     }
     return null;
+  }
+
+  /**
+   * Get the URL for the next feature in the tour sequence.
+   * Returns {label, href} or null if at the end.
+   */
+  function getNextFeature() {
+    var currentPage = detectCurrentPage();
+    var currentIdx = -1;
+    for (var i = 0; i < FEATURES.length; i++) {
+      if (FEATURES[i].page === currentPage) { currentIdx = i; break; }
+    }
+    if (currentIdx < 0 || currentIdx >= FEATURES.length - 1) return null;
+
+    var next = FEATURES[currentIdx + 1];
+    var href = next.path;
+
+    // Resolve dynamic paths: try from current page DOM first
+    if (!href && next.pathFn) {
+      href = findSpecialLink(next.pathFn);
+    }
+
+    // If still no href, skip to the feature after that
+    if (!href) {
+      for (var j = currentIdx + 2; j < FEATURES.length; j++) {
+        if (FEATURES[j].path) {
+          return { label: FEATURES[j].label, href: FEATURES[j].path };
+        }
+      }
+      return null;
+    }
+
+    return { label: next.label, href: href };
   }
 
   /* ═══════════════════════ Checklist Panel ═══════════════════════ */
@@ -344,11 +449,12 @@
     FEATURES.forEach(function (f) {
       var done = visited[f.id];
       var isCurrent = (f.page === detectCurrentPage());
+      var navPath = f.path || (f.pathFn ? findSpecialLink(f.pathFn) : null);
       itemsHtml +=
         '<div style="display:flex;align-items:center;gap:10px;padding:8px 16px;' +
         (isCurrent ? 'background:#fdf2f8;' : '') +
-        'cursor:' + (f.path ? 'pointer' : 'default') + ';" ' +
-        (f.path ? 'onclick="window.location.href=\'' + f.path + '\'"' : '') +
+        'cursor:' + (navPath ? 'pointer' : 'default') + ';" ' +
+        (navPath ? 'onclick="window.location.href=\'' + navPath + '\'"' : '') +
         ' class="demo-checklist-item">' +
           '<div style="width:20px;height:20px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;' +
           (done
@@ -413,6 +519,9 @@
     document.head.appendChild(style);
 
     var currentPage = detectCurrentPage();
+
+    // Cache any links on this page for cross-page "Next" navigation
+    cachePageLinks();
 
     // Mark current page as visited
     if (currentPage) {
