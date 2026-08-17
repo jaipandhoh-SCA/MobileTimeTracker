@@ -155,13 +155,21 @@ def _build_client_timeline(client, activities):
 
     # Compute total deal age and current stage duration
     now = datetime.now(timezone.utc)
-    total_age_days = (now - client.created_at).days if client.created_at else 0
+
+    def _ensure_aware(dt):
+        """Ensure a datetime is timezone-aware (assume UTC if naive)."""
+        if dt and dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    created = _ensure_aware(client.created_at)
+    total_age_days = (now - created).days if created else 0
 
     # Current stage duration: time since last status change
     last_change = ClientStatusChange.query.filter_by(client_id=client.id)\
         .order_by(ClientStatusChange.changed_at.desc()).first()
     if last_change:
-        current_stage_days = (now - last_change.changed_at).days
+        current_stage_days = (now - _ensure_aware(last_change.changed_at)).days
     else:
         current_stage_days = total_age_days
 
@@ -1210,7 +1218,7 @@ def my_logs():
     summary_entry_count = len(approved_entries)
     summary_unique_clients = len(set(e.client_id for e in approved_entries if e.client_id))
     summary_pay = float(summary_hours) * float(current_user.hourly_rate or 0)
-    daily_hours = build_daily_hours(summary_entries, summary_start, summary_end)
+    daily_hours = build_daily_hours(approved_entries, summary_start, summary_end)
 
     return render_template('my_logs.html',
                          entries=entries,

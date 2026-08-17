@@ -757,10 +757,10 @@ def start_demo():
         return redirect(url_for('index'))
 
     session['_demo_mode'] = True
-    session['_demo_tour_step'] = 0
-    session['_demo_tour_page'] = 'home'
+    session.pop('_demo_tour_step', None)
+    session.pop('_demo_tour_page', None)
 
-    flash('Welcome to the demo! Follow the guided tour to explore every feature.', 'info')
+    flash('Welcome to the demo! Explore freely — hints on each page show you what to try.', 'info')
     return redirect(url_for('home'))
 
 

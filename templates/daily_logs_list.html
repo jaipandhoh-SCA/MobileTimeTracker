@@ -9,8 +9,15 @@
 
 {# ── Filters ─────────────────────────────────────────────────── #}
 {% call filter_bar() %}
-    {{ select("client_id", label="Client", selected=filter_client_id|string if filter_client_id else '',
-              options=[('', 'All Clients')] + [(c.id, c.name) for c in clients]) }}
+    <div>
+        <label for="client_id" class="block text-xs font-medium text-txt-secondary mb-1">Client</label>
+        <select name="client_id" id="client_id" class="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus:border-accent focus:ring-1 focus:ring-accent">
+            <option value="">All Clients</option>
+            {% for c in clients %}
+            <option value="{{ c.id }}" {% if filter_client_id and c.id == filter_client_id %}selected{% endif %}>{{ c.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
     {{ input("date_from", label="From", type="date", value=filter_date_from) }}
     {{ input("date_to", label="To", type="date", value=filter_date_to) }}
     <div class="flex items-end">
