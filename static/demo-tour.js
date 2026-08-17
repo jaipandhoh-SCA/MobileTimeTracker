@@ -44,7 +44,7 @@
       title: 'Client List',
       text: 'All your clients in one place. Try clicking a client row to open their full record.',
       actions: [
-        { label: 'Click any client row', desc: 'Open their CRM record with timeline and details', clickTarget: 'table tbody tr:first-child, .divide-y > :first-child' },
+        { label: 'Click a [DEMO] client row', desc: 'Open their CRM record with timeline and details', clickTarget: null, highlightDemo: true },
         { label: 'Try the search bar', desc: 'Filter by name or address' },
       ],
     },
@@ -300,7 +300,18 @@
     // Attach highlight behavior
     if (hint.actions) {
       hint.actions.forEach(function (a) {
-        if (a.clickTarget) {
+        if (a.highlightDemo) {
+          // Highlight rows containing [DEMO]
+          var rows = document.querySelectorAll('table tbody tr');
+          rows.forEach(function (row) {
+            if (row.textContent.indexOf('[DEMO]') >= 0) {
+              row.style.outline = '2px dashed #D6246E';
+              row.style.outlineOffset = '2px';
+              row.style.borderRadius = '8px';
+              row.dataset.demoHighlight = '1';
+            }
+          });
+        } else if (a.clickTarget) {
           var target = document.querySelector(a.clickTarget);
           if (target) {
             target.style.outline = '2px dashed #D6246E';
@@ -333,24 +344,30 @@
    * in sessionStorage so they're available from any page.
    */
   function cachePageLinks() {
-    // Client detail link
-    var clientRow = document.querySelector('table tbody tr[onclick*="/clients/"]');
-    if (clientRow) {
-      var m = clientRow.getAttribute('onclick').match(/\/clients\/\d+\/edit/);
-      if (m) sessionStorage.setItem('demoLink_client', m[0]);
+    // Client detail link — prefer [DEMO] rows
+    var clientRows = document.querySelectorAll('table tbody tr[onclick*="/clients/"]');
+    for (var i = 0; i < clientRows.length; i++) {
+      if (clientRows[i].textContent.indexOf('[DEMO]') >= 0) {
+        var cm = clientRows[i].getAttribute('onclick').match(/\/clients\/\d+\/edit/);
+        if (cm) { sessionStorage.setItem('demoLink_client', cm[0]); break; }
+      }
     }
-    var clientLink = document.querySelector('a[href*="/clients/"][href$="/edit"]');
-    if (clientLink) sessionStorage.setItem('demoLink_client', clientLink.getAttribute('href'));
+    if (!sessionStorage.getItem('demoLink_client') && clientRows.length > 0) {
+      var cm2 = clientRows[0].getAttribute('onclick').match(/\/clients\/\d+\/edit/);
+      if (cm2) sessionStorage.setItem('demoLink_client', cm2[0]);
+    }
 
-    // Estimate detail link
-    var estRow = document.querySelector('table tbody tr[onclick*="/estimates/"]');
-    if (estRow) {
-      var m2 = estRow.getAttribute('onclick').match(/\/estimates\/\d+/);
-      if (m2) sessionStorage.setItem('demoLink_estimate', m2[0]);
+    // Estimate detail link — prefer [DEMO] rows
+    var estRows = document.querySelectorAll('table tbody tr[onclick*="/estimates/"]');
+    for (var j = 0; j < estRows.length; j++) {
+      if (estRows[j].textContent.indexOf('[DEMO]') >= 0) {
+        var em = estRows[j].getAttribute('onclick').match(/\/estimates\/\d+/);
+        if (em) { sessionStorage.setItem('demoLink_estimate', em[0]); break; }
+      }
     }
-    var estLink = document.querySelector('a[href*="/estimates/"][href$=""]');
-    if (estLink && /\/estimates\/\d+$/.test(estLink.getAttribute('href'))) {
-      sessionStorage.setItem('demoLink_estimate', estLink.getAttribute('href'));
+    if (!sessionStorage.getItem('demoLink_estimate') && estRows.length > 0) {
+      var em2 = estRows[0].getAttribute('onclick').match(/\/estimates\/\d+/);
+      if (em2) sessionStorage.setItem('demoLink_estimate', em2[0]);
     }
 
     // Schedule link
@@ -365,20 +382,33 @@
       return sessionStorage.getItem('demoLink_schedule');
     }
     if (fnName === 'firstDemoClient') {
-      var row = document.querySelector('table tbody tr[onclick*="/clients/"]');
-      if (row) {
-        var match = row.getAttribute('onclick').match(/\/clients\/\d+\/edit/);
-        if (match) return match[0];
+      // Prefer a [DEMO] client row
+      var rows = document.querySelectorAll('table tbody tr[onclick*="/clients/"]');
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].textContent.indexOf('[DEMO]') >= 0) {
+          var m = rows[i].getAttribute('onclick').match(/\/clients\/\d+\/edit/);
+          if (m) return m[0];
+        }
       }
-      var aLink = document.querySelector('a[href*="/clients/"][href$="/edit"]');
-      if (aLink) return aLink.getAttribute('href');
+      // Fallback to first row
+      if (rows.length > 0) {
+        var m2 = rows[0].getAttribute('onclick').match(/\/clients\/\d+\/edit/);
+        if (m2) return m2[0];
+      }
       return sessionStorage.getItem('demoLink_client');
     }
     if (fnName === 'firstEstimate') {
-      var row2 = document.querySelector('table tbody tr[onclick*="/estimates/"]');
-      if (row2) {
-        var match2 = row2.getAttribute('onclick').match(/\/estimates\/\d+/);
-        if (match2) return match2[0];
+      // Prefer a [DEMO] estimate row
+      var eRows = document.querySelectorAll('table tbody tr[onclick*="/estimates/"]');
+      for (var j = 0; j < eRows.length; j++) {
+        if (eRows[j].textContent.indexOf('[DEMO]') >= 0) {
+          var em = eRows[j].getAttribute('onclick').match(/\/estimates\/\d+/);
+          if (em) return em[0];
+        }
+      }
+      if (eRows.length > 0) {
+        var em2 = eRows[0].getAttribute('onclick').match(/\/estimates\/\d+/);
+        if (em2) return em2[0];
       }
       return sessionStorage.getItem('demoLink_estimate');
     }
