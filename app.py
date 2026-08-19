@@ -45,6 +45,9 @@ app.config['ALLOW_DEV_LOGIN'] = os.environ.get('ALLOW_DEV_LOGIN', '') == 'true'
 db = SQLAlchemy(app, model_class=Base)
 csrf = CSRFProtect(app)
 
+# Register custom Jinja2 filters
+app.jinja_env.filters['zip'] = lambda a, b: list(zip(a, b))
+
 # Initialize Flask-Login
 login_manager = LoginManager(app)
 

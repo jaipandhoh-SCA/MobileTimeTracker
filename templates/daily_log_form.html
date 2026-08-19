@@ -31,10 +31,16 @@
             <div class="px-3 py-2.5 bg-pill rounded-xl text-sm text-txt-primary">{{ log.log_date.strftime('%m/%d/%Y') }}</div>
         </div>
         {% else %}
-        {{ select("client_id", label="Client", required=true,
-                  selected=(preselected_client.id|string if preselected_client else ''),
-                  options=[('', '— Select Client —')] + [(c.id, c.name) for c in clients],
-                  attrs='x-model="clientId" @change="fetchWeather()"') }}
+        <div>
+            <label for="client_id" class="block text-xs font-medium text-txt-secondary mb-1">Client</label>
+            <select name="client_id" id="client_id" required x-model="clientId" @change="fetchWeather()"
+                    class="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus:border-accent focus:ring-1 focus:ring-accent">
+                <option value="">— Select Client —</option>
+                {% for c in clients %}
+                <option value="{{ c.id }}" {% if preselected_client and c.id == preselected_client.id %}selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
         {{ input("log_date", label="Date", type="date", value=today.isoformat(), required=true,
                  attrs='@change="fetchWeather()"') }}
         {% endif %}
@@ -52,9 +58,16 @@
         </button>
         {% endif %}
         <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {{ select("weather_condition", label="Condition",
-                      selected=log.weather_condition if log else '',
-                      options=[('', '—')] + [(w, w) for w in weather_conditions]) }}
+            <div>
+                <label for="weather_condition" class="block text-xs font-medium text-txt-secondary mb-1">Condition</label>
+                <select name="weather_condition" id="weather_condition"
+                        class="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus:border-accent focus:ring-1 focus:ring-accent">
+                    <option value="">—</option>
+                    {% for w in weather_conditions %}
+                    <option value="{{ w }}" {% if log and log.weather_condition == w %}selected{% endif %}>{{ w }}</option>
+                    {% endfor %}
+                </select>
+            </div>
             {{ input("weather_temp_f", label="Temp (°F)", type="number",
                      value=log.weather_temp_f if log and log.weather_temp_f is not none else '',
                      placeholder="72", attrs='min="-20" max="130"') }}
