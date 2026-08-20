@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Welcome - All Inclusive ADU Portal{% endblock %}
+
+{% block content %}
+<div class="min-h-[80vh] flex items-center justify-center px-4" x-data="welcomeClock()" x-init="init()">
+    <div class="w-full max-w-sm text-center space-y-6">
+
+        <!-- Greeting -->
+        <div>
+            <p class="text-2xl font-bold text-txt-primary" x-text="greeting"></p>
+            <p class="text-sm text-txt-secondary mt-1" x-text="dateStr"></p>
+        </div>
+
+        <!-- Live clock -->
+        <p class="text-5xl font-light text-txt-primary tabular-nums tracking-tight" x-text="timeStr"></p>
+
+        <!-- Clock-in card (not clocked in) -->
+        <template x-if="!active">
+            <div class="bg-white rounded-2xl shadow-card p-8 space-y-4">
+                <p class="text-sm text-txt-secondary">You're not clocked in yet</p>
+                <form method="POST" action="{{ url_for('start_clock') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <button type="submit"
+                            class="w-full py-4 bg-txt-primary text-white text-lg font-semibold rounded-xl hover:bg-txt-primary/80 transition-colors duration-150 touch-target">
+                        Clock In
+                    </button>
+                </form>
+            </div>
+        </template>
+
+        <!-- Already clocked in -->
+        <template x-if="active">
+            <div class="bg-white rounded-2xl shadow-card p-8 space-y-4">
+                <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Clocked in</p>
+                <p class="text-3xl font-semibold text-pos tabular-nums" x-text="elapsed"></p>
+                <p class="text-xs text-txt-muted">Started <span x-text="startTime"></span></p>
+                <a href="{{ url_for('home') }}"
+                   class="block w-full py-4 bg-txt-primary text-white text-lg font-semibold rounded-xl hover:bg-txt-primary/80 transition-colors duration-150 touch-target text-center">
+                    Continue to Dashboard
+                </a>
+            </div>
+        </template>
+
+        <!-- Skip link -->
+        <a href="{{ url_for('home') }}" class="inline-block text-sm text-txt-muted hover:text-txt-secondary transition-colors">
+            Skip to Dashboard &rarr;
+        </a>
+    </div>
+</div>
+
+<script>
+function welcomeClock() {
+    return {
+        active: false,
+        elapsed: '00:00:00',
+        startTime: '',
+        greeting: '',
+        dateStr: '',
+        timeStr: '',
+        _interval: null,
+        _clockInterval: null,
+
+        async init() {
+            this.updateGreeting();
+            this.updateLocalClock();
+            this._clockInterval = setInterval(() => this.updateLocalClock(), 1000);
+            await this.fetchStatus();
+            this._interval = setInterval(() => this.fetchStatus(), 5000);
+        },
+
+        updateGreeting() {
+            const now = new Date();
+            const h = now.getHours();
+            const name = {{ current_user.first_name|tojson }};
+            if (h < 12) this.greeting = 'Good morning, ' + name;
+            else if (h < 17) this.greeting = 'Good afternoon, ' + name;
+            else this.greeting = 'Good evening, ' + name;
+
+            this.dateStr = now.toLocaleDateString('en-US', {
+                weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
+            });
+        },
+
+        updateLocalClock() {
+            const now = new Date();
+            this.timeStr = now.toLocaleTimeString('en-US', {
+                hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
+            });
+        },
+
+        async fetchStatus() {
+            try {
+                const res = await fetch('{{ url_for("clock_status") }}');
+                const data = await res.json();
+                this.active = data.active;
+                if (data.active) {
+                    this.elapsed = data.elapsed;
+                    this.startTime = data.start_time;
+                }
+            } catch(e) {}
+        }
+    };
+}
+</script>
+{% endblock %}

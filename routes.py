@@ -194,7 +194,7 @@ def favicon():
 @app.route('/')
 def index():
     if current_user.is_authenticated:
-        return redirect(url_for('home'))
+        return redirect(url_for('welcome'))
     return render_template('landing.html')
 
 
@@ -218,7 +218,7 @@ def dev_login():
         db.session.commit()
 
     _login_user(user)
-    return redirect(url_for('home'))
+    return redirect(url_for('welcome'))
 
 
 @app.route('/fresh-login')
@@ -561,6 +561,12 @@ def _build_channel_cards():
 @require_supervisor
 def styleguide():
     return render_template('styleguide.html')
+
+
+@app.route('/welcome')
+@require_login
+def welcome():
+    return render_template('welcome.html')
 
 
 @app.route('/home')

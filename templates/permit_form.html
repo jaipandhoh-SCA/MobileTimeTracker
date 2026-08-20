@@ -1,10 +1,16 @@
 {% extends "base.html" %}
-{% from "ui/macros.html" import input, select, textarea, btn, card, form_actions %}
+{% from "ui/macros.html" import input, select, textarea, btn, card, form_actions, form_tips %}
 
 {% block title %}{{ 'Edit' if permit else 'New' }} Permit - All Inclusive ADU Portal{% endblock %}
 
 {% block content %}
 <div class="max-w-2xl mx-auto">
+    {% call form_tips("Permit Tips", "permit") %}
+        <li>Enter the jurisdiction (city/county) for tracking requirements</li>
+        <li>Fill in submitted and approved dates as they happen</li>
+        <li>Add the fee amount to keep permit costs in the budget</li>
+    {% endcall %}
+
     {% call card(title=('Edit ' ~ permit.permit_type if permit else 'New Permit') ~ ' — ' ~ client.name) %}
         <form method="POST" class="space-y-6">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>

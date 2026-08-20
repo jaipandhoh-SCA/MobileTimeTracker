@@ -1,10 +1,16 @@
 {% extends "base.html" %}
-{% from "ui/macros.html" import input, select, btn, card, form_actions %}
+{% from "ui/macros.html" import input, select, btn, card, form_actions, form_tips %}
 
 {% block title %}New Estimate - All Inclusive ADU Portal{% endblock %}
 
 {% block content %}
 <div class="max-w-2xl mx-auto">
+    {% call form_tips("Estimate Tips", "estimate_create") %}
+        <li>Pick an ADU template to pre-fill line items with typical costs</li>
+        <li>Enter square footage for accurate material calculations</li>
+        <li>You can edit all line items after creating the estimate</li>
+    {% endcall %}
+
     {% call card(title="Create Estimate") %}
         <form method="POST" class="space-y-6">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
@@ -17,7 +23,7 @@
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {{ select("adu_type", label="ADU Type", options=[("", "Select type...")] + (adu_types|map('string')|zip(adu_types)|list)) }}
-                {{ input("sqft", label="Square Footage", type="number", placeholder="e.g. 400", attrs='min="100" max="2000"') }}
+                {{ input("sqft", label="Square Footage", type="number", placeholder="e.g. 400", attrs='min="100" max="2000"', help="Used to scale material quantities") }}
             </div>
 
             {{ form_actions(cancel_href=url_for('estimates_list'), submit_text="Create Estimate") }}

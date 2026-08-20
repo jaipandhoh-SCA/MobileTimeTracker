@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "ui/macros.html" import form_tips %}
 
 {% block content %}
 <div class="w-full mx-auto">
@@ -220,6 +221,11 @@
                     <h2 class="text-lg font-semibold text-txt-primary">Edit Client Information</h2>
                 </div>
                 <div class="p-6">
+                    {% call form_tips("Client Tips", "client_edit") %}
+                        <li>Add a phone number and email for quick contact</li>
+                        <li>Set the lead source to track where clients come from</li>
+                        <li>Fill in lot sqft and zoning for ADU feasibility</li>
+                    {% endcall %}
                     <form method="POST" id="editClientForm">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
 

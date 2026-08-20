@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "ui/macros.html" import btn, card, input, select, textarea, page_header %}
+{% from "ui/macros.html" import btn, card, input, select, textarea, page_header, form_tips %}
 
 {% block title %}{{ "Edit" if log else "New" }} Daily Log{% endblock %}
 
@@ -10,6 +10,12 @@
     back_text="All Logs",
     back_href=url_for('daily_logs_list')
 ) }}
+
+{% call form_tips("Daily Log Tips", "daily_log") %}
+    <li>Include crew count and total hours for accurate labor tracking</li>
+    <li>Note any delays, safety issues, or weather impacts</li>
+    <li>Photos can be added after saving the log</li>
+{% endcall %}
 
 <form method="POST" id="logForm" class="space-y-4">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

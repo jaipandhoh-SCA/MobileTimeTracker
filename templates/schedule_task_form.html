@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "ui/macros.html" import btn, card, input, select, textarea, form_actions, page_header %}
+{% from "ui/macros.html" import btn, card, input, select, textarea, form_actions, page_header, form_tips %}
 
 {% block title %}{{ "Edit" if task else "New" }} Task — {{ client.name }}{% endblock %}
 
@@ -10,6 +10,12 @@
     back_text="Schedule",
     back_href=url_for('project_schedule', project_id=project.id)
 ) }}
+
+{% call form_tips("Task Tips", "schedule_task") %}
+    <li>Link a cost code to connect this task to budget tracking</li>
+    <li>Set start and end dates for Gantt chart visibility</li>
+    <li>Add dependencies to auto-schedule tasks in sequence</li>
+{% endcall %}
 
 <form method="POST" class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

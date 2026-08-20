@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "ui/macros.html" import input, select, textarea, btn, card, form_actions %}
+{% from "ui/macros.html" import input, select, textarea, btn, card, form_actions, form_tips %}
 
 {% block title %}Edit: {{ estimate.name }} - All Inclusive ADU Portal{% endblock %}
 
@@ -18,6 +18,12 @@
             {{ btn("Client View", href=url_for('view_estimate', estimate_id=estimate.id, internal='0'), variant="secondary", size="sm") }}
         </div>
     </div>
+
+    {% call form_tips("Estimate Editor Tips", "estimate_edit") %}
+        <li>Set markup, overhead, and contingency percentages in Estimate Settings</li>
+        <li>Update status to "Sent" when sharing with the client</li>
+        <li>Accepting an estimate auto-creates budget lines and sets contract value</li>
+    {% endcall %}
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 

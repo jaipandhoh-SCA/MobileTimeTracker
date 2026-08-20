@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "ui/macros.html" import btn, input, select, textarea, card, page_header, form_actions %}
+{% from "ui/macros.html" import btn, input, select, textarea, card, page_header, form_actions, form_tips %}
 
 {% block title %}{{ 'Edit' if co else 'New' }} Change Order{% endblock %}
 
@@ -9,6 +9,12 @@
     back_text="Change Orders",
     back_href=url_for('change_orders_list')
 ) }}
+
+{% call form_tips("Change Order Tips", "change_order") %}
+    <li>Set the price to client for each line item</li>
+    <li>Assign cost codes so approved COs update the budget automatically</li>
+    <li>Approved change orders adjust contract value and create budget entries</li>
+{% endcall %}
 
 <form method="POST" x-data="coForm()" class="space-y-4">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>

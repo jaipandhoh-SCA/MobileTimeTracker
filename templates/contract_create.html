@@ -1,10 +1,16 @@
 {% extends "base.html" %}
-{% from "ui/macros.html" import input, textarea, btn, card, form_actions %}
+{% from "ui/macros.html" import input, textarea, btn, card, form_actions, form_tips %}
 
 {% block title %}Create Contract - All Inclusive ADU Portal{% endblock %}
 
 {% block content %}
 <div class="max-w-3xl mx-auto">
+    {% call form_tips("Contract Tips", "contract_create") %}
+        <li>Draw schedule percentages should total 100%</li>
+        <li>Review scope of work and terms before sending to client</li>
+        <li>Contract value is pulled from the accepted estimate</li>
+    {% endcall %}
+
     {% call card(title="Create Contract") %}
         <div class="bg-pill rounded-xl p-4 mb-6 text-sm">
             <p class="font-semibold text-txt-primary">{{ estimate.client.name }}</p>

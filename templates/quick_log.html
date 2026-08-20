@@ -1,17 +1,23 @@
 {% extends "base.html" %}
-{% from "ui/macros.html" import input, select, textarea, card, form_actions %}
+{% from "ui/macros.html" import input, select, textarea, card, form_actions, form_tips %}
 
 {% block title %}Quick Log - All Inclusive ADU Portal{% endblock %}
 
 {% block content %}
 <div class="max-w-2xl mx-auto">
+    {% call form_tips("Quick Log Tips", "quick_log") %}
+        <li>Select a cost code to categorize your time entry</li>
+        <li>Write a description of at least 10 characters for clarity</li>
+        <li>Hours round to the nearest 0.25 (15-minute increments)</li>
+    {% endcall %}
+
     {% call card(title="Quick Log") %}
         <form method="POST" class="space-y-6">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {{ input("date", label="Date", type="date", value=today, required=true, attrs='max="' ~ today ~ '"') }}
-                {{ input("hours", label="Hours", type="number", required=true, placeholder="e.g. 2.5", attrs='step="0.25" min="0.25" max="12"') }}
+                {{ input("hours", label="Hours", type="number", required=true, placeholder="e.g. 2.5", attrs='step="0.25" min="0.25" max="12"', help="Rounds to nearest 15 min") }}
             </div>
 
             {{ select("client_id", label="Client", options=[

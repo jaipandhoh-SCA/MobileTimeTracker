@@ -398,6 +398,38 @@
 {%- endmacro %}
 
 
+{# ── FORM TIPS ───────────────────────────────────────────────
+   Dismissible info banner with contextual tips for form pages.
+   Uses localStorage to remember dismissal per dismiss_key.
+   Usage:
+     {% call form_tips("Estimate Tips", "estimate_create") %}
+       <li>Pick an ADU template to pre-fill line items</li>
+       <li>Enter square footage for accurate material calcs</li>
+     {% endcall %}
+#}
+{% macro form_tips(title, dismiss_key) %}
+<div x-data="{ show: !localStorage.getItem('tips_{{ dismiss_key }}') }"
+     x-show="show" x-collapse x-cloak
+     class="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-6">
+    <div class="flex items-start gap-3">
+        <svg class="w-5 h-5 text-blue-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m3.75 7.478a12.06 12.06 0 01-4.5 0m3.44 2.211a11.95 11.95 0 01-2.38 0M9.75 9.75c0 .414.168.75.375.75S10.5 10.164 10.5 9.75 10.332 9 10.125 9s-.375.336-.375.75zm3.75 0c0 .414.168.75.375.75s.375-.336.375-.75-.168-.75-.375-.75-.375.336-.375.75zM12 2.25a6.75 6.75 0 00-6.75 6.75c0 2.485 1.342 4.66 3.342 5.83.276.162.408.487.408.808v.09"/>
+        </svg>
+        <div class="flex-1 min-w-0">
+            <p class="text-sm font-semibold text-blue-800">{{ title }}</p>
+            <ul class="mt-1 text-sm text-blue-700 list-disc list-inside space-y-0.5">
+                {{ caller() }}
+            </ul>
+        </div>
+        <button @click="show = false; localStorage.setItem('tips_{{ dismiss_key }}', '1')"
+                class="p-1 rounded-lg text-blue-400 hover:text-blue-600 hover:bg-blue-100 transition-colors flex-shrink-0" aria-label="Dismiss tips">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+</div>
+{%- endmacro %}
+
+
 {# ── FILTER BAR ──────────────────────────────────────────────
    Wraps filter form controls in a card.
    Usage:

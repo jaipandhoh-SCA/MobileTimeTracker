@@ -1,10 +1,16 @@
 {% extends "base.html" %}
-{% from "ui/macros.html" import input, textarea, btn, card, form_actions %}
+{% from "ui/macros.html" import input, textarea, btn, card, form_actions, form_tips %}
 
 {% block title %}New Invoice - {{ contract.contract_number }}{% endblock %}
 
 {% block content %}
 <div class="max-w-4xl mx-auto">
+    {% call form_tips("Invoice Tips", "invoice_create") %}
+        <li>Set a due date so clients know when payment is expected</li>
+        <li>Enter % complete per draw item to calculate the billing amount</li>
+        <li>Retainage is withheld from each draw until final payment</li>
+    {% endcall %}
+
     {% call card(title="Create Invoice — " ~ contract.contract_number) %}
         <div class="bg-pill rounded-xl p-4 mb-6 text-sm">
             <p class="font-semibold text-txt-primary">{{ contract.client.name }}</p>

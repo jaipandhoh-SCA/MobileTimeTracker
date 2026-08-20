@@ -202,7 +202,7 @@ if os.environ.get("ALLOW_DEV_LOGIN") == "true":
             db.session.commit()
 
         login_user(user)
-        return redirect(url_for("home"))
+        return redirect(url_for("welcome"))
 
 
 # Decorators for route protection
