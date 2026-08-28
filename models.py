@@ -25,10 +25,17 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, default=_utcnow)
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
     last_login = db.Column(db.DateTime, nullable=True)
+    is_external = db.Column(db.Boolean, default=False, nullable=False)
+
+    __internal_fields__ = {'hourly_rate', 'burden_multiplier'}
 
     time_entries = db.relationship('TimeEntry', backref='user', lazy='dynamic',
                                    foreign_keys='TimeEntry.user_id')
     active_clock = db.relationship('ActiveClock', backref='user', uselist=False)
+    user_roles = db.relationship('UserRole', backref='user', lazy='dynamic',
+                                 foreign_keys='UserRole.user_id')
+    job_assignments = db.relationship('UserJobAssignment', backref='user', lazy='dynamic',
+                                      foreign_keys='UserJobAssignment.user_id')
 
     def effective_burden_multiplier(self):
         if self.burden_multiplier is not None:
@@ -105,6 +112,9 @@ class Client(db.Model):
     
     storage_prefix = db.Column(db.String(500), nullable=True)
 
+    jobsite_latitude = db.Column(db.Float, nullable=True)
+    jobsite_longitude = db.Column(db.Float, nullable=True)
+
     ghl_contact_id = db.Column(db.String(100), nullable=True, unique=True, index=True)
 
     lead_source_id = db.Column(db.Integer, db.ForeignKey('lead_sources.id'), nullable=True)
@@ -158,6 +168,10 @@ CHANGE_ORDER_STATUSES = ['Draft', 'Sent', 'Approved', 'Rejected']
 
 class Project(db.Model):
     __tablename__ = 'projects'
+    __internal_fields__ = {
+        'contract_value', 'total_budget', 'total_actual',
+        'total_committed', 'cost_to_complete', 'budget_used_pct',
+    }
     id = db.Column(db.Integer, primary_key=True)
     client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
     name = db.Column(db.String(200), nullable=False)
@@ -233,6 +247,7 @@ class CostCode(db.Model):
 
 class Budget(db.Model):
     __tablename__ = 'budgets'
+    __internal_fields__ = '__all__'
     id = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
     cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=False)
@@ -255,6 +270,7 @@ class Budget(db.Model):
 
 class CostEntry(db.Model):
     __tablename__ = 'cost_entries'
+    __internal_fields__ = '__all__'
     id = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
     cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=False)
@@ -309,6 +325,7 @@ class CostEntry(db.Model):
 class AssemblyItem(db.Model):
     """Maintainable cost/assembly database — unit costs for ADU construction."""
     __tablename__ = 'assembly_items'
+    __internal_fields__ = {'unit_cost', 'labor_pct', 'material_pct', 'waste_pct'}
     id = db.Column(db.Integer, primary_key=True)
     cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=False)
     name = db.Column(db.String(200), nullable=False)
@@ -450,6 +467,10 @@ class Estimate(db.Model):
 class EstimateLineItem(db.Model):
     """A single line item on an estimate."""
     __tablename__ = 'estimate_line_items'
+    __internal_fields__ = {
+        'labor_pct', 'material_pct', 'waste_pct',
+        'unit_cost', 'labor_amount', 'material_amount',
+    }
     id = db.Column(db.Integer, primary_key=True)
     estimate_id = db.Column(db.Integer, db.ForeignKey('estimates.id'), nullable=False)
     cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=False)
@@ -631,6 +652,12 @@ class TimeEntry(db.Model):
     approved_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=_utcnow)
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+    client_uuid = db.Column(db.String(36), nullable=True, unique=True)
+
+    clock_in_lat = db.Column(db.Float, nullable=True)
+    clock_in_lng = db.Column(db.Float, nullable=True)
+    clock_out_lat = db.Column(db.Float, nullable=True)
+    clock_out_lng = db.Column(db.Float, nullable=True)
 
     cost_code = db.relationship('CostCode')
     approved_by = db.relationship('User', foreign_keys=[approved_by_user_id])
@@ -652,7 +679,15 @@ class ActiveClock(db.Model):
     start_time = db.Column(db.DateTime, nullable=False)
     break_15_taken = db.Column(db.Boolean, default=False)
     lunch_taken = db.Column(db.Boolean, default=False)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=True)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=True)
+    clock_in_lat = db.Column(db.Float, nullable=True)
+    clock_in_lng = db.Column(db.Float, nullable=True)
+    notes = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=_utcnow)
+
+    client = db.relationship('Client', foreign_keys=[client_id])
+    cost_code = db.relationship('CostCode', foreign_keys=[cost_code_id])
 
     def __repr__(self):
         return f'<ActiveClock {self.user_id} - {self.start_time}>'
@@ -672,6 +707,7 @@ class ClientActivity(db.Model):
     next_step_date = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=_utcnow)
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+    client_uuid = db.Column(db.String(36), nullable=True, unique=True)
 
     user = db.relationship('User', foreign_keys=[user_id])
 
@@ -1012,8 +1048,31 @@ class NotificationPreference(db.Model):
     # Client portal events
     portal_message = db.Column(db.Boolean, default=True, nullable=False)
     selection_made = db.Column(db.Boolean, default=True, nullable=False)
+    # Smart prompts
+    prompt_notifications_enabled = db.Column(db.Boolean, default=True, nullable=False)
+    prompt_geo_clock_in = db.Column(db.Boolean, default=True, nullable=False)
+    prompt_long_clock = db.Column(db.Boolean, default=True, nullable=False)
+    prompt_no_daily_log = db.Column(db.Boolean, default=True, nullable=False)
+    prompt_geo_left_clocked = db.Column(db.Boolean, default=True, nullable=False)
+    prompt_unattached_photos = db.Column(db.Boolean, default=True, nullable=False)
+    work_start_hour = db.Column(db.Integer, default=6, nullable=False)
+    work_end_hour = db.Column(db.Integer, default=19, nullable=False)
 
     user = db.relationship('User', backref=db.backref('notification_prefs', uselist=False))
+
+
+class PromptDismissal(db.Model):
+    """Tracks when a user dismisses a contextual prompt card."""
+    __tablename__ = 'prompt_dismissals'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    rule_key = db.Column(db.String(50), nullable=False)
+    dismissed_date = db.Column(db.Date, nullable=False)
+    dismissed_at = db.Column(db.DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index('idx_pd_user_rule_date', 'user_id', 'rule_key', 'dismissed_date'),
+    )
 
 
 DOCUMENT_FOLDERS = [
@@ -1236,6 +1295,7 @@ PAYMENT_METHODS = ['stripe', 'check', 'wire', 'cash', 'other']
 class Invoice(db.Model):
     """Residential draw invoice billed against contract milestones."""
     __tablename__ = 'invoices'
+    __internal_fields__ = {'stripe_payment_intent_id', 'stripe_session_id'}
     id = db.Column(db.Integer, primary_key=True)
     contract_id = db.Column(db.Integer, db.ForeignKey('contracts.id'), nullable=False)
     client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)

@@ -14,6 +14,10 @@ A mobile-first web application for All Inclusive ADU sales representatives to tr
 
 ## System Architecture
 
+
+
+
+
 ### UI/UX Decisions
 The application prioritizes a mobile-first, responsive design using Tailwind CSS. Key UI/UX features include:
 - **Dashboard-style Home Page**: Personalized views for reps and supervisors, displaying opportunities, recent clients, next steps, and activity.

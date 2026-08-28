@@ -28,21 +28,26 @@ from models import (
     QBOToken, QBOMapping, QBOSyncLog,
     ClientUser, MagicLink, SelectionCategory, SelectionOption,
     ClientSelection, PortalMessage, SELECTION_STATUSES,
+    PromptDismissal,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
     utc_to_pacific, pacific_to_utc, calculate_duration, round_to_quarter_hour,
     format_hours, format_date_for_display, format_datetime_for_display,
     get_pay_period_dates, get_next_pay_period_dates, get_previous_pay_period_dates,
-    get_last_30_days_dates, get_month_to_date_dates,
+    get_last_30_days_dates, get_month_to_date_dates, ensure_utc,
+    haversine as _haversine,
 )
 
 from utils import PACIFIC_TZ
 
-app.register_blueprint(google_auth)
+# Guard against double-registration when tests import both google_auth and routes
+if 'google_auth' not in app.blueprints:
+    app.register_blueprint(google_auth)
 
 from client_portal import portal as client_portal_bp
-app.register_blueprint(client_portal_bp)
+if 'portal' not in app.blueprints:
+    app.register_blueprint(client_portal_bp)
 
 
 def build_daily_hours(entries, period_start, period_end):
@@ -156,20 +161,14 @@ def _build_client_timeline(client, activities):
     # Compute total deal age and current stage duration
     now = datetime.now(timezone.utc)
 
-    def _ensure_aware(dt):
-        """Ensure a datetime is timezone-aware (assume UTC if naive)."""
-        if dt and dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt
-
-    created = _ensure_aware(client.created_at)
+    created = ensure_utc(client.created_at)
     total_age_days = (now - created).days if created else 0
 
     # Current stage duration: time since last status change
     last_change = ClientStatusChange.query.filter_by(client_id=client.id)\
         .order_by(ClientStatusChange.changed_at.desc()).first()
     if last_change:
-        current_stage_days = (now - _ensure_aware(last_change.changed_at)).days
+        current_stage_days = (now - ensure_utc(last_change.changed_at)).days
     else:
         current_stage_days = total_age_days
 
@@ -194,7 +193,7 @@ def favicon():
 @app.route('/')
 def index():
     if current_user.is_authenticated:
-        return redirect(url_for('welcome'))
+        return redirect(url_for('clock_page'))
     return render_template('landing.html')
 
 
@@ -785,9 +784,7 @@ def home():
         if cid not in overdue_by_client:
             overdue_by_client[cid] = activity
     for cid, activity in overdue_by_client.items():
-        step_date = activity.next_step_date
-        if step_date.tzinfo is None:
-            step_date = step_date.replace(tzinfo=timezone.utc)
+        step_date = ensure_utc(activity.next_step_date)
         days_overdue = (now - step_date).days
         attention_items.append({
             'client': activity.client,
@@ -816,7 +813,8 @@ def home():
 
     # 3. Stale
     for client in stale_clients:
-        days_stale = (now - client.updated_at).days
+        updated = ensure_utc(client.updated_at)
+        days_stale = (now - updated).days
         severity = 'red' if days_stale >= stale_red_days else 'amber'
         if client.id in seen_client_ids:
             for item in attention_items:
@@ -967,7 +965,8 @@ def start_clock():
 def clock_status():
     active_clock = ActiveClock.query.filter_by(user_id=current_user.id).first()
     if active_clock:
-        elapsed = (datetime.now(timezone.utc) - active_clock.start_time).total_seconds()
+        start = ensure_utc(active_clock.start_time)
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         hours = int(elapsed // 3600)
         minutes = int((elapsed % 3600) // 60)
         seconds = int(elapsed % 60)
@@ -992,7 +991,7 @@ def take_break_15():
     if active_clock.break_15_taken:
         return jsonify({'success': False, 'message': '15-minute break already taken'}), 400
 
-    elapsed = (datetime.now(timezone.utc) - active_clock.start_time).total_seconds()
+    elapsed = (datetime.now(timezone.utc) - ensure_utc(active_clock.start_time)).total_seconds()
     if elapsed < 3600:
         return jsonify({'success': False, 'message': 'Must work at least 1 hour before taking break'}), 400
 
@@ -1012,7 +1011,7 @@ def take_lunch():
     if active_clock.lunch_taken:
         return jsonify({'success': False, 'message': 'Lunch break already taken'}), 400
 
-    elapsed = (datetime.now(timezone.utc) - active_clock.start_time).total_seconds()
+    elapsed = (datetime.now(timezone.utc) - ensure_utc(active_clock.start_time)).total_seconds()
     if elapsed < 7200:
         return jsonify({'success': False, 'message': 'Must work at least 2 hours before taking lunch'}), 400
 
@@ -1090,6 +1089,396 @@ def stop_clock():
 
     flash(f'Shift logged: {format_hours(duration)} hours', 'success')
     return redirect(url_for('my_logs'))
+
+
+# --- New Clock UI + JSON API ---
+
+@app.route('/clock')
+@require_login
+def clock_page():
+    """Single-page clock-in/out screen (replaces welcome + stop_clock flow)."""
+    return render_template('clock.html')
+
+
+@app.route('/api/clock/state')
+@require_login
+def api_clock_state():
+    """Current clock state, job suggestions, and forgot-to-clock-out detection."""
+    import math
+    active = ActiveClock.query.filter_by(user_id=current_user.id).first()
+
+    # Forgot threshold (hours)
+    threshold = float(AppSetting.get('clock_forgot_threshold_hours', '14'))
+    forgot_prompt = None
+    clock_data = None
+
+    if active:
+        start = ensure_utc(active.start_time)
+        elapsed_s = (datetime.now(timezone.utc) - start).total_seconds()
+        clock_data = {
+            'start_time': active.start_time.isoformat(),
+            'start_time_display': format_datetime_for_display(active.start_time),
+            'elapsed_seconds': int(elapsed_s),
+            'break_15_taken': active.break_15_taken,
+            'lunch_taken': active.lunch_taken,
+            'client_id': active.client_id,
+            'client_name': active.client.name if active.client else None,
+            'cost_code_id': active.cost_code_id,
+            'cost_code_name': f"{active.cost_code.code} - {active.cost_code.name}" if active.cost_code else None,
+            'notes': active.notes,
+        }
+        if elapsed_s > threshold * 3600:
+            # Suggest end time: start + 8h or 5 PM same day, whichever earlier
+            pacific_start = utc_to_pacific(start)
+            guess_8h = pacific_start + timedelta(hours=8)
+            five_pm = pacific_start.replace(hour=17, minute=0, second=0, microsecond=0)
+            suggested_end = min(guess_8h, five_pm)
+            forgot_prompt = {
+                'start_time_display': format_datetime_for_display(active.start_time),
+                'suggested_end_time': suggested_end.strftime('%H:%M'),
+                'start_date': pacific_start.strftime('%Y-%m-%d'),
+            }
+
+    # Last cost code used by this user (from most recent TimeEntry)
+    last_entry = TimeEntry.query.filter(
+        TimeEntry.user_id == current_user.id,
+        TimeEntry.cost_code_id.isnot(None),
+    ).order_by(TimeEntry.created_at.desc()).first()
+    last_cost_code = None
+    if last_entry and last_entry.cost_code:
+        last_cost_code = {
+            'id': last_entry.cost_code_id,
+            'name': f"{last_entry.cost_code.code} - {last_entry.cost_code.name}",
+        }
+
+    # Job suggestions (no GPS here — client provides lat/lng via query params)
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+    suggestions = _get_job_suggestions(lat, lng)
+
+    return jsonify({
+        'active_clock': clock_data,
+        'suggestions': suggestions,
+        'last_cost_code': last_cost_code,
+        'forgot_prompt': forgot_prompt,
+    })
+
+
+def _get_job_suggestions(lat=None, lng=None):
+    """Return active clients sorted by GPS distance then recency."""
+    import math
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    radius = float(AppSetting.get('clock_gps_radius_meters', '150'))
+
+    results = []
+    for c in clients:
+        dist = None
+        if lat is not None and lng is not None and c.jobsite_latitude and c.jobsite_longitude:
+            dist = _haversine(lat, lng, c.jobsite_latitude, c.jobsite_longitude)
+        # Get last punch by current user on this client
+        last_punch = TimeEntry.query.filter_by(
+            user_id=current_user.id, client_id=c.id
+        ).order_by(TimeEntry.created_at.desc()).first()
+        last_cost_code = None
+        if last_punch and last_punch.cost_code:
+            last_cost_code = {
+                'id': last_punch.cost_code_id,
+                'name': f"{last_punch.cost_code.code} - {last_punch.cost_code.name}",
+            }
+        results.append({
+            'client_id': c.id,
+            'name': c.name,
+            'address': c.address,
+            'distance_m': round(dist) if dist is not None else None,
+            'within_radius': dist is not None and dist <= radius,
+            'last_punch_at': last_punch.created_at.isoformat() if last_punch else None,
+            'last_cost_code': last_cost_code,
+        })
+
+    # Sort: GPS matches first (by distance), then recency, then alpha
+    def sort_key(r):
+        if r['distance_m'] is not None and r['within_radius']:
+            return (0, r['distance_m'], '')
+        if r['last_punch_at']:
+            return (1, 0, r['last_punch_at'])  # will sort desc below
+        return (2, 0, r['name'])
+
+    results.sort(key=sort_key)
+    # Within tier 1 (recency), we want most recent first
+    return results
+
+
+
+
+@app.route('/api/clock/jobs')
+@require_login
+def api_clock_jobs():
+    """Job list for picker, sorted by GPS distance then recency."""
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+    suggestions = _get_job_suggestions(lat, lng)
+    cost_codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.sort_order, CostCode.code).all()
+    return jsonify({
+        'jobs': suggestions,
+        'cost_codes': [{'id': cc.id, 'name': f"{cc.code} - {cc.name}"} for cc in cost_codes],
+    })
+
+
+@app.route('/api/clock/in', methods=['POST'])
+@require_login
+def api_clock_in():
+    """Clock in — creates ActiveClock. Idempotent on client_uuid."""
+    data = request.get_json(silent=True) or {}
+    client_uuid = data.get('client_uuid')
+
+    # Idempotent check
+    existing = ActiveClock.query.filter_by(user_id=current_user.id).first()
+    if existing:
+        return jsonify({
+            'status': 'already_clocked_in',
+            'clock': {
+                'start_time': existing.start_time.isoformat(),
+                'client_name': existing.client.name if existing.client else None,
+                'cost_code': f"{existing.cost_code.code} - {existing.cost_code.name}" if existing.cost_code else None,
+            }
+        })
+
+    now = datetime.now(timezone.utc)
+    clock = ActiveClock(
+        user_id=current_user.id,
+        start_time=now,
+        client_id=data.get('client_id'),
+        cost_code_id=data.get('cost_code_id'),
+        clock_in_lat=data.get('latitude'),
+        clock_in_lng=data.get('longitude'),
+    )
+    db.session.add(clock)
+    db.session.commit()
+
+    return jsonify({
+        'status': 'clocked_in',
+        'clock': {
+            'start_time': now.isoformat(),
+            'client_name': clock.client.name if clock.client else None,
+            'cost_code': f"{clock.cost_code.code} - {clock.cost_code.name}" if clock.cost_code else None,
+        }
+    })
+
+
+@app.route('/api/clock/out', methods=['POST'])
+@require_login
+def api_clock_out():
+    """Clock out — creates TimeEntry from ActiveClock, deletes ActiveClock."""
+    data = request.get_json(silent=True) or {}
+    active = ActiveClock.query.filter_by(user_id=current_user.id).first()
+    if not active:
+        return jsonify({'status': 'error', 'message': 'No active clock found'}), 400
+
+    end_time = datetime.now(timezone.utc)
+    duration = calculate_duration(active.start_time, end_time)
+
+    break_deduction = Decimal('0')
+    if active.break_15_taken:
+        break_deduction += Decimal('0.25')
+    if active.lunch_taken:
+        break_deduction += Decimal('1.0')
+    final_duration = max(Decimal('0'), duration - break_deduction)
+
+    work_desc = data.get('work_description', '').strip()
+    if active.notes:
+        work_desc = active.notes if not work_desc else f"{active.notes}\n{work_desc}"
+    if not work_desc:
+        work_desc = 'Clock punch'
+
+    entry = TimeEntry(
+        user_id=current_user.id,
+        client_id=active.client_id,
+        cost_code_id=active.cost_code_id,
+        date=utc_to_pacific(end_time).date(),
+        start_time=active.start_time,
+        end_time=end_time,
+        duration_hours=final_duration,
+        work_description=work_desc,
+        is_manual=False,
+        clock_in_lat=active.clock_in_lat,
+        clock_in_lng=active.clock_in_lng,
+        clock_out_lat=data.get('latitude'),
+        clock_out_lng=data.get('longitude'),
+    )
+    db.session.add(entry)
+    db.session.delete(active)
+    db.session.commit()
+
+    return jsonify({
+        'status': 'clocked_out',
+        'entry': {
+            'id': entry.id,
+            'duration_hours': float(final_duration),
+        }
+    })
+
+
+@app.route('/api/clock/switch', methods=['POST'])
+@require_login
+def api_clock_switch():
+    """Atomic: close current punch, open new one with different job."""
+    data = request.get_json(silent=True) or {}
+    active = ActiveClock.query.filter_by(user_id=current_user.id).first()
+    if not active:
+        return jsonify({'status': 'error', 'message': 'No active clock found'}), 400
+
+    now = datetime.now(timezone.utc)
+    duration = calculate_duration(active.start_time, now)
+
+    break_deduction = Decimal('0')
+    if active.break_15_taken:
+        break_deduction += Decimal('0.25')
+    if active.lunch_taken:
+        break_deduction += Decimal('1.0')
+    final_duration = max(Decimal('0'), duration - break_deduction)
+
+    work_desc = active.notes or 'Clock punch (job switch)'
+
+    # Close current punch
+    entry = TimeEntry(
+        user_id=current_user.id,
+        client_id=active.client_id,
+        cost_code_id=active.cost_code_id,
+        date=utc_to_pacific(now).date(),
+        start_time=active.start_time,
+        end_time=now,
+        duration_hours=final_duration,
+        work_description=work_desc,
+        is_manual=False,
+        clock_in_lat=active.clock_in_lat,
+        clock_in_lng=active.clock_in_lng,
+        clock_out_lat=data.get('latitude'),
+        clock_out_lng=data.get('longitude'),
+    )
+    db.session.add(entry)
+
+    # Update ActiveClock for new job
+    active.start_time = now
+    active.client_id = data.get('new_client_id')
+    active.cost_code_id = data.get('new_cost_code_id')
+    active.clock_in_lat = data.get('latitude')
+    active.clock_in_lng = data.get('longitude')
+    active.break_15_taken = False
+    active.lunch_taken = False
+    active.notes = None
+    db.session.commit()
+
+    return jsonify({
+        'status': 'switched',
+        'closed_entry': {'id': entry.id, 'duration_hours': float(final_duration)},
+        'new_clock': {
+            'start_time': now.isoformat(),
+            'client_name': active.client.name if active.client else None,
+            'cost_code': f"{active.cost_code.code} - {active.cost_code.name}" if active.cost_code else None,
+        }
+    })
+
+
+@app.route('/api/clock/break', methods=['POST'])
+@require_login
+def api_clock_break():
+    """Mark a break on the active clock."""
+    data = request.get_json(silent=True) or {}
+    active = ActiveClock.query.filter_by(user_id=current_user.id).first()
+    if not active:
+        return jsonify({'status': 'error', 'message': 'No active clock found'}), 400
+
+    break_type = data.get('break_type')
+    elapsed = (datetime.now(timezone.utc) - ensure_utc(active.start_time)).total_seconds()
+
+    if break_type == '15min':
+        if active.break_15_taken:
+            return jsonify({'status': 'error', 'message': '15-minute break already taken'}), 400
+        if elapsed < 3600:
+            return jsonify({'status': 'error', 'message': 'Must work at least 1 hour before taking break'}), 400
+        active.break_15_taken = True
+    elif break_type == 'lunch':
+        if active.lunch_taken:
+            return jsonify({'status': 'error', 'message': 'Lunch break already taken'}), 400
+        if elapsed < 7200:
+            return jsonify({'status': 'error', 'message': 'Must work at least 2 hours before lunch'}), 400
+        active.lunch_taken = True
+    else:
+        return jsonify({'status': 'error', 'message': 'Invalid break_type'}), 400
+
+    db.session.commit()
+    return jsonify({'status': 'ok', 'break_15_taken': active.break_15_taken, 'lunch_taken': active.lunch_taken})
+
+
+@app.route('/api/clock/resolve', methods=['POST'])
+@require_login
+def api_clock_resolve():
+    """Resolve a forgot-to-clock-out situation."""
+    data = request.get_json(silent=True) or {}
+    active = ActiveClock.query.filter_by(user_id=current_user.id).first()
+    if not active:
+        return jsonify({'status': 'error', 'message': 'No active clock found'}), 400
+
+    # "I didn't work" option
+    if data.get('discard'):
+        db.session.delete(active)
+        db.session.commit()
+        return jsonify({'status': 'discarded'})
+
+    # Parse actual end time
+    end_time_str = data.get('actual_end_time')
+    if not end_time_str:
+        return jsonify({'status': 'error', 'message': 'actual_end_time required'}), 400
+
+    try:
+        # Expect ISO format or "HH:MM" with a date
+        if 'T' in end_time_str:
+            end_time = datetime.fromisoformat(end_time_str)
+            if end_time.tzinfo is None:
+                end_time = PACIFIC_TZ.localize(end_time)
+            end_time = end_time.astimezone(timezone.utc)
+        else:
+            # HH:MM on the start date
+            start_pacific = utc_to_pacific(ensure_utc(active.start_time))
+            h, m = map(int, end_time_str.split(':'))
+            end_pacific = start_pacific.replace(hour=h, minute=m, second=0, microsecond=0)
+            if end_pacific <= start_pacific:
+                end_pacific += timedelta(days=1)
+            end_time = end_pacific.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return jsonify({'status': 'error', 'message': 'Invalid time format'}), 400
+
+    duration = calculate_duration(active.start_time, end_time)
+    break_deduction = Decimal('0')
+    if active.break_15_taken:
+        break_deduction += Decimal('0.25')
+    if active.lunch_taken:
+        break_deduction += Decimal('1.0')
+    final_duration = max(Decimal('0'), duration - break_deduction)
+
+    work_desc = data.get('work_description', '').strip() or active.notes or 'Clock punch (resolved)'
+
+    entry = TimeEntry(
+        user_id=current_user.id,
+        client_id=active.client_id,
+        cost_code_id=active.cost_code_id,
+        date=utc_to_pacific(end_time).date(),
+        start_time=active.start_time,
+        end_time=end_time,
+        duration_hours=final_duration,
+        work_description=work_desc,
+        is_manual=False,
+        clock_in_lat=active.clock_in_lat,
+        clock_in_lng=active.clock_in_lng,
+    )
+    db.session.add(entry)
+    db.session.delete(active)
+    db.session.commit()
+
+    return jsonify({
+        'status': 'resolved',
+        'entry': {'id': entry.id, 'duration_hours': float(final_duration)},
+    })
 
 
 @app.route('/quick-log', methods=['GET', 'POST'])
@@ -5744,6 +6133,100 @@ def mark_notifications_read():
     return jsonify(ok=True)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# CONTEXTUAL PROMPTS API
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.route('/api/prompts')
+@require_login
+def api_prompts():
+    """Evaluate contextual prompts for the current user."""
+    from prompt_engine import evaluate_prompts, ALL_RULES
+
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+    photos_taken_today = request.args.get('photos_taken_today', 0, type=int)
+
+    prompts = evaluate_prompts(
+        current_user.id,
+        lat=lat,
+        lng=lng,
+        photos_taken_today=photos_taken_today,
+        is_supervisor=getattr(current_user, 'is_supervisor', False),
+    )
+
+    # Optionally create Notification bell items
+    prefs = NotificationPreference.query.filter_by(user_id=current_user.id).first()
+    if prefs and getattr(prefs, 'prompt_notifications_enabled', True) and prompts:
+        now_pacific = utc_to_pacific(datetime.now(timezone.utc))
+        today_start = now_pacific.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_notif_count = Notification.query.filter(
+            Notification.user_id == current_user.id,
+            Notification.type.like('prompt_%'),
+            Notification.created_at >= pacific_to_utc(today_start),
+        ).count()
+
+        for p in prompts:
+            if today_notif_count >= 2:
+                break
+            notif_type = f"prompt_{p['rule_key']}"
+            exists = Notification.query.filter(
+                Notification.user_id == current_user.id,
+                Notification.type == notif_type,
+                Notification.created_at >= pacific_to_utc(today_start),
+            ).first()
+            if not exists:
+                db.session.add(Notification(
+                    user_id=current_user.id,
+                    type=notif_type,
+                    title=p['title'],
+                    message=p.get('message', ''),
+                    link=p['action_url'],
+                ))
+                today_notif_count += 1
+        db.session.commit()
+
+    return jsonify(prompts=prompts)
+
+
+@app.route('/api/prompts/dismiss', methods=['POST'])
+@require_login
+def api_prompts_dismiss():
+    """Dismiss a contextual prompt for today."""
+    from prompt_engine import ALL_RULES
+
+    data = request.get_json(silent=True) or {}
+    rule_key = data.get('rule_key', '')
+    if rule_key not in ALL_RULES:
+        return jsonify(error='Invalid rule_key'), 400
+
+    now_pacific = utc_to_pacific(datetime.now(timezone.utc))
+    today_pacific = now_pacific.date()
+
+    existing = PromptDismissal.query.filter_by(
+        user_id=current_user.id,
+        rule_key=rule_key,
+        dismissed_date=today_pacific,
+    ).first()
+    if not existing:
+        db.session.add(PromptDismissal(
+            user_id=current_user.id,
+            rule_key=rule_key,
+            dismissed_date=today_pacific,
+        ))
+        db.session.commit()
+
+    # Check weekly suppression
+    monday = today_pacific - timedelta(days=today_pacific.weekday())
+    week_count = PromptDismissal.query.filter(
+        PromptDismissal.user_id == current_user.id,
+        PromptDismissal.rule_key == rule_key,
+        PromptDismissal.dismissed_date >= monday,
+    ).count()
+
+    return jsonify(ok=True, suppressed=week_count >= 2)
+
+
 @app.route('/settings/notifications', methods=['GET', 'POST'])
 @require_login
 def notification_settings():
@@ -5762,6 +6245,15 @@ def notification_settings():
         prefs.estimate_accepted = 'estimate_accepted' in request.form
         prefs.portal_message = 'portal_message' in request.form
         prefs.selection_made = 'selection_made' in request.form
+        # Smart prompts
+        prefs.prompt_notifications_enabled = 'prompt_notifications_enabled' in request.form
+        prefs.prompt_geo_clock_in = 'prompt_geo_clock_in' in request.form
+        prefs.prompt_long_clock = 'prompt_long_clock' in request.form
+        prefs.prompt_no_daily_log = 'prompt_no_daily_log' in request.form
+        prefs.prompt_geo_left_clocked = 'prompt_geo_left_clocked' in request.form
+        prefs.prompt_unattached_photos = 'prompt_unattached_photos' in request.form
+        prefs.work_start_hour = int(request.form.get('work_start_hour', 6))
+        prefs.work_end_hour = int(request.form.get('work_end_hour', 19))
         db.session.commit()
         flash('Notification preferences saved.', 'success')
         return redirect(url_for('notification_settings'))
@@ -5779,6 +6271,168 @@ def inject_notification_count():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# DAILY LOGS — FIELD ENTRY
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _get_crew_for_job(client_id):
+    """Return list of crew member names for a client's projects.
+
+    Looks at: TaskAssignment users, Client.assigned_to, and the last daily
+    log's crew_names for this client — merges them into a unique list.
+    """
+    names = []
+
+    # 1. Client's assigned rep
+    client = Client.query.get(client_id)
+    if client and client.assigned_to:
+        names.append(client.assigned_to.display_name)
+
+    # 2. TaskAssignment users for this client's projects
+    projects = Project.query.filter_by(client_id=client_id).all()
+    project_ids = [p.id for p in projects]
+    if project_ids:
+        assignments = (TaskAssignment.query
+                       .filter(TaskAssignment.task_id.in_(
+                           db.session.query(ScheduleTask.id).filter(
+                               ScheduleTask.project_id.in_(project_ids))))
+                       .all())
+        for a in assignments:
+            if a.user_id and a.user:
+                names.append(a.user.display_name)
+            elif a.sub_name:
+                names.append(a.sub_name)
+
+    # 3. Last log's crew names for this client (most recent context)
+    last_log = (DailyLog.query
+                .filter_by(client_id=client_id)
+                .order_by(DailyLog.log_date.desc())
+                .first())
+    if last_log and last_log.crew_names:
+        for n in last_log.crew_names.split(','):
+            n = n.strip()
+            if n:
+                names.append(n)
+
+    # Deduplicate preserving order
+    seen = set()
+    unique = []
+    for n in names:
+        if n.lower() not in seen:
+            seen.add(n.lower())
+            unique.append(n)
+    return unique
+
+
+@app.route('/daily-logs/field', methods=['GET'])
+@app.route('/daily-logs/field/<int:client_id>', methods=['GET'])
+@require_login
+def field_daily_log(client_id=None):
+    """Field-optimized daily log form — mobile-first, voice-first, offline-ready."""
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name).all()
+    preselected = Client.query.get(client_id) if client_id else None
+
+    # Auto-select: user's assigned clients, or last-used
+    if not preselected:
+        assigned = Client.query.filter_by(
+            assigned_to_user_id=current_user.id, is_active=True
+        ).order_by(Client.name).all()
+        if assigned:
+            clients = assigned
+            if len(assigned) == 1:
+                preselected = assigned[0]
+
+    # Get crew names for preselected client (or first client)
+    target_client_id = preselected.id if preselected else (clients[0].id if clients else None)
+    crew_names = _get_crew_for_job(target_client_id) if target_client_id else []
+
+    # Today's punched jobs for pre-fill
+    today_entries = TimeEntry.query.filter(
+        TimeEntry.user_id == current_user.id,
+        TimeEntry.date == date.today()
+    ).all()
+    today_client_ids = list(set(e.client_id for e in today_entries if e.client_id))
+    active_clock = ActiveClock.query.filter_by(user_id=current_user.id).first()
+    if active_clock and active_clock.client_id and active_clock.client_id not in today_client_ids:
+        today_client_ids.insert(0, active_clock.client_id)
+
+    # Today's pre-fill client (single job from punches or active clock)
+    today_prefill_client = None
+    if not preselected:
+        if len(today_client_ids) == 1:
+            today_prefill_client = Client.query.get(today_client_ids[0])
+        elif active_clock and active_clock.client_id:
+            today_prefill_client = Client.query.get(active_clock.client_id)
+
+    # Phase chips — cost codes with budgets, keyed by client_id
+    phase_chips_by_client = {}
+    for c in clients:
+        project = c.default_project() if hasattr(c, 'default_project') else None
+        if not project:
+            continue
+        budgets = Budget.query.filter_by(project_id=project.id).all()
+        code_ids = [b.cost_code_id for b in budgets]
+        if code_ids:
+            codes = CostCode.query.filter(
+                CostCode.id.in_(code_ids), CostCode.is_active == True
+            ).order_by(CostCode.sort_order).all()
+            phase_chips_by_client[c.id] = [{'id': cc.id, 'name': cc.name} for cc in codes]
+
+    # Crew names keyed by client_id for all clients
+    crew_by_client = {}
+    for c in clients:
+        crew_by_client[c.id] = _get_crew_for_job(c.id)
+
+    import json
+    return render_template('daily_log_field.html',
+                           log=None,
+                           clients=clients,
+                           preselected_client=preselected,
+                           today_prefill_client=today_prefill_client,
+                           weather_conditions=WEATHER_CONDITIONS,
+                           today=date.today(),
+                           crew_names_json=json.dumps(crew_names),
+                           today_client_ids=today_client_ids,
+                           phase_chips_json=json.dumps(phase_chips_by_client),
+                           crew_by_client_json=json.dumps(crew_by_client))
+
+
+@app.route('/daily-logs/field/<int:log_id>/edit', methods=['GET'])
+@require_login
+def field_edit_daily_log(log_id):
+    """Field-optimized edit for an existing daily log."""
+    log = DailyLog.query.get_or_404(log_id)
+    client = Client.query.get_or_404(log.client_id)
+    clients = [client]
+
+    crew_names = _get_crew_for_job(client.id)
+
+    # Phase chips for edit mode
+    phase_chips_by_client = {}
+    project = client.default_project() if hasattr(client, 'default_project') else None
+    if project:
+        budgets = Budget.query.filter_by(project_id=project.id).all()
+        code_ids = [b.cost_code_id for b in budgets]
+        if code_ids:
+            codes = CostCode.query.filter(
+                CostCode.id.in_(code_ids), CostCode.is_active == True
+            ).order_by(CostCode.sort_order).all()
+            phase_chips_by_client[client.id] = [{'id': cc.id, 'name': cc.name} for cc in codes]
+
+    import json
+    return render_template('daily_log_field.html',
+                           log=log,
+                           client=client,
+                           clients=clients,
+                           preselected_client=client,
+                           weather_conditions=WEATHER_CONDITIONS,
+                           today=date.today(),
+                           crew_names_json=json.dumps(crew_names),
+                           today_client_ids=[],
+                           phase_chips_json=json.dumps(phase_chips_by_client),
+                           crew_by_client_json=json.dumps({client.id: crew_names}),
+                           is_edit=True)
+
+
 # DAILY LOGS
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -5848,6 +6502,17 @@ def create_daily_log(client_id=None):
 
         # Also create a ClientActivity for timeline integration
         _create_log_activity(log, client)
+
+        # Create follow-up issue if requested (from blocker step)
+        if request.form.get('create_followup') == '1' and log.delays:
+            followup = ClientActivity(
+                client_id=cid,
+                user_id=current_user.id,
+                activity_type='Issue',
+                note_text=f"[Follow-up from {log.log_date.strftime('%m/%d/%Y')} log] {log.delays}",
+                activity_date=datetime.now(timezone.utc),
+            )
+            db.session.add(followup)
 
         db.session.commit()
         flash('Daily log saved.', 'success')
@@ -6071,22 +6736,29 @@ def api_weather():
         return jsonify(ok=False, error='client_id required')
 
     client = Client.query.get(client_id)
-    if not client or not client.address:
-        return jsonify(ok=False, error='Client has no address')
+    if not client:
+        return jsonify(ok=False, error='Client not found')
 
-    # Geocode address via Nominatim (free, no key)
-    geo_url = 'https://nominatim.openstreetmap.org/search'
-    try:
-        geo_resp = http_requests.get(geo_url, params={
-            'q': client.address, 'format': 'json', 'limit': 1,
-        }, headers={'User-Agent': 'ADUPortal/1.0'}, timeout=5)
-        geo_data = geo_resp.json()
-        if not geo_data:
-            return jsonify(ok=False, error='Could not geocode address')
-        lat = float(geo_data[0]['lat'])
-        lon = float(geo_data[0]['lon'])
-    except Exception:
-        return jsonify(ok=False, error='Geocoding failed')
+    # Use jobsite GPS coords if available (skip geocoding)
+    if client.jobsite_latitude and client.jobsite_longitude:
+        lat = client.jobsite_latitude
+        lon = client.jobsite_longitude
+    elif client.address:
+        # Geocode address via Nominatim (free, no key)
+        geo_url = 'https://nominatim.openstreetmap.org/search'
+        try:
+            geo_resp = http_requests.get(geo_url, params={
+                'q': client.address, 'format': 'json', 'limit': 1,
+            }, headers={'User-Agent': 'ADUPortal/1.0'}, timeout=5)
+            geo_data = geo_resp.json()
+            if not geo_data:
+                return jsonify(ok=False, error='Could not geocode address')
+            lat = float(geo_data[0]['lat'])
+            lon = float(geo_data[0]['lon'])
+        except Exception:
+            return jsonify(ok=False, error='Geocoding failed')
+    else:
+        return jsonify(ok=False, error='Client has no address or GPS coords')
 
     # Fetch weather from Open-Meteo
     try:
@@ -6200,6 +6872,146 @@ def sync_daily_logs():
 
     db.session.commit()
     return jsonify(ok=True, results=results)
+
+
+# ── FIELD SYNC API ────────────────────────────────────────────────────────────
+# Unified sync endpoint for the offline-first field queue.
+#
+# Conflict policy:
+#   - time_punch: APPEND-ONLY. If a record with this client_uuid exists,
+#     return status:"duplicate". Never overwrite a time punch.
+#   - daily_log, material_note, general_note: LAST-WRITE-WINS. If a record
+#     with this client_uuid exists, update it with the new payload.
+#   - Photos/audio arrive separately via /api/field/media, keyed to their
+#     parent's client_uuid. A photo upload failure never blocks text sync.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.route('/api/field/sync', methods=['POST'])
+@require_login
+@csrf.exempt
+def field_sync():
+    """Accept a single queued field entry and upsert by client_uuid.
+
+    Expects JSON:
+      { client_uuid, type, data: {...}, created_at, updated_at }
+
+    Returns JSON:
+      { ok: true, status: "created"|"updated"|"duplicate", id: ... }
+    """
+    from field_sync_helpers import (
+        upsert_daily_log, upsert_time_punch,
+        upsert_material_note, upsert_general_note,
+    )
+
+    if not request.is_json:
+        return jsonify(ok=False, error='JSON required'), 400
+
+    payload = request.get_json()
+    client_uuid = payload.get('client_uuid')
+    entry_type = payload.get('type')
+    data = payload.get('data', {})
+
+    if not client_uuid:
+        return jsonify(ok=False, error='client_uuid is required'), 400
+    if not entry_type:
+        return jsonify(ok=False, error='type is required'), 400
+
+    try:
+        if entry_type == 'daily_log':
+            result = upsert_daily_log(client_uuid, data)
+        elif entry_type == 'time_punch':
+            result = upsert_time_punch(client_uuid, data)
+        elif entry_type == 'material_note':
+            result = upsert_material_note(client_uuid, data)
+        elif entry_type == 'general_note':
+            result = upsert_general_note(client_uuid, data)
+        else:
+            return jsonify(ok=False, error=f'Unknown type: {entry_type}'), 400
+
+        db.session.commit()
+        return jsonify(ok=True, **result)
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify(ok=False, error=str(e)), 500
+
+
+@app.route('/api/field/media', methods=['POST'])
+@require_login
+@csrf.exempt
+def field_media_upload():
+    """Upload a photo or audio file linked to a parent field entry.
+
+    Expects multipart form:
+      - parent_uuid: client_uuid of the parent entry
+      - media_uuid: unique ID for this media item (dedup)
+      - file: the image/audio file
+      - meta: optional JSON string with caption, cost_code_id, etc.
+
+    Photos upload independently from their parent record so a large
+    photo never blocks a time punch or log from syncing.
+    """
+    parent_uuid = request.form.get('parent_uuid')
+    media_uuid = request.form.get('media_uuid')
+    f = request.files.get('file')
+
+    if not parent_uuid:
+        return jsonify(ok=False, error='parent_uuid is required'), 400
+    if not f:
+        return jsonify(ok=False, error='file is required'), 400
+
+    # Dedup by media_uuid
+    if media_uuid:
+        existing_photo = DailyLogPhoto.query.filter_by(
+            storage_key=f'field-media/{media_uuid}'
+        ).first()
+        if existing_photo:
+            return jsonify(ok=True, status='duplicate', id=existing_photo.id)
+
+    # Find the parent daily log by client_uuid
+    parent_log = DailyLog.query.filter_by(client_uuid=parent_uuid).first()
+    if not parent_log:
+        return jsonify(ok=False, error='Parent entry not found. Sync the log first.'), 404
+
+    # Parse optional metadata
+    import json as json_mod
+    meta = {}
+    meta_str = request.form.get('meta', '')
+    if meta_str:
+        try:
+            meta = json_mod.loads(meta_str)
+        except (json_mod.JSONDecodeError, TypeError):
+            pass
+
+    # Upload to R2
+    client = Client.query.get(parent_log.client_id)
+    prefix = getattr(client, 'storage_prefix', '') or f'client-{client.id}'
+    import uuid as uuid_mod
+    ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in (f.filename or '') else 'jpg'
+    storage_key = f'{prefix}/daily-logs/{media_uuid or uuid_mod.uuid4().hex}.{ext}'
+
+    try:
+        from r2_storage_helper import upload_file
+        upload_file(f, storage_key)
+    except Exception as e:
+        return jsonify(ok=False, error=f'Upload failed: {str(e)}'), 500
+
+    # Create photo record
+    photo = DailyLogPhoto(
+        daily_log_id=parent_log.id,
+        client_id=parent_log.client_id,
+        cost_code_id=meta.get('cost_code_id'),
+        storage_key=storage_key,
+        file_name=f.filename or 'photo.jpg',
+        caption=meta.get('caption', ''),
+        sort_order=meta.get('sort_order', 0),
+        uploaded_by_user_id=current_user.id,
+    )
+    db.session.add(photo)
+    db.session.commit()
+
+    return jsonify(ok=True, status='created', id=photo.id)
 
 
 # ── PDF Generation ───────────────────────────────────────────────────────────

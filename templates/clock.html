@@ -1,0 +1,706 @@
+{% extends "base.html" %}
+{% block title %}Clock — ADU Portal{% endblock %}
+
+{% block content %}
+<div class="w-full max-w-md mx-auto min-h-[85vh] flex flex-col" x-data="clockScreen()" x-init="init()" x-cloak>
+
+    <!-- ── FORGOT TO CLOCK OUT MODAL ── -->
+    <template x-if="state === 'forgot'">
+        <div class="flex-1 flex items-center justify-center px-4">
+            <div class="w-full bg-white rounded-2xl shadow-card p-6 space-y-4">
+                <div class="text-center">
+                    <svg class="w-10 h-10 mx-auto text-amber-500 mb-2" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
+                    <p class="text-lg font-semibold text-txt-primary">Forgot to clock out?</p>
+                    <p class="text-sm text-txt-secondary mt-1">You clocked in <span x-text="forgotData.start_time_display"></span></p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">When did you stop working?</label>
+                    <input type="time" x-model="forgotEndTime"
+                           class="w-full px-3 py-3 rounded-xl border border-hairline text-lg text-center focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-txt-secondary mb-1">Work description (optional)</label>
+                    <input type="text" x-model="forgotDescription" placeholder="What did you work on?"
+                           class="w-full px-3 py-2.5 rounded-xl border border-hairline text-sm focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
+                </div>
+                <button @click="resolveForget(false)"
+                        class="w-full py-4 bg-txt-primary text-white text-lg font-semibold rounded-xl hover:bg-txt-primary/80 transition-colors touch-target">
+                    Save &amp; Close
+                </button>
+                <button @click="resolveForget(true)"
+                        class="w-full py-3 text-sm text-txt-muted hover:text-neg transition-colors touch-target">
+                    I didn't work — discard this punch
+                </button>
+            </div>
+        </div>
+    </template>
+
+    <!-- ── IDLE STATE ── -->
+    <template x-if="state === 'idle'">
+        <div class="flex-1 flex flex-col justify-between px-4 py-6">
+            <!-- Greeting + clock -->
+            <div class="text-center space-y-1">
+                <p class="text-xl font-bold text-txt-primary" x-text="greeting"></p>
+                <p class="text-sm text-txt-secondary" x-text="dateStr"></p>
+                <p class="text-4xl font-light text-txt-primary tabular-nums tracking-tight mt-2" x-text="timeStr"></p>
+            </div>
+
+            <!-- Job + cost code pre-fill -->
+            <div class="space-y-3 my-6">
+                <!-- Job selection -->
+                <div class="bg-white rounded-2xl shadow-card p-4">
+                    <div class="flex items-center justify-between">
+                        <div class="min-w-0">
+                            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Job</p>
+                            <p class="text-sm font-semibold text-txt-primary truncate" x-text="selectedJobName || 'No job selected'"></p>
+                            <p class="text-xs text-txt-muted truncate" x-show="selectedJobAddress" x-text="selectedJobAddress"></p>
+                        </div>
+                        <button @click="showJobPicker = true" class="text-xs text-accent font-medium hover:underline flex-shrink-0 ml-2 touch-target">
+                            change
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Cost code selection -->
+                <div class="bg-white rounded-2xl shadow-card p-4">
+                    <div class="flex items-center justify-between">
+                        <div class="min-w-0">
+                            <p class="text-xs font-medium text-txt-muted uppercase tracking-wide">Cost Code</p>
+                            <p class="text-sm font-semibold text-txt-primary truncate" x-text="selectedCostCodeName || 'None'"></p>
+                        </div>
+                        <button @click="showCostCodePicker = true" class="text-xs text-accent font-medium hover:underline flex-shrink-0 ml-2 touch-target">
+                            change
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Clock In button -->
+            <div>
+                <button @click="clockIn()" :disabled="clockingIn"
+                        class="w-full py-5 bg-pos text-white text-xl font-bold rounded-2xl hover:bg-pos/90 active:scale-[0.98] transition-all touch-target shadow-lg disabled:opacity-60">
+                    <span x-show="!clockingIn">Clock In</span>
+                    <span x-show="clockingIn">Clocking in...</span>
+                </button>
+                <a href="{{ url_for('home') }}" class="block text-center text-sm text-txt-muted hover:text-txt-secondary mt-4 touch-target">
+                    Skip to Dashboard &rarr;
+                </a>
+            </div>
+        </div>
+    </template>
+
+    <!-- ── RUNNING STATE ── -->
+    <template x-if="state === 'running'">
+        <div class="flex-1 flex flex-col justify-between px-4 py-6">
+            <!-- Job context -->
+            <div class="text-center">
+                <p class="text-sm font-medium text-txt-secondary">
+                    <span x-text="activeClock.client_name || 'No job'"></span>
+                    <template x-if="activeClock.cost_code_name">
+                        <span> &middot; <span x-text="activeClock.cost_code_name"></span></span>
+                    </template>
+                </p>
+            </div>
+
+            <!-- Elapsed timer -->
+            <div class="text-center my-8">
+                <p class="text-6xl font-bold text-txt-primary tabular-nums tracking-tight" x-text="elapsedDisplay"></p>
+                <p class="text-sm text-txt-muted mt-2">Started <span x-text="activeClock.start_time_display"></span></p>
+            </div>
+
+            <!-- Secondary actions -->
+            <div class="space-y-3">
+                <div class="flex gap-3">
+                    <button @click="showBreakSheet = true"
+                            class="flex-1 py-3 bg-white text-txt-secondary text-sm font-medium rounded-xl shadow-card hover:bg-pill transition-colors touch-target">
+                        Break
+                    </button>
+                    <button @click="startSwitch()"
+                            class="flex-1 py-3 bg-white text-txt-secondary text-sm font-medium rounded-xl shadow-card hover:bg-pill transition-colors touch-target">
+                        Switch Job
+                    </button>
+                </div>
+
+                <!-- Notes field -->
+                <div class="bg-white rounded-xl shadow-card p-3">
+                    <input type="text" x-model="clockOutNotes" placeholder="What are you working on? (optional)"
+                           class="w-full text-sm text-txt-primary placeholder:text-txt-muted focus:outline-none">
+                </div>
+
+                <!-- Clock Out button -->
+                <button @click="clockOut()" :disabled="clockingOut"
+                        class="w-full py-5 bg-neg text-white text-xl font-bold rounded-2xl hover:bg-neg/90 active:scale-[0.98] transition-all touch-target shadow-lg disabled:opacity-60">
+                    <span x-show="!clockingOut">Clock Out</span>
+                    <span x-show="clockingOut">Clocking out...</span>
+                </button>
+                <a href="{{ url_for('home') }}" class="block text-center text-sm text-txt-muted hover:text-txt-secondary mt-2 touch-target">
+                    Dashboard
+                </a>
+            </div>
+        </div>
+    </template>
+
+    <!-- ── JOB PICKER (bottom sheet) ── -->
+    <template x-if="showJobPicker">
+        <div class="fixed inset-0 z-50 flex items-end justify-center" @click.self="showJobPicker = false">
+            <div class="absolute inset-0 bg-black/30" @click="showJobPicker = false"></div>
+            <div class="relative w-full max-w-md bg-white rounded-t-2xl shadow-lg max-h-[70vh] flex flex-col animate-slide-up">
+                <div class="flex items-center justify-between p-4 border-b border-hairline">
+                    <h3 class="text-base font-semibold text-txt-primary">Select Job</h3>
+                    <button @click="showJobPicker = false" class="text-txt-muted hover:text-txt-primary touch-target p-1">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
+                <div class="overflow-y-auto flex-1 p-2">
+                    <button @click="selectJob(null, 'Daily Activities', ''); showJobPicker = false"
+                            class="w-full text-left px-4 py-3 rounded-xl hover:bg-pill transition-colors touch-target">
+                        <p class="text-sm font-medium text-txt-secondary">Daily Activities (no job)</p>
+                    </button>
+                    <template x-for="job in jobs" :key="job.client_id">
+                        <button @click="selectJob(job.client_id, job.name, job.address, job.last_cost_code); showJobPicker = false"
+                                class="w-full text-left px-4 py-3 rounded-xl hover:bg-pill transition-colors touch-target">
+                            <div class="flex items-center justify-between">
+                                <div class="min-w-0">
+                                    <p class="text-sm font-medium text-txt-primary truncate" x-text="job.name"></p>
+                                    <p class="text-xs text-txt-muted truncate" x-text="job.address"></p>
+                                </div>
+                                <template x-if="job.distance_m !== null && job.within_radius">
+                                    <span class="text-xs text-pos font-medium flex-shrink-0 ml-2" x-text="job.distance_m + 'm'"></span>
+                                </template>
+                            </div>
+                        </button>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <!-- ── COST CODE PICKER (bottom sheet) ── -->
+    <template x-if="showCostCodePicker">
+        <div class="fixed inset-0 z-50 flex items-end justify-center" @click.self="showCostCodePicker = false">
+            <div class="absolute inset-0 bg-black/30" @click="showCostCodePicker = false"></div>
+            <div class="relative w-full max-w-md bg-white rounded-t-2xl shadow-lg max-h-[70vh] flex flex-col">
+                <div class="flex items-center justify-between p-4 border-b border-hairline">
+                    <h3 class="text-base font-semibold text-txt-primary">Select Cost Code</h3>
+                    <button @click="showCostCodePicker = false" class="text-txt-muted hover:text-txt-primary touch-target p-1">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
+                <div class="overflow-y-auto flex-1 p-2">
+                    <button @click="selectCostCode(null, 'None'); showCostCodePicker = false"
+                            class="w-full text-left px-4 py-3 rounded-xl hover:bg-pill transition-colors touch-target">
+                        <p class="text-sm text-txt-muted">None</p>
+                    </button>
+                    <template x-for="cc in costCodes" :key="cc.id">
+                        <button @click="selectCostCode(cc.id, cc.name); showCostCodePicker = false"
+                                class="w-full text-left px-4 py-3 rounded-xl hover:bg-pill transition-colors touch-target">
+                            <p class="text-sm font-medium text-txt-primary" x-text="cc.name"></p>
+                        </button>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <!-- ── BREAK BOTTOM SHEET ── -->
+    <template x-if="showBreakSheet">
+        <div class="fixed inset-0 z-50 flex items-end justify-center" @click.self="showBreakSheet = false">
+            <div class="absolute inset-0 bg-black/30" @click="showBreakSheet = false"></div>
+            <div class="relative w-full max-w-md bg-white rounded-t-2xl shadow-lg p-6 space-y-3">
+                <h3 class="text-base font-semibold text-txt-primary text-center">Take a Break</h3>
+                <button @click="takeBreak('15min')" :disabled="activeClock.break_15_taken"
+                        class="w-full py-4 rounded-xl text-sm font-medium transition-colors touch-target"
+                        :class="activeClock.break_15_taken ? 'bg-pill text-txt-muted cursor-not-allowed' : 'bg-white border border-hairline text-txt-primary hover:bg-pill'">
+                    15 min break
+                    <span x-show="activeClock.break_15_taken" class="text-xs text-txt-muted ml-1">(taken)</span>
+                </button>
+                <button @click="takeBreak('lunch')" :disabled="activeClock.lunch_taken"
+                        class="w-full py-4 rounded-xl text-sm font-medium transition-colors touch-target"
+                        :class="activeClock.lunch_taken ? 'bg-pill text-txt-muted cursor-not-allowed' : 'bg-white border border-hairline text-txt-primary hover:bg-pill'">
+                    Lunch (1 hr)
+                    <span x-show="activeClock.lunch_taken" class="text-xs text-txt-muted ml-1">(taken)</span>
+                </button>
+                <button @click="showBreakSheet = false"
+                        class="w-full py-3 text-sm text-txt-muted hover:text-txt-secondary touch-target">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </template>
+
+    <!-- ── SWITCH JOB PICKER (reuses job picker UI) ── -->
+    <template x-if="showSwitchPicker">
+        <div class="fixed inset-0 z-50 flex items-end justify-center" @click.self="showSwitchPicker = false">
+            <div class="absolute inset-0 bg-black/30" @click="showSwitchPicker = false"></div>
+            <div class="relative w-full max-w-md bg-white rounded-t-2xl shadow-lg max-h-[70vh] flex flex-col">
+                <div class="flex items-center justify-between p-4 border-b border-hairline">
+                    <h3 class="text-base font-semibold text-txt-primary">Switch to Job</h3>
+                    <button @click="showSwitchPicker = false" class="text-txt-muted hover:text-txt-primary touch-target p-1">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
+                <div class="overflow-y-auto flex-1 p-2">
+                    <template x-for="job in jobs" :key="job.client_id">
+                        <button @click="doSwitch(job.client_id, job.last_cost_code)"
+                                class="w-full text-left px-4 py-3 rounded-xl hover:bg-pill transition-colors touch-target">
+                            <p class="text-sm font-medium text-txt-primary" x-text="job.name"></p>
+                            <p class="text-xs text-txt-muted" x-text="job.address"></p>
+                        </button>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <!-- ── LOCATION NOTICE (first run) ── -->
+    <template x-if="showLocationNotice">
+        <div class="fixed inset-0 z-50 flex items-end justify-center">
+            <div class="absolute inset-0 bg-black/30"></div>
+            <div class="relative w-full max-w-md bg-white rounded-t-2xl shadow-lg p-6 space-y-4 text-center">
+                <svg class="w-10 h-10 mx-auto text-accent" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z"/></svg>
+                <p class="text-sm text-txt-secondary leading-relaxed">
+                    Location is captured when you clock in and out — never in the background.
+                    This helps match you to the nearest jobsite.
+                </p>
+                <button @click="dismissLocationNotice()"
+                        class="w-full py-4 bg-txt-primary text-white text-base font-semibold rounded-xl hover:bg-txt-primary/80 transition-colors touch-target">
+                    Got it
+                </button>
+            </div>
+        </div>
+    </template>
+
+</div>
+
+<style>
+    @keyframes slideUp {
+        from { transform: translateY(100%); }
+        to { transform: translateY(0); }
+    }
+    .animate-slide-up { animation: slideUp 0.2s ease-out; }
+</style>
+
+<script src="{{ url_for('static', filename='js/field-queue.js') }}"></script>
+<script>
+function clockScreen() {
+    const CSRF = {{ csrf_token()|tojson }};
+    const userName = {{ current_user.first_name|tojson }};
+
+    return {
+        // UI state: 'idle', 'running', 'forgot'
+        state: 'idle',
+        greeting: '',
+        dateStr: '',
+        timeStr: '',
+
+        // Clock data
+        activeClock: null,
+        elapsedDisplay: '00:00:00',
+        elapsedStartUTC: null,
+        clockOutNotes: '',
+
+        // Forgot
+        forgotData: null,
+        forgotEndTime: '',
+        forgotDescription: '',
+
+        // Job/cost code
+        selectedJobId: null,
+        selectedJobName: 'Loading...',
+        selectedJobAddress: '',
+        selectedCostCodeId: null,
+        selectedCostCodeName: 'None',
+        jobs: [],
+        costCodes: [],
+
+        // Pickers
+        showJobPicker: false,
+        showCostCodePicker: false,
+        showBreakSheet: false,
+        showSwitchPicker: false,
+        showLocationNotice: false,
+
+        // Loading
+        clockingIn: false,
+        clockingOut: false,
+
+        // GPS
+        gpsLat: null,
+        gpsLng: null,
+        gpsReady: false,
+
+        _timerInterval: null,
+        _clockInterval: null,
+
+        async init() {
+            this.updateGreeting();
+            this.updateLocalClock();
+            this._clockInterval = setInterval(() => this.updateLocalClock(), 1000);
+
+            // Fire GPS request (non-blocking)
+            this.requestGPS();
+
+            // Check for location notice
+            if (!localStorage.getItem('clock_location_notice_seen')) {
+                this.showLocationNotice = true;
+            }
+
+            // Fetch state
+            await this.fetchState();
+        },
+
+        updateGreeting() {
+            const now = new Date();
+            const h = now.getHours();
+            if (h < 12) this.greeting = 'Good morning, ' + userName;
+            else if (h < 17) this.greeting = 'Good afternoon, ' + userName;
+            else this.greeting = 'Good evening, ' + userName;
+            this.dateStr = now.toLocaleDateString('en-US', {
+                weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
+            });
+        },
+
+        updateLocalClock() {
+            this.timeStr = new Date().toLocaleTimeString('en-US', {
+                hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
+            });
+            // Update elapsed if running
+            if (this.state === 'running' && this.elapsedStartUTC) {
+                const elapsed = Math.floor((Date.now() - this.elapsedStartUTC) / 1000);
+                const h = Math.floor(elapsed / 3600);
+                const m = Math.floor((elapsed % 3600) / 60);
+                const s = elapsed % 60;
+                this.elapsedDisplay = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+            }
+        },
+
+        requestGPS() {
+            if (!navigator.geolocation) return;
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    this.gpsLat = pos.coords.latitude;
+                    this.gpsLng = pos.coords.longitude;
+                    this.gpsReady = true;
+                },
+                () => { /* GPS failed — that's fine, non-blocking */ },
+                { timeout: 5000, maximumAge: 60000 }
+            );
+        },
+
+        async fetchState() {
+            try {
+                let url = '/api/clock/state';
+                if (this.gpsLat !== null) {
+                    url += `?lat=${this.gpsLat}&lng=${this.gpsLng}`;
+                }
+                const res = await fetch(url);
+                const data = await res.json();
+
+                // Load jobs and cost codes
+                await this.fetchJobs();
+
+                if (data.forgot_prompt) {
+                    this.state = 'forgot';
+                    this.forgotData = data.forgot_prompt;
+                    this.forgotEndTime = data.forgot_prompt.suggested_end_time;
+                    this.activeClock = data.active_clock;
+                    return;
+                }
+
+                if (data.active_clock) {
+                    this.activeClock = data.active_clock;
+                    this.elapsedStartUTC = new Date(data.active_clock.start_time).getTime();
+                    this.state = 'running';
+
+                    // Restore from localStorage if offline
+                    const localClock = JSON.parse(localStorage.getItem('active_clock') || 'null');
+                    if (localClock && localClock.start_time !== data.active_clock.start_time) {
+                        // Server wins — update local
+                        localStorage.setItem('active_clock', JSON.stringify(data.active_clock));
+                    }
+                    return;
+                }
+
+                // Idle — check localStorage for offline clock
+                const localClock = JSON.parse(localStorage.getItem('active_clock') || 'null');
+                if (localClock) {
+                    // We have a local clock but server doesn't — offline clock-in pending sync
+                    this.activeClock = localClock;
+                    this.elapsedStartUTC = new Date(localClock.start_time).getTime();
+                    this.state = 'running';
+                    return;
+                }
+
+                this.state = 'idle';
+
+                // Pre-fill job from GPS suggestions
+                if (data.suggestions && data.suggestions.length > 0) {
+                    const gpsMatch = data.suggestions.find(s => s.within_radius);
+                    if (gpsMatch) {
+                        this.selectJob(gpsMatch.client_id, gpsMatch.name, gpsMatch.address, gpsMatch.last_cost_code);
+                    } else if (data.suggestions[0].last_punch_at) {
+                        const recent = data.suggestions[0];
+                        this.selectJob(recent.client_id, recent.name, recent.address, recent.last_cost_code);
+                    }
+                }
+
+                // Pre-fill cost code from last punch
+                if (!this.selectedCostCodeId && data.last_cost_code) {
+                    this.selectedCostCodeId = data.last_cost_code.id;
+                    this.selectedCostCodeName = data.last_cost_code.name;
+                }
+            } catch(e) {
+                // Offline — check localStorage
+                const localClock = JSON.parse(localStorage.getItem('active_clock') || 'null');
+                if (localClock) {
+                    this.activeClock = localClock;
+                    this.elapsedStartUTC = new Date(localClock.start_time).getTime();
+                    this.state = 'running';
+                } else {
+                    this.state = 'idle';
+                    this.selectedJobName = 'No job selected';
+                }
+            }
+        },
+
+        async fetchJobs() {
+            try {
+                let url = '/api/clock/jobs';
+                if (this.gpsLat !== null) {
+                    url += `?lat=${this.gpsLat}&lng=${this.gpsLng}`;
+                }
+                const res = await fetch(url);
+                const data = await res.json();
+                this.jobs = data.jobs || [];
+                this.costCodes = data.cost_codes || [];
+            } catch(e) {
+                // Offline — use cached if any
+            }
+        },
+
+        selectJob(id, name, address, lastCostCode) {
+            this.selectedJobId = id;
+            this.selectedJobName = name || 'Daily Activities';
+            this.selectedJobAddress = address || '';
+            if (lastCostCode) {
+                this.selectedCostCodeId = lastCostCode.id;
+                this.selectedCostCodeName = lastCostCode.name;
+            }
+        },
+
+        selectCostCode(id, name) {
+            this.selectedCostCodeId = id;
+            this.selectedCostCodeName = name || 'None';
+        },
+
+        dismissLocationNotice() {
+            localStorage.setItem('clock_location_notice_seen', '1');
+            this.showLocationNotice = false;
+        },
+
+        async clockIn() {
+            if (this.clockingIn) return;
+
+            // Show location notice on first use
+            if (!localStorage.getItem('clock_location_notice_seen')) {
+                this.showLocationNotice = true;
+                return;
+            }
+
+            this.clockingIn = true;
+            const payload = {
+                client_id: this.selectedJobId,
+                cost_code_id: this.selectedCostCodeId,
+                latitude: this.gpsLat,
+                longitude: this.gpsLng,
+                client_uuid: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+            };
+
+            try {
+                const res = await fetch('/api/clock/in', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json();
+
+                // Store in localStorage for offline timer
+                const now = new Date().toISOString();
+                const localClock = {
+                    start_time: now,
+                    start_time_display: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+                    client_id: this.selectedJobId,
+                    client_name: data.clock?.client_name || this.selectedJobName,
+                    cost_code_id: this.selectedCostCodeId,
+                    cost_code_name: data.clock?.cost_code || this.selectedCostCodeName,
+                    break_15_taken: false,
+                    lunch_taken: false,
+                };
+                localStorage.setItem('active_clock', JSON.stringify(localClock));
+
+                this.activeClock = localClock;
+                this.elapsedStartUTC = Date.now();
+                this.state = 'running';
+            } catch(e) {
+                // Offline — queue and start local timer
+                if (typeof FieldQueue !== 'undefined') {
+                    await FieldQueue.enqueue(FieldQueue.ENTRY_TYPE.CLOCK_IN, payload);
+                }
+                const now = new Date().toISOString();
+                const localClock = {
+                    start_time: now,
+                    start_time_display: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+                    client_id: this.selectedJobId,
+                    client_name: this.selectedJobName,
+                    cost_code_id: this.selectedCostCodeId,
+                    cost_code_name: this.selectedCostCodeName,
+                    break_15_taken: false,
+                    lunch_taken: false,
+                };
+                localStorage.setItem('active_clock', JSON.stringify(localClock));
+                this.activeClock = localClock;
+                this.elapsedStartUTC = Date.now();
+                this.state = 'running';
+            } finally {
+                this.clockingIn = false;
+            }
+        },
+
+        async clockOut() {
+            if (this.clockingOut) return;
+            this.clockingOut = true;
+
+            // Refresh GPS for clock-out
+            this.requestGPS();
+
+            const payload = {
+                latitude: this.gpsLat,
+                longitude: this.gpsLng,
+                work_description: this.clockOutNotes,
+                client_uuid: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+            };
+
+            try {
+                const res = await fetch('/api/clock/out', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json();
+                localStorage.removeItem('active_clock');
+                this.state = 'idle';
+                this.activeClock = null;
+                this.clockOutNotes = '';
+                // Refresh state
+                await this.fetchState();
+            } catch(e) {
+                // Offline — queue
+                if (typeof FieldQueue !== 'undefined') {
+                    payload.start_time = this.activeClock?.start_time;
+                    payload.end_time = new Date().toISOString();
+                    payload.client_id = this.activeClock?.client_id;
+                    payload.cost_code_id = this.activeClock?.cost_code_id;
+                    payload.clock_in_lat = this.activeClock?.clock_in_lat;
+                    payload.clock_in_lng = this.activeClock?.clock_in_lng;
+                    await FieldQueue.enqueue(FieldQueue.ENTRY_TYPE.CLOCK_OUT, payload);
+                }
+                localStorage.removeItem('active_clock');
+                this.state = 'idle';
+                this.activeClock = null;
+                this.clockOutNotes = '';
+            } finally {
+                this.clockingOut = false;
+            }
+        },
+
+        async takeBreak(breakType) {
+            try {
+                const res = await fetch('/api/clock/break', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+                    body: JSON.stringify({ break_type: breakType }),
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    this.activeClock.break_15_taken = data.break_15_taken;
+                    this.activeClock.lunch_taken = data.lunch_taken;
+                    // Update localStorage
+                    const local = JSON.parse(localStorage.getItem('active_clock') || '{}');
+                    local.break_15_taken = data.break_15_taken;
+                    local.lunch_taken = data.lunch_taken;
+                    localStorage.setItem('active_clock', JSON.stringify(local));
+                }
+            } catch(e) {
+                // Offline — update local state
+                if (breakType === '15min') this.activeClock.break_15_taken = true;
+                if (breakType === 'lunch') this.activeClock.lunch_taken = true;
+            }
+            this.showBreakSheet = false;
+        },
+
+        startSwitch() {
+            this.showSwitchPicker = true;
+        },
+
+        async doSwitch(newClientId, lastCostCode) {
+            this.showSwitchPicker = false;
+            try {
+                const res = await fetch('/api/clock/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+                    body: JSON.stringify({
+                        new_client_id: newClientId,
+                        new_cost_code_id: lastCostCode?.id || null,
+                        latitude: this.gpsLat,
+                        longitude: this.gpsLng,
+                        client_uuid: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+                    }),
+                });
+                const data = await res.json();
+                if (data.status === 'switched') {
+                    const localClock = {
+                        start_time: data.new_clock.start_time,
+                        start_time_display: new Date(data.new_clock.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+                        client_name: data.new_clock.client_name,
+                        cost_code_name: data.new_clock.cost_code,
+                        break_15_taken: false,
+                        lunch_taken: false,
+                    };
+                    localStorage.setItem('active_clock', JSON.stringify(localClock));
+                    this.activeClock = localClock;
+                    this.elapsedStartUTC = new Date(data.new_clock.start_time).getTime();
+                }
+            } catch(e) {
+                // Offline switch not supported — show error
+                alert('Job switch requires connectivity. Please try again when online.');
+            }
+        },
+
+        async resolveForget(discard) {
+            const payload = discard
+                ? { discard: true }
+                : {
+                    actual_end_time: this.forgotEndTime,
+                    work_description: this.forgotDescription,
+                    client_uuid: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+                };
+
+            try {
+                const res = await fetch('/api/clock/resolve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+                    body: JSON.stringify(payload),
+                });
+                await res.json();
+                localStorage.removeItem('active_clock');
+                this.state = 'idle';
+                this.activeClock = null;
+                await this.fetchState();
+            } catch(e) {
+                alert('Failed to resolve. Please try again.');
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

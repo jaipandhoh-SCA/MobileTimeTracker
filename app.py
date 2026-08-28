@@ -58,6 +58,7 @@ def load_user(user_id):
 
 with app.app_context():
     import models
+    import auth_models  # noqa: F401 — register authorization models with SQLAlchemy
     db.create_all()
     logging.info("Database tables created")
 
@@ -106,6 +107,10 @@ with app.app_context():
         logging.info("Added approved_at column to time_entries")
 
     db.session.commit()
+
+    # Register external user firewall
+    from auth_guards import register_external_firewall
+    register_external_firewall(app)
 
     # Register demo blueprint
     from demo import demo_bp

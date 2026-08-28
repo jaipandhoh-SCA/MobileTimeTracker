@@ -5,7 +5,7 @@
 
 {% block content %}
 {{ page_header("Daily Logs", subtitle="Field reports",
-               cta_text="+ New Log", cta_href=url_for('create_daily_log')) }}
+               cta_text="+ New Log", cta_href=url_for('field_daily_log')) }}
 
 {# ── Filters ─────────────────────────────────────────────────── #}
 {% call filter_bar() %}
@@ -37,7 +37,7 @@
 {% if logs %}
 <div class="space-y-3">
     {% for log in logs %}
-    <a href="{{ url_for('edit_daily_log', log_id=log.id) }}"
+    <a href="{{ url_for('field_edit_daily_log', log_id=log.id) }}"
        class="block bg-white shadow-card rounded-2xl p-4 hover:shadow-md transition-shadow duration-150">
         <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
@@ -87,15 +87,7 @@
 
 {% else %}
 {{ empty_state("No daily logs yet.", icon="folder",
-               cta_text="Create your first log", cta_href=url_for('create_daily_log')) }}
+               cta_text="Create your first log", cta_href=url_for('field_daily_log')) }}
 {% endif %}
 
-{# ── Offline Queue Banner ────────────────────────────────────── #}
-<div x-data="{ queueCount: 0 }" x-init="queueCount = JSON.parse(localStorage.getItem('dailylog_queue') || '[]').length"
-     x-show="queueCount > 0" x-cloak class="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 sm:w-80 z-50">
-    <div class="bg-amber-50 text-amber-700 rounded-2xl shadow-card p-4 flex items-center gap-3">
-        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-        <span class="text-sm font-medium"><span x-text="queueCount"></span> log(s) queued offline</span>
-    </div>
-</div>
 {% endblock %}

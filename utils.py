@@ -1,5 +1,6 @@
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from decimal import Decimal, ROUND_HALF_UP
+import math
 import pytz
 from calendar import monthrange
 
@@ -33,11 +34,20 @@ def round_to_quarter_hour(hours):
     return (decimal_hours / Decimal('0.25')).quantize(Decimal('1'), rounding=ROUND_HALF_UP) * Decimal('0.25')
 
 
+def ensure_utc(dt):
+    """Ensure a datetime is timezone-aware UTC (assume UTC if naive)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def calculate_duration(start_time, end_time):
     """Calculate duration in hours between two datetime objects."""
     if start_time is None or end_time is None:
         return None
-    delta = end_time - start_time
+    delta = ensure_utc(end_time) - ensure_utc(start_time)
     hours = Decimal(str(delta.total_seconds() / 3600))
     return round_to_quarter_hour(hours)
 
@@ -129,3 +139,13 @@ def get_month_to_date_dates(reference_date=None):
     period_start = date(reference_date.year, reference_date.month, 1)
     period_end = reference_date
     return period_start, period_end, "Month-to-Date"
+
+
+def haversine(lat1, lon1, lat2, lon2):
+    """Distance in meters between two lat/lng points."""
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))

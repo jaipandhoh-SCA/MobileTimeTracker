@@ -1,0 +1,1357 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "Edit" if log else "New" }} Daily Log{% endblock %}
+
+{% block content %}
+<div x-data="dailyLogWizard()" x-init="init()" class="max-w-lg mx-auto pb-32">
+
+    <form @submit.prevent="saveLog()" id="logForm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if not log %}
+        <input type="hidden" name="client_uuid" :value="clientUuid">
+        {% endif %}
+
+        {# ── Progress dots ─────────────────────────────────────────── #}
+        <div class="flex items-center justify-center gap-2 py-4 mb-2">
+            <template x-for="i in 7" :key="i">
+                <button type="button"
+                        @click="maxVisited >= (i-1) && goToStep(i-1)"
+                        :class="{
+                            'w-3 h-3 bg-txt-primary': step === (i-1),
+                            'w-2.5 h-2.5 bg-pos': step !== (i-1) && (i-1) < step,
+                            'w-2.5 h-2.5 bg-gray-200': step !== (i-1) && (i-1) > step && maxVisited >= (i-1),
+                            'w-2.5 h-2.5 bg-gray-200 cursor-default': maxVisited < (i-1)
+                        }"
+                        class="rounded-full transition-all duration-200"
+                        :disabled="maxVisited < (i-1)"
+                        :aria-label="'Step ' + i">
+                </button>
+            </template>
+        </div>
+
+        {# ═══════════════════════════════════════════════════════════
+           STEP 0: Which job?
+           ═══════════════════════════════════════════════════════════ #}
+        <div x-show="step === 0" x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0">
+
+            <h2 class="text-xl font-bold text-txt-primary mb-1">Which job?</h2>
+            <p class="text-sm text-txt-secondary mb-5">Select the site you're logging for today.</p>
+
+            {% if log %}
+                <input type="hidden" name="client_id" value="{{ log.client_id }}">
+                <div class="bg-txt-primary text-white px-5 py-4 rounded-2xl text-base font-semibold flex items-center justify-between">
+                    {{ client.name }}
+                    <svg class="w-5 h-5 opacity-60" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/>
+                    </svg>
+                </div>
+            {% elif clients|length == 1 %}
+                <input type="hidden" name="client_id" value="{{ clients[0].id }}">
+                <div class="bg-txt-primary text-white px-5 py-4 rounded-2xl text-base font-semibold flex items-center justify-between">
+                    {{ clients[0].name }}
+                    <svg class="w-5 h-5 opacity-60" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/>
+                    </svg>
+                </div>
+            {% else %}
+                {# One-tap confirm when pre-filled from today's clock #}
+                {% if today_prefill_client %}
+                <div x-show="!showAllJobs" x-transition>
+                    <div class="bg-white border-2 border-pos/30 rounded-2xl p-5 mb-3">
+                        <div class="text-base font-bold text-txt-primary">{{ today_prefill_client.name }}</div>
+                        {% if today_prefill_client.address %}
+                        <div class="text-sm text-txt-secondary mt-0.5">{{ today_prefill_client.address }}</div>
+                        {% endif %}
+                        <button type="button"
+                                @click="selectJob({{ today_prefill_client.id }}, {{ today_prefill_client.name | tojson }}); next()"
+                                class="w-full mt-4 flex items-center justify-center gap-2 px-4 py-4 rounded-xl
+                                       bg-pos text-white text-base font-semibold min-h-[52px] select-none
+                                       active:bg-pos/80 transition-colors">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/>
+                            </svg>
+                            Confirm &amp; Continue
+                        </button>
+                    </div>
+                    <button type="button" @click="showAllJobs = true"
+                            class="text-sm text-txt-secondary hover:text-txt-primary font-semibold">
+                        Not this job? Change
+                    </button>
+                </div>
+                {% endif %}
+
+                {# Full job chip list (shown when no pre-fill or "Change" tapped) #}
+                <div x-show="{{ 'showAllJobs' if today_prefill_client else 'true' }}" x-transition>
+                    {# Today's punched jobs shown first #}
+                    {% if today_client_ids %}
+                    <p class="text-xs font-semibold text-txt-secondary uppercase tracking-wide mb-2">Today's jobs</p>
+                    {% endif %}
+                    <div class="flex flex-wrap gap-2 mb-3" role="radiogroup" aria-label="Select job">
+                        {% for c in clients %}
+                        <button type="button"
+                                @click="selectJob({{ c.id }}, '{{ c.name|e }}')"
+                                :class="selectedJobId == {{ c.id }}
+                                    ? 'bg-txt-primary text-white border-txt-primary ring-2 ring-txt-primary/20'
+                                    : 'bg-white text-txt-primary border-hairline hover:border-txt-secondary'"
+                                class="px-5 py-3.5 rounded-2xl text-sm font-semibold border-2 transition-all min-h-[48px] select-none
+                                       {{ 'order-first' if c.id in today_client_ids else '' }}"
+                                :aria-pressed="selectedJobId == {{ c.id }}"
+                                role="radio">
+                            {{ c.name }}
+                            {% if c.id in today_client_ids %}
+                            <span class="ml-1 text-xs opacity-70">&#x2022; clocked</span>
+                            {% endif %}
+                        </button>
+                        {% endfor %}
+                    </div>
+                </div>
+                <input type="hidden" name="client_id" :value="selectedJobId">
+            {% endif %}
+
+            {# Date input #}
+            <div class="mt-5">
+                <label for="log_date" class="block text-sm font-bold text-txt-primary mb-2">Date</label>
+                <input type="date" name="log_date" id="log_date"
+                       value="{{ log.log_date.isoformat() if log else today.isoformat() }}"
+                       @change="fetchWeather()"
+                       class="w-full px-4 py-3 border-2 border-hairline rounded-xl text-sm font-semibold text-txt-primary
+                              focus:outline-none focus:border-txt-primary min-h-[48px]">
+            </div>
+        </div>
+
+        {# ═══════════════════════════════════════════════════════════
+           STEP 1: Who was on site?
+           ═══════════════════════════════════════════════════════════ #}
+        <div x-show="step === 1" x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0">
+
+            <h2 class="text-xl font-bold text-txt-primary mb-1">Who was on site?</h2>
+            <p class="text-sm text-txt-secondary mb-5">
+                <span x-text="activeCrew.length"></span> on site
+            </p>
+
+            {# Same as yesterday button #}
+            <button type="button" @click="sameAsYesterday()"
+                    x-show="lastCrewNames.length > 0"
+                    class="w-full flex items-center justify-center gap-2 px-4 py-4 rounded-2xl text-sm font-bold
+                           bg-pos/10 text-pos border-2 border-pos/30 mb-4 min-h-[52px] select-none
+                           active:bg-pos/20 transition-colors">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/>
+                </svg>
+                Same as yesterday<span x-show="lastCrewNames.length" class="font-normal opacity-70" x-text="'(' + lastCrewNames.length + ' people)'"></span>
+            </button>
+
+            {# Crew chips #}
+            <div class="flex flex-wrap gap-2" role="group" aria-label="Crew members on site">
+                <template x-for="(member, idx) in crewMembers" :key="idx">
+                    <button type="button"
+                            @click="toggleCrew(idx)"
+                            :class="member.active
+                                ? 'bg-pos/10 text-pos border-pos/30'
+                                : 'bg-white text-txt-muted border-hairline line-through'"
+                            class="px-4 py-3 rounded-xl text-sm font-semibold border-2 transition-colors min-h-[48px] select-none"
+                            :aria-pressed="member.active"
+                            x-text="member.name">
+                    </button>
+                </template>
+                {# Add crew #}
+                <button type="button" @click="showAddCrew = true"
+                        class="px-4 py-3 rounded-xl text-sm font-semibold border-2 border-dashed border-hairline
+                               text-txt-muted hover:border-txt-secondary hover:text-txt-secondary
+                               transition-colors min-h-[48px] select-none flex items-center gap-1"
+                        aria-label="Add crew member">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
+                    </svg>
+                    Add
+                </button>
+            </div>
+            {# Inline add crew #}
+            <div x-show="showAddCrew" x-cloak x-transition class="mt-3 flex gap-2">
+                <input type="text" x-ref="newCrewName" x-model="newCrewName"
+                       placeholder="Name" @keydown.enter.prevent="addCrew()"
+                       class="flex-1 px-4 py-3 border-2 border-hairline rounded-xl text-sm focus:outline-none focus:border-txt-primary min-h-[48px]">
+                <button type="button" @click="addCrew()"
+                        class="px-4 py-3 rounded-xl text-sm font-semibold bg-txt-primary text-white min-h-[48px]">
+                    Add
+                </button>
+                <button type="button" @click="showAddCrew = false; newCrewName = ''"
+                        class="px-3 py-3 rounded-xl text-sm text-txt-muted hover:text-txt-primary min-h-[48px]"
+                        aria-label="Cancel">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <input type="hidden" name="crew_names" :value="crewNamesString">
+            <input type="hidden" name="crew_count" :value="activeCrew.length">
+        </div>
+
+        {# ═══════════════════════════════════════════════════════════
+           STEP 2: Weather / conditions
+           ═══════════════════════════════════════════════════════════ #}
+        <div x-show="step === 2" x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0">
+
+            <h2 class="text-xl font-bold text-txt-primary mb-1">Weather</h2>
+            <p class="text-sm text-txt-secondary mb-5">Auto-filled — adjust if needed.</p>
+
+            {# Loading state #}
+            <div x-show="fetchingWeather" class="flex items-center justify-center py-8">
+                <svg class="w-6 h-6 animate-spin text-txt-secondary" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                </svg>
+                <span class="ml-2 text-sm text-txt-secondary">Fetching weather...</span>
+            </div>
+
+            {# Large temp display #}
+            <div x-show="weatherTemp && !fetchingWeather" x-cloak class="text-center mb-5">
+                <span class="text-5xl font-bold text-txt-primary" x-text="weatherTemp + '&#176;F'"></span>
+                <div class="text-base text-txt-secondary mt-1" x-text="weatherCondition"></div>
+            </div>
+
+            {# Refresh #}
+            <div class="flex justify-end mb-3">
+                <button type="button" @click="clearWeatherAutoAdvance(); fetchWeather()" x-show="online && !fetchingWeather"
+                        class="text-xs text-txt-secondary hover:text-txt-primary font-semibold flex items-center gap-1 px-2 py-1">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+
+            {# Condition chips (4 primary) #}
+            <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Weather condition">
+                <template x-for="w in ['Clear', 'Cloudy', 'Rain', 'Wind']" :key="w">
+                    <button type="button"
+                            @click="clearWeatherAutoAdvance(); weatherCondition = w"
+                            :class="weatherCondition === w
+                                ? 'bg-txt-primary text-white border-txt-primary'
+                                : 'bg-white text-txt-primary border-hairline'"
+                            class="px-4 py-3 rounded-xl text-sm font-semibold border-2 transition-colors min-h-[48px] select-none flex-1"
+                            :aria-pressed="weatherCondition === w"
+                            role="radio"
+                            x-text="w">
+                    </button>
+                </template>
+            </div>
+
+            {# Delay-causing weather chips #}
+            <p class="text-xs font-semibold text-txt-secondary uppercase tracking-wide mt-4 mb-2">Impact</p>
+            <div class="flex flex-wrap gap-2">
+                <template x-for="tag in ['Heat delay', 'Rain delay', 'Wind delay']" :key="tag">
+                    <button type="button"
+                            @click="clearWeatherAutoAdvance(); toggleWeatherTag(tag)"
+                            :class="weatherTags.includes(tag)
+                                ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                : 'bg-white text-txt-muted border-hairline'"
+                            class="px-3 py-2.5 rounded-xl text-xs font-semibold border-2 transition-colors min-h-[44px] select-none"
+                            x-text="tag">
+                    </button>
+                </template>
+            </div>
+
+            <input type="hidden" name="weather_condition" :value="weatherCondition">
+            <input type="hidden" name="weather_temp_f" :value="weatherTemp">
+            <input type="hidden" name="weather_notes" :value="weatherNotesComputed">
+        </div>
+
+        {# ═══════════════════════════════════════════════════════════
+           STEP 3: What got done?
+           ═══════════════════════════════════════════════════════════ #}
+        <div x-show="step === 3" x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0">
+
+            <h2 class="text-xl font-bold text-txt-primary mb-1">What got done?</h2>
+            <p class="text-sm text-txt-secondary mb-4">Tap phases, speak, or type.</p>
+
+            {# Compact hours stepper — inline at top #}
+            <div class="flex items-center gap-2 mb-5 bg-pill rounded-xl px-3 py-2">
+                <span class="text-xs font-semibold text-txt-secondary uppercase tracking-wide">Hours</span>
+                <button type="button" @click="adjustHours(-0.25)"
+                        class="w-10 h-10 rounded-lg bg-white text-txt-primary text-lg font-bold
+                               flex items-center justify-center active:bg-gray-100 select-none
+                               border border-hairline"
+                        aria-label="Decrease hours by quarter">
+                    &minus;
+                </button>
+                <input type="number" name="hours_regular" x-model="hours"
+                       step="0.25" min="0" max="24"
+                       class="w-16 text-center text-xl font-bold text-txt-primary bg-transparent
+                              border-none focus:outline-none focus:ring-0"
+                       aria-label="Hours worked">
+                <button type="button" @click="adjustHours(0.25)"
+                        class="w-10 h-10 rounded-lg bg-white text-txt-primary text-lg font-bold
+                               flex items-center justify-center active:bg-gray-100 select-none
+                               border border-hairline"
+                        aria-label="Increase hours by quarter">
+                    +
+                </button>
+            </div>
+
+            {# Phase chips #}
+            <div x-show="currentPhaseChips.length > 0" class="mb-4">
+                <label class="block text-xs font-semibold text-txt-secondary uppercase tracking-wide mb-2">Tap what you worked on</label>
+                <div class="flex flex-wrap gap-2">
+                    <template x-for="chip in currentPhaseChips" :key="chip.id">
+                        <button type="button"
+                                @click="togglePhaseChip(chip)"
+                                :class="selectedPhases.includes(chip.name)
+                                    ? 'bg-txt-primary text-white border-txt-primary'
+                                    : 'bg-white text-txt-primary border-hairline'"
+                                class="px-3 py-2.5 rounded-xl text-xs font-semibold border-2 transition-colors min-h-[44px] select-none"
+                                x-text="chip.name">
+                        </button>
+                    </template>
+                </div>
+            </div>
+
+            {# Voice input — large mic button #}
+            <div x-show="speechSupported" class="flex justify-center mb-2">
+                <button type="button" @click="toggleVoice('work')"
+                        :class="recording === 'work'
+                            ? 'bg-neg text-white shadow-lg shadow-neg/30 animate-pulse'
+                            : 'bg-white text-txt-primary border-2 border-hairline hover:border-txt-secondary shadow-sm'"
+                        class="w-20 h-20 rounded-full flex items-center justify-center transition-all select-none"
+                        :aria-label="recording === 'work' ? 'Stop recording' : 'Start voice input'">
+                    <svg class="w-8 h-8" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"/>
+                    </svg>
+                </button>
+            </div>
+            <p x-show="speechSupported && recording !== 'work'" class="text-center text-xs text-txt-muted mb-4">Tap mic to speak</p>
+            <p x-show="recording === 'work'" class="text-center text-xs text-neg font-semibold mb-4 animate-pulse">Listening...</p>
+
+            {# Text area #}
+            <label class="block text-xs font-semibold text-txt-secondary uppercase tracking-wide mb-2">Or type it out</label>
+            <textarea name="work_completed" id="work_completed" rows="4"
+                      x-model="workCompleted"
+                      placeholder="What was accomplished today..."
+                      class="w-full px-4 py-3 border-2 border-hairline rounded-xl text-sm text-txt-primary
+                             placeholder-txt-muted focus:outline-none focus:border-txt-primary resize-none"></textarea>
+        </div>
+
+        {# ═══════════════════════════════════════════════════════════
+           STEP 4: Anything blocking?
+           ═══════════════════════════════════════════════════════════ #}
+        <div x-show="step === 4" x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0">
+
+            <h2 class="text-xl font-bold text-txt-primary mb-1">Anything blocking?</h2>
+            <p class="text-sm text-txt-secondary mb-5">Tap the issue or "Nothing" for a clean day.</p>
+
+            <div class="flex flex-wrap gap-2">
+                <template x-for="opt in blockerOptions" :key="opt">
+                    <button type="button"
+                            @click="selectBlocker(opt)"
+                            :class="{
+                                'bg-pos/10 text-pos border-pos/30': opt === 'Nothing' && selectedBlocker === 'Nothing',
+                                'bg-amber-100 text-amber-800 border-amber-300': selectedBlocker === opt && opt !== 'Nothing',
+                                'bg-white text-txt-primary border-hairline': selectedBlocker !== opt
+                            }"
+                            class="px-4 py-3 rounded-xl text-sm font-semibold border-2 transition-colors min-h-[48px] select-none"
+                            x-text="opt">
+                    </button>
+                </template>
+            </div>
+
+            {# Details textarea — shown when a real blocker is selected #}
+            <div x-show="selectedBlocker && selectedBlocker !== 'Nothing'" x-cloak x-transition class="mt-4 space-y-3">
+                {# Voice input for delays #}
+                <div x-show="speechSupported">
+                    <button type="button" @click="toggleVoice('delays')"
+                            :class="recording === 'delays'
+                                ? 'bg-neg text-white border-neg animate-pulse'
+                                : 'bg-white text-txt-primary border-hairline'"
+                            class="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold
+                                   border-2 transition-colors min-h-[48px] select-none">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"/>
+                        </svg>
+                        <span x-text="recording === 'delays' ? 'Tap to stop' : 'Tap to speak'"></span>
+                    </button>
+                </div>
+
+                <textarea name="delays" rows="3" x-model="delays"
+                          placeholder="Add details..."
+                          class="w-full px-4 py-3 border-2 border-hairline rounded-xl text-sm text-txt-primary
+                                 placeholder-txt-muted focus:outline-none focus:border-txt-primary resize-none"></textarea>
+
+                {# Create follow-up toggle #}
+                <label class="flex items-center gap-3 px-4 py-3 rounded-xl border-2 border-hairline bg-white cursor-pointer min-h-[48px]">
+                    <input type="checkbox" x-model="createFollowup" class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary">
+                    <span class="text-sm font-semibold text-txt-primary">Create follow-up issue</span>
+                    <span x-show="selectedBlocker && selectedBlocker !== 'Nothing' && selectedJobName"
+                          class="block text-xs text-txt-secondary mt-0.5"
+                          x-text="selectedBlocker + ' — ' + selectedJobName"></span>
+                </label>
+                <input type="hidden" name="create_followup" :value="createFollowup ? '1' : '0'">
+            </div>
+        </div>
+
+        {# ═══════════════════════════════════════════════════════════
+           STEP 5: Photos
+           ═══════════════════════════════════════════════════════════ #}
+        <div x-show="step === 5" x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0">
+
+            <h2 class="text-xl font-bold text-txt-primary mb-1">Photos</h2>
+            <p class="text-sm text-txt-secondary mb-5">
+                <span x-text="photos.length + {{ (log.photos|length) if log and log.photos else 0 }}"></span> photo<span x-show="photos.length + {{ (log.photos|length) if log and log.photos else 0 }} !== 1">s</span>
+            </p>
+
+            {# Existing photos (edit mode) #}
+            {% if log and log.photos %}
+            <div class="grid grid-cols-3 gap-2 mb-3">
+                {% for photo in log.photos %}
+                <div class="relative aspect-square rounded-xl overflow-hidden">
+                    <img src="{{ url_for('view_daily_log_photo', photo_id=photo.id) }}"
+                         alt="{{ photo.caption or 'Job photo' }}"
+                         class="w-full h-full object-cover" loading="lazy">
+                    <form method="POST" action="{{ url_for('delete_daily_log_photo', photo_id=photo.id) }}"
+                          class="absolute top-1 right-1">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit"
+                                class="bg-black/60 text-white rounded-full w-8 h-8 flex items-center justify-center"
+                                onclick="return confirm('Delete this photo?')" aria-label="Delete photo">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </form>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {# New photo previews #}
+            <div x-show="photos.length > 0" x-cloak class="grid grid-cols-3 gap-2 mb-3">
+                <template x-for="(p, idx) in photos" :key="idx">
+                    <div class="relative aspect-square rounded-xl overflow-hidden">
+                        <img :src="p.preview" class="w-full h-full object-cover" alt="New photo">
+                        <button type="button" @click="removePhoto(idx)"
+                                class="absolute top-1 right-1 bg-black/60 text-white rounded-full w-8 h-8
+                                       flex items-center justify-center"
+                                aria-label="Remove photo">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                </template>
+            </div>
+
+            {# Camera / file buttons #}
+            <button type="button" @click="startCamera()"
+                    class="w-full flex items-center justify-center gap-2 px-4 py-4 rounded-xl
+                           border-2 border-hairline bg-white text-txt-primary text-sm font-semibold
+                           hover:border-txt-secondary transition-colors min-h-[56px] select-none">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z"/>
+                </svg>
+                Take photo
+            </button>
+            <input type="file" accept="image/*" capture="environment"
+                   x-ref="cameraInput" @change="handlePhotos($event)" class="hidden"
+                   aria-label="Take photo with camera">
+            <input type="file" accept="image/*" multiple
+                   x-ref="galleryInput" @change="handlePhotos($event)" class="hidden"
+                   aria-label="Choose photos from gallery">
+            <button type="button" @click="$refs.galleryInput.click()"
+                    class="block mx-auto mt-2 text-sm text-txt-secondary hover:text-txt-primary font-semibold">
+                Or choose from gallery
+            </button>
+
+            {# Rapid-fire stop button #}
+            <button type="button" x-show="rapidPhotoMode" @click="rapidPhotoMode = false"
+                    class="w-full mt-3 px-4 py-3 rounded-xl bg-pill text-txt-primary text-sm font-semibold min-h-[48px]
+                           border border-hairline">
+                <span x-text="photos.length ? 'Done (' + photos.length + ' photo' + (photos.length !== 1 ? 's' : '') + ')' : 'Done taking photos'"></span>
+            </button>
+        </div>
+
+        {# ═══════════════════════════════════════════════════════════
+           STEP 6: Summary
+           ═══════════════════════════════════════════════════════════ #}
+        <div x-show="step === 6" x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0">
+
+            <h2 class="text-xl font-bold text-txt-primary mb-4">Review &amp; Save</h2>
+
+            <div class="space-y-3">
+                {# Job #}
+                <button type="button" @click="goToStep(0)"
+                        class="w-full text-left px-4 py-3 rounded-xl border border-hairline bg-white flex items-center justify-between min-h-[48px]">
+                    <div>
+                        <div class="text-xs font-semibold text-txt-secondary uppercase tracking-wide">Job</div>
+                        <div class="text-sm font-bold text-txt-primary" x-text="selectedJobName || 'Not selected'"></div>
+                    </div>
+                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/>
+                    </svg>
+                </button>
+
+                {# Crew #}
+                <button type="button" @click="goToStep(1)"
+                        class="w-full text-left px-4 py-3 rounded-xl border border-hairline bg-white flex items-center justify-between min-h-[48px]">
+                    <div>
+                        <div class="text-xs font-semibold text-txt-secondary uppercase tracking-wide">Crew</div>
+                        <div class="text-sm font-bold text-txt-primary" x-text="crewNamesString || 'None'"></div>
+                        <div class="text-xs text-txt-secondary" x-text="activeCrew.length + ' on site'"></div>
+                    </div>
+                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/>
+                    </svg>
+                </button>
+
+                {# Weather #}
+                <button type="button" @click="goToStep(2)"
+                        class="w-full text-left px-4 py-3 rounded-xl border border-hairline bg-white flex items-center justify-between min-h-[48px]">
+                    <div>
+                        <div class="text-xs font-semibold text-txt-secondary uppercase tracking-wide">Weather</div>
+                        <div class="text-sm font-bold text-txt-primary">
+                            <span x-text="weatherTemp ? weatherTemp + '&#176;F' : ''"></span>
+                            <span x-text="weatherCondition" class="text-txt-secondary font-normal"></span>
+                        </div>
+                    </div>
+                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/>
+                    </svg>
+                </button>
+
+                {# Work #}
+                <button type="button" @click="goToStep(3)"
+                        class="w-full text-left px-4 py-3 rounded-xl border border-hairline bg-white flex items-center justify-between min-h-[48px]">
+                    <div class="flex-1 min-w-0">
+                        <div class="text-xs font-semibold text-txt-secondary uppercase tracking-wide">Work</div>
+                        <div class="text-sm font-bold text-txt-primary truncate" x-text="workCompleted || 'Not entered'"></div>
+                        <div class="text-xs text-txt-secondary" x-text="hours + ' hours'"></div>
+                    </div>
+                    <svg class="w-4 h-4 text-txt-muted flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/>
+                    </svg>
+                </button>
+
+                {# Blockers #}
+                <button type="button" @click="goToStep(4)"
+                        class="w-full text-left px-4 py-3 rounded-xl border border-hairline bg-white flex items-center justify-between min-h-[48px]"
+                        :class="selectedBlocker && selectedBlocker !== 'Nothing' ? 'border-amber-200 bg-amber-50' : ''">
+                    <div>
+                        <div class="text-xs font-semibold text-txt-secondary uppercase tracking-wide">Blockers</div>
+                        <div class="text-sm font-bold"
+                             :class="selectedBlocker === 'Nothing' ? 'text-pos' : (selectedBlocker ? 'text-amber-800' : 'text-txt-primary')"
+                             x-text="selectedBlocker || 'Not set'"></div>
+                    </div>
+                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/>
+                    </svg>
+                </button>
+
+                {# Photos #}
+                <button type="button" @click="goToStep(5)"
+                        class="w-full text-left px-4 py-3 rounded-xl border border-hairline bg-white flex items-center justify-between min-h-[48px]">
+                    <div>
+                        <div class="text-xs font-semibold text-txt-secondary uppercase tracking-wide">Photos</div>
+                        <div class="text-sm font-bold text-txt-primary"
+                             x-text="(photos.length + {{ (log.photos|length) if log and log.photos else 0 }}) + ' photo' + ((photos.length + {{ (log.photos|length) if log and log.photos else 0 }}) !== 1 ? 's' : '')">
+                        </div>
+                    </div>
+                    <svg class="w-4 h-4 text-txt-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/>
+                    </svg>
+                </button>
+
+                {# Photo thumbnail strip on summary #}
+                <div x-show="photos.length > 0" class="flex gap-2 overflow-x-auto px-1 pb-2">
+                    <template x-for="(p, idx) in photos.slice(0, 6)" :key="idx">
+                        <img :src="p.preview" class="w-16 h-16 rounded-lg object-cover flex-shrink-0" alt="Photo preview">
+                    </template>
+                    <span x-show="photos.length > 6" class="flex items-center text-xs text-txt-muted px-2"
+                          x-text="'+' + (photos.length - 6)"></span>
+                </div>
+            </div>
+        </div>
+
+        <input type="hidden" name="hours_overtime" value="0">
+    </form>
+
+    {# ═══════════════════════════════════════════════════════════════
+       STICKY BOTTOM BAR — Back / Skip / Next or Save
+       ═══════════════════════════════════════════════════════════════ #}
+    <div class="fixed bottom-0 left-0 right-0 bg-white border-t border-hairline px-4 py-3 z-40
+                safe-area-bottom">
+        <div class="max-w-lg mx-auto flex gap-3">
+            {# Back button — hidden on step 0 #}
+            <button type="button" x-show="step > 0" @click="prev()"
+                    class="flex-shrink-0 flex items-center justify-center px-4 py-3.5 rounded-xl
+                           bg-pill text-txt-secondary text-sm font-semibold min-h-[48px] min-w-[48px]"
+                    aria-label="Back">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18"/>
+                </svg>
+            </button>
+            {# Back to list — only on step 0 #}
+            <a x-show="step === 0" href="{{ url_for('daily_logs_list') }}"
+               class="flex-shrink-0 flex items-center justify-center px-4 py-3.5 rounded-xl
+                      bg-pill text-txt-secondary text-sm font-semibold min-h-[48px] min-w-[48px]"
+               aria-label="Back to logs">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18"/>
+                </svg>
+            </a>
+
+            {# Steps 0-5: Skip + Next #}
+            <template x-if="step < 6">
+                <div class="flex-1 flex gap-3">
+                    <button type="button" @click="skip()"
+                            class="flex-shrink-0 px-4 py-3.5 rounded-xl bg-pill text-txt-secondary text-sm font-semibold min-h-[48px]">
+                        Skip
+                    </button>
+                    <button type="button" @click="next()"
+                            class="flex-1 flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl
+                                   bg-txt-primary text-white text-base font-semibold min-h-[48px]
+                                   active:bg-txt-primary/80 transition-colors select-none">
+                        Next
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/>
+                        </svg>
+                    </button>
+                </div>
+            </template>
+
+            {# Step 6: Save Log #}
+            <template x-if="step === 6">
+                <div class="flex-1 flex gap-3">
+                    <button type="button" @click="saveLog()"
+                            :disabled="saving"
+                            :class="saving ? 'opacity-60 cursor-not-allowed' : ''"
+                            class="flex-1 flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl
+                                   bg-pos text-white text-base font-semibold min-h-[48px]
+                                   active:bg-pos/80 transition-colors select-none">
+                        <template x-if="saving">
+                            <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                            </svg>
+                        </template>
+                        <span x-text="saving ? 'Saving...' : 'Save Log'"></span>
+                    </button>
+                    {% if log %}
+                    <button type="button" @click="confirmDelete = true"
+                            class="flex-shrink-0 flex items-center justify-center px-4 py-3.5 rounded-xl
+                                   bg-pill text-neg text-sm font-semibold min-h-[48px] min-w-[48px]"
+                            aria-label="Delete log">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
+                        </svg>
+                    </button>
+                    {% endif %}
+                </div>
+            </template>
+        </div>
+    </div>
+
+    {# ── Delete confirmation modal ───────────────────────────────── #}
+    {% if log %}
+    <div x-show="confirmDelete" x-cloak
+         class="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4"
+         @click.self="confirmDelete = false">
+        <div class="bg-white rounded-2xl w-full max-w-lg p-6 mb-safe"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="translate-y-full opacity-0"
+             x-transition:enter-end="translate-y-0 opacity-100"
+             x-transition:leave="transition ease-in duration-150"
+             x-transition:leave-start="translate-y-0 opacity-100"
+             x-transition:leave-end="translate-y-full opacity-0">
+            <h3 class="text-lg font-bold text-txt-primary mb-2">Delete this log?</h3>
+            <p class="text-sm text-txt-secondary mb-6">This will permanently delete the log and all {{ log.photos|length }} photo{{ 's' if log.photos|length != 1 else '' }}. This cannot be undone.</p>
+            <div class="flex gap-3">
+                <button type="button" @click="confirmDelete = false"
+                        class="flex-1 px-4 py-3.5 rounded-xl bg-pill text-txt-primary text-sm font-semibold min-h-[48px]">
+                    Keep log
+                </button>
+                <form method="POST" action="{{ url_for('delete_daily_log', log_id=log.id) }}" class="flex-1">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit"
+                            class="w-full px-4 py-3.5 rounded-xl bg-neg text-white text-sm font-semibold min-h-[48px]">
+                        Delete log
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# ── Success toast ───────────────────────────────────────────── #}
+    <div x-show="saved" x-cloak
+         x-transition:enter="transition ease-out duration-300"
+         x-transition:enter-start="translate-y-4 opacity-0"
+         x-transition:enter-end="translate-y-0 opacity-100"
+         x-transition:leave="transition ease-in duration-200"
+         x-transition:leave-start="translate-y-0 opacity-100"
+         x-transition:leave-end="translate-y-4 opacity-0"
+         class="fixed top-4 left-4 right-4 z-50 bg-pos text-white rounded-xl px-4 py-3 text-sm font-semibold
+                flex items-center gap-2 shadow-lg max-w-lg mx-auto">
+        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <span x-text="savedMessage"></span>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+    .safe-area-bottom { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+    .mb-safe { margin-bottom: max(1rem, env(safe-area-inset-bottom)); }
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type="number"] { -moz-appearance: textfield; }
+    @media (prefers-reduced-motion: reduce) {
+        .animate-pulse { animation: none !important; }
+    }
+</style>
+
+<script>
+function dailyLogWizard() {
+    return {
+        // Wizard state
+        step: {{ 6 if log else 0 }},
+        maxVisited: {{ 6 if log else 0 }},
+        _returnToSummary: false,
+
+        // General state
+        online: navigator.onLine,
+        saving: false,
+        saved: false,
+        savedMessage: '',
+        confirmDelete: false,
+        queueCount: 0,
+        _flowId: null,
+
+        // Step 0: Job
+        showAllJobs: false,
+        selectedJobId: {{ (log.client_id if log else (preselected_client.id if preselected_client else (clients[0].id if clients|length == 1 else 'null'))) | tojson }},
+        selectedJobName: {{ (client.name if log else (preselected_client.name if preselected_client else (clients[0].name if clients|length == 1 else ''))) | tojson }},
+        clientNames: {{ clients | map(attribute='name') | list | tojson }},
+
+        // Step 1: Crew
+        crewMembers: [],
+        showAddCrew: false,
+        newCrewName: '',
+        lastCrewNames: [],
+        crewByClient: {{ crew_by_client_json | safe }},
+
+        // Step 2: Weather
+        weatherCondition: {{ (log.weather_condition or '') | tojson }},
+        weatherTemp: {{ (log.weather_temp_f or '') | tojson }},
+        weatherNotes: {{ (log.weather_notes or '') | tojson }},
+        weatherTags: [],
+        fetchingWeather: false,
+        weatherAutoTimer: null,
+
+        // Step 3: Work
+        hours: {{ (log.hours_regular if log and log.hours_regular else 8) | tojson }},
+        workCompleted: {{ (log.work_completed or '') | tojson }},
+        phaseChipsByClient: {{ phase_chips_json | safe }},
+        selectedPhases: [],
+
+        // Step 4: Blockers
+        blockerOptions: ['Nothing', 'Waiting on materials', 'Waiting on inspection', 'Needs a decision', 'Weather', 'Other'],
+        selectedBlocker: {{ ('"' + log.delays.split(':')[0].strip() + '"') if log and log.delays and log.delays.split(':')[0].strip() in ['Waiting on materials', 'Waiting on inspection', 'Needs a decision', 'Weather', 'Other'] else ('"Nothing"' if log and not log.delays else 'null') }},
+        delays: {{ (log.delays or '') | tojson }},
+        createFollowup: false,
+
+        // Step 5: Photos
+        photos: [],
+        rapidPhotoMode: false,
+        _cameraAutoOpened: false,
+
+        // Voice
+        speechSupported: false,
+        recording: null,
+        recognition: null,
+
+        // UUID for offline dedup
+        clientUuid: '',
+
+        // Autosave
+        _formDirty: false,
+
+        // Client list for name lookup
+        _clientList: [
+            {% for c in clients %}
+            { id: {{ c.id }}, name: {{ c.name | tojson }} }{{ ',' if not loop.last else '' }}
+            {% endfor %}
+        ],
+
+        init() {
+            if (window.FieldInstrumentation) {
+                this._flowId = FieldInstrumentation.start('daily_log');
+            }
+
+            window.addEventListener('online', () => { this.online = true; this.syncQueue(); });
+            window.addEventListener('offline', () => { this.online = false; });
+            this._checkQueue();
+
+            this.clientUuid = crypto.randomUUID ? crypto.randomUUID() :
+                'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+                    const r = Math.random() * 16 | 0;
+                    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+                });
+
+            this._initCrew();
+
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (SR) {
+                this.speechSupported = true;
+                this.recognition = new SR();
+                this.recognition.continuous = true;
+                this.recognition.interimResults = true;
+                this.recognition.lang = 'en-US';
+            }
+
+            // Auto-fetch weather (new log, online, job selected)
+            if (!{{ 'true' if log else 'false' }} && this.selectedJobId && this.online) {
+                this.$nextTick(() => this.fetchWeather());
+            }
+
+            // Restore draft (resumes step for new logs)
+            this._restoreDraft();
+
+            // Autosave draft every 10s
+            setInterval(() => this._saveDraft(), 10000);
+
+            window.addEventListener('beforeunload', (e) => {
+                if (this._formDirty && !this.saved) {
+                    e.preventDefault();
+                    e.returnValue = '';
+                }
+            });
+
+            // Parse weather tags from notes if editing
+            if ({{ 'true' if log else 'false' }} && this.weatherNotes) {
+                for (const tag of ['Heat delay', 'Rain delay', 'Wind delay']) {
+                    if (this.weatherNotes.includes(tag)) this.weatherTags.push(tag);
+                }
+            }
+
+            // Parse phase chips from work text if editing
+            if ({{ 'true' if log else 'false' }} && this.workCompleted) {
+                const chips = this.currentPhaseChips;
+                for (const chip of chips) {
+                    if (this.workCompleted.includes(chip.name)) {
+                        this.selectedPhases.push(chip.name);
+                    }
+                }
+            }
+        },
+
+        // ── Navigation ────────────────────────────────────────────
+        next() {
+            this._stopRecording();
+            this._saveDraft();
+            this._formDirty = true;
+            if (this._returnToSummary) {
+                this._returnToSummary = false;
+                this.step = 6;
+                this.maxVisited = 6;
+                return;
+            }
+            if (this.step < 6) {
+                this.step++;
+                if (this.step > this.maxVisited) this.maxVisited = this.step;
+                // Auto-open camera on first visit to photos step
+                if (this.step === 5 && !this._cameraAutoOpened && !this.photos.length) {
+                    this._cameraAutoOpened = true;
+                    setTimeout(() => { if (this.$refs.cameraInput) this.$refs.cameraInput.click(); }, 300);
+                }
+            }
+        },
+
+        prev() {
+            this._stopRecording();
+            this._saveDraft();
+            this.clearWeatherAutoAdvance();
+            if (this.step > 0) this.step--;
+        },
+
+        skip() {
+            this.next();
+        },
+
+        goToStep(s) {
+            this._stopRecording();
+            this.clearWeatherAutoAdvance();
+            if (s <= this.maxVisited) {
+                // If jumping from summary, set return flag
+                if (this.step === 6 && s < 6) {
+                    this._returnToSummary = true;
+                }
+                this.step = s;
+            }
+        },
+
+        _stopRecording() {
+            if (this.recording && this.recognition) {
+                this.recognition.stop();
+                this.recording = null;
+            }
+        },
+
+        // ── Step 0: Job selection ─────────────────────────────────
+        _tap() {
+            if (window.FieldInstrumentation && this._flowId) FieldInstrumentation.tap(this._flowId);
+        },
+
+        selectJob(id, name) {
+            this._tap();
+            this.selectedJobId = id;
+            this.selectedJobName = name;
+            this._formDirty = true;
+            this.fetchWeather();
+            // Update crew for new job
+            if (this.crewByClient[id]) {
+                this.crewMembers = this.crewByClient[id].map(n => ({ name: n, active: true }));
+            }
+        },
+
+        // ── Step 1: Crew ──────────────────────────────────────────
+        _initCrew() {
+            const existing = {{ (log.crew_names or '') | tojson }};
+            if (existing.trim()) {
+                this.crewMembers = existing.split(',')
+                    .map(n => n.trim())
+                    .filter(n => n)
+                    .map(n => ({ name: n, active: true }));
+            } else {
+                const assigned = {{ crew_names_json | safe }};
+                this.crewMembers = assigned.map(n => ({ name: n, active: true }));
+            }
+            // Store last crew for "same as yesterday"
+            this.lastCrewNames = {{ crew_names_json | safe }};
+        },
+
+        sameAsYesterday() {
+            this._tap();
+            this.crewMembers = this.lastCrewNames.map(n => ({ name: n, active: true }));
+            this._formDirty = true;
+            this.next();
+        },
+
+        toggleCrew(idx) {
+            this._tap();
+            this.crewMembers[idx].active = !this.crewMembers[idx].active;
+            this._formDirty = true;
+        },
+
+        addCrew() {
+            const name = this.newCrewName.trim();
+            if (!name) return;
+            this.crewMembers.push({ name, active: true });
+            this.newCrewName = '';
+            this.showAddCrew = false;
+            this._formDirty = true;
+        },
+
+        get activeCrew() {
+            return this.crewMembers.filter(m => m.active);
+        },
+
+        get crewNamesString() {
+            return this.activeCrew.map(m => m.name).join(', ');
+        },
+
+        // ── Step 2: Weather ───────────────────────────────────────
+        toggleWeatherTag(tag) {
+            this._tap();
+            const idx = this.weatherTags.indexOf(tag);
+            if (idx >= 0) {
+                this.weatherTags.splice(idx, 1);
+            } else {
+                this.weatherTags.push(tag);
+            }
+            this._formDirty = true;
+        },
+
+        get weatherNotesComputed() {
+            const base = this.weatherNotes || '';
+            const tags = this.weatherTags.filter(t => !base.includes(t));
+            return tags.length ? (base ? base + '. ' : '') + tags.join(', ') : base;
+        },
+
+        clearWeatherAutoAdvance() {
+            if (this.weatherAutoTimer) {
+                clearTimeout(this.weatherAutoTimer);
+                this.weatherAutoTimer = null;
+            }
+        },
+
+        fetchWeather() {
+            if (!this.selectedJobId || !this.online) return;
+            this.fetchingWeather = true;
+            this.clearWeatherAutoAdvance();
+            const dt = document.getElementById('log_date')?.value || '';
+            fetch(`{{ url_for('api_weather') }}?client_id=${this.selectedJobId}&date=${dt}`)
+                .then(r => r.json())
+                .then(data => {
+                    this.fetchingWeather = false;
+                    if (!data.ok) return;
+                    this.weatherCondition = data.condition || '';
+                    this.weatherTemp = data.temp_hi || '';
+                    this.weatherNotes = data.notes || '';
+                    // Auto-advance after 2s if on weather step and not editing
+                    if (this.step === 2 && !{{ 'true' if log else 'false' }}) {
+                        this.weatherAutoTimer = setTimeout(() => {
+                            if (this.step === 2) this.next();
+                        }, 2000);
+                    }
+                })
+                .catch(() => { this.fetchingWeather = false; });
+        },
+
+        // ── Step 3: Work & phases ─────────────────────────────────
+        get currentPhaseChips() {
+            return this.phaseChipsByClient[this.selectedJobId] || [];
+        },
+
+        togglePhaseChip(chip) {
+            this._tap();
+            const idx = this.selectedPhases.indexOf(chip.name);
+            if (idx >= 0) {
+                this.selectedPhases.splice(idx, 1);
+                // Remove from text
+                this.workCompleted = this.workCompleted
+                    .replace(chip.name + '. ', '')
+                    .replace(chip.name + ', ', '')
+                    .replace(chip.name, '')
+                    .trim();
+            } else {
+                this.selectedPhases.push(chip.name);
+                // Append to text
+                const sep = this.workCompleted.trim() ? '. ' : '';
+                this.workCompleted = (this.workCompleted.trim() + sep + chip.name).trim();
+            }
+            this._formDirty = true;
+        },
+
+        adjustHours(delta) {
+            this._tap();
+            let val = parseFloat(this.hours) || 0;
+            val = Math.round((val + delta) * 4) / 4;
+            if (val < 0) val = 0;
+            if (val > 24) val = 24;
+            this.hours = val;
+            this._formDirty = true;
+        },
+
+        // ── Step 4: Blockers ──────────────────────────────────────
+        selectBlocker(opt) {
+            this._tap();
+            this.selectedBlocker = opt;
+            if (opt === 'Nothing') {
+                this.delays = '';
+                this.createFollowup = false;
+            } else if (opt !== 'Other') {
+                // Pre-fill delays with blocker label
+                if (!this.delays || this.blockerOptions.some(b => this.delays === b + ': ')) {
+                    this.delays = opt + ': ';
+                }
+            }
+            this._formDirty = true;
+        },
+
+        // ── Voice input ───────────────────────────────────────────
+        toggleVoice(field) {
+            this._tap();
+            if (!this.recognition) return;
+
+            if (this.recording === field) {
+                this.recognition.stop();
+                this.recording = null;
+                return;
+            }
+
+            if (this.recording) {
+                this.recognition.stop();
+            }
+
+            this.recording = field;
+            let finalTranscript = '';
+
+            this.recognition.onresult = (e) => {
+                let interim = '';
+                for (let i = e.resultIndex; i < e.results.length; i++) {
+                    const t = e.results[i][0].transcript;
+                    if (e.results[i].isFinal) {
+                        finalTranscript += t + ' ';
+                    } else {
+                        interim = t;
+                    }
+                }
+
+                const current = (finalTranscript + interim).trim();
+                if (field === 'work') {
+                    const existing = this.workCompleted.trim();
+                    this.workCompleted = existing ? existing + ' ' + current : current;
+                } else if (field === 'delays') {
+                    const existing = this.delays.trim();
+                    this.delays = existing ? existing + ' ' + current : current;
+                }
+            };
+
+            this.recognition.onerror = () => { this.recording = null; };
+            this.recognition.onend = () => {
+                if (this.recording === field) {
+                    this.recording = null;
+                }
+                this._formDirty = true;
+            };
+
+            this.recognition.start();
+        },
+
+        // ── Step 5: Photos ────────────────────────────────────────
+        startCamera() {
+            this.rapidPhotoMode = true;
+            this.$refs.cameraInput.click();
+        },
+
+        handlePhotos(e) {
+            this._tap();
+            const files = e.target.files;
+            for (const f of files) {
+                if (!f.type.startsWith('image/') && !f.name.match(/\.(heic|heif)$/i)) continue;
+                if (f.size > 16 * 1024 * 1024) continue;
+                this.photos.push({ file: f, preview: URL.createObjectURL(f) });
+            }
+            // Track camera photos for prompt engine (not gallery)
+            if (e.target === this.$refs.cameraInput) {
+                const ps = JSON.parse(localStorage.getItem('prompt_photos_today') || '{}');
+                const td = new Date().toISOString().slice(0, 10);
+                if (ps._date !== td) { ps._date = td; ps.count = 0; }
+                ps.count = (ps.count || 0) + files.length;
+                localStorage.setItem('prompt_photos_today', JSON.stringify(ps));
+            }
+
+            e.target.value = '';
+            this._formDirty = true;
+
+            // Rapid-fire: re-trigger camera after short delay
+            if (this.rapidPhotoMode) {
+                setTimeout(() => {
+                    if (this.rapidPhotoMode) {
+                        this.$refs.cameraInput.click();
+                    }
+                }, 300);
+            }
+        },
+
+        removePhoto(idx) {
+            URL.revokeObjectURL(this.photos[idx].preview);
+            this.photos.splice(idx, 1);
+        },
+
+        // ── Save ──────────────────────────────────────────────────
+        async saveLog() {
+            if (this.saving) return;
+            this.saving = true;
+            this._formDirty = false;
+
+            const fd = new FormData();
+            fd.append('csrf_token', document.querySelector('[name="csrf_token"]').value);
+            fd.append('client_id', this.selectedJobId || '');
+            fd.append('log_date', document.getElementById('log_date').value);
+            fd.append('crew_names', this.crewNamesString);
+            fd.append('crew_count', this.activeCrew.length);
+            fd.append('hours_regular', this.hours);
+            fd.append('hours_overtime', '0');
+            fd.append('work_completed', this.workCompleted);
+            fd.append('weather_condition', this.weatherCondition);
+            fd.append('weather_temp_f', this.weatherTemp);
+            fd.append('weather_notes', this.weatherNotesComputed);
+            fd.append('delays', this.delays);
+            fd.append('client_uuid', this.clientUuid);
+            if (this.createFollowup) {
+                fd.append('create_followup', '1');
+            }
+
+            if (!this.online) {
+                this._saveToQueue(fd);
+                this.saving = false;
+                if (window.FieldInstrumentation && this._flowId) FieldInstrumentation.complete(this._flowId);
+                this._showSaved('Saved offline — will sync when signal returns.');
+                return;
+            }
+
+            try {
+                const url = {{ (url_for('edit_daily_log', log_id=log.id) if log else url_for('create_daily_log')) | tojson }};
+                const resp = await fetch(url, { method: 'POST', body: fd, redirect: 'follow' });
+
+                if (resp.redirected) {
+                    if (this.photos.length > 0) {
+                        const match = resp.url.match(/daily-logs\/(\d+)/);
+                        if (match) {
+                            await this._uploadPhotos(match[1]);
+                        }
+                    }
+                    this._clearDraft();
+                    if (window.FieldInstrumentation && this._flowId) FieldInstrumentation.complete(this._flowId);
+                    this._showSaved('Log saved!');
+                    setTimeout(() => { window.location.href = resp.url; }, 1200);
+                    return;
+                }
+
+                if (resp.ok) {
+                    {% if log %}
+                    if (this.photos.length > 0) {
+                        await this._uploadPhotos({{ log.id }});
+                    }
+                    {% endif %}
+                    this._clearDraft();
+                    this._showSaved('Log saved!');
+                    setTimeout(() => location.reload(), 1200);
+                } else {
+                    throw new Error('Save failed: ' + resp.status);
+                }
+            } catch (err) {
+                this._saveToQueue(fd);
+                this._showSaved('Connection lost — saved offline.');
+            } finally {
+                this.saving = false;
+            }
+        },
+
+        async _uploadPhotos(logId) {
+            if (!this.photos.length) return;
+            const pfd = new FormData();
+            pfd.append('csrf_token', document.querySelector('[name="csrf_token"]').value);
+            for (const p of this.photos) {
+                pfd.append('photos', p.file);
+                pfd.append('captions', '');
+                pfd.append('cost_code_ids', '');
+            }
+            try {
+                await fetch(`/daily-logs/${logId}/photos`, { method: 'POST', body: pfd });
+                this.photos = [];
+            } catch (e) { /* photos will need manual upload later */ }
+        },
+
+        // ── Offline queue ─────────────────────────────────────────
+        _saveToQueue(fd) {
+            const entry = {};
+            for (const [k, v] of fd.entries()) {
+                if (k === 'csrf_token') continue;
+                entry[k] = v;
+            }
+            const queue = JSON.parse(localStorage.getItem('dailylog_queue') || '[]');
+            queue.push(entry);
+            localStorage.setItem('dailylog_queue', JSON.stringify(queue));
+            this._checkQueue();
+        },
+
+        _checkQueue() {
+            const queue = JSON.parse(localStorage.getItem('dailylog_queue') || '[]');
+            this.queueCount = queue.length;
+        },
+
+        async syncQueue() {
+            const queue = JSON.parse(localStorage.getItem('dailylog_queue') || '[]');
+            if (!queue.length || !this.online) return;
+
+            try {
+                const resp = await fetch('{{ url_for("sync_daily_logs") }}', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(queue),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    localStorage.removeItem('dailylog_queue');
+                    this.queueCount = 0;
+                    const created = data.results.filter(r => r.status === 'created').length;
+                    if (created) this._showSaved(`${created} offline log${created > 1 ? 's' : ''} synced!`);
+                }
+            } catch (e) { /* retry later */ }
+        },
+
+        // ── Draft persistence ─────────────────────────────────────
+        _draftKey() {
+            return 'dailylog_draft_' + ({{ log.id | tojson if log else 'null' }} || 'new');
+        },
+
+        _saveDraft() {
+            if (!this._formDirty) return;
+            const draft = {
+                step: this.step,
+                maxVisited: this.maxVisited,
+                selectedJobId: this.selectedJobId,
+                selectedJobName: this.selectedJobName,
+                crewMembers: this.crewMembers,
+                hours: this.hours,
+                workCompleted: this.workCompleted,
+                selectedPhases: this.selectedPhases,
+                weatherCondition: this.weatherCondition,
+                weatherTemp: this.weatherTemp,
+                weatherNotes: this.weatherNotes,
+                weatherTags: this.weatherTags,
+                delays: this.delays,
+                selectedBlocker: this.selectedBlocker,
+                createFollowup: this.createFollowup,
+                ts: Date.now(),
+            };
+            localStorage.setItem(this._draftKey(), JSON.stringify(draft));
+        },
+
+        _restoreDraft() {
+            const raw = localStorage.getItem(this._draftKey());
+            if (!raw) return;
+            try {
+                const draft = JSON.parse(raw);
+                if (Date.now() - draft.ts > 86400000) {
+                    localStorage.removeItem(this._draftKey());
+                    return;
+                }
+                // Don't overwrite server data on edit
+                if ({{ 'true' if log else 'false' }}) return;
+
+                if (draft.step != null) this.step = draft.step;
+                if (draft.maxVisited != null) this.maxVisited = draft.maxVisited;
+                if (draft.selectedJobId) this.selectedJobId = draft.selectedJobId;
+                if (draft.selectedJobName) this.selectedJobName = draft.selectedJobName;
+                if (draft.crewMembers?.length) this.crewMembers = draft.crewMembers;
+                if (draft.hours != null) this.hours = draft.hours;
+                if (draft.workCompleted) this.workCompleted = draft.workCompleted;
+                if (draft.selectedPhases) this.selectedPhases = draft.selectedPhases;
+                if (draft.weatherCondition) this.weatherCondition = draft.weatherCondition;
+                if (draft.weatherTemp) this.weatherTemp = draft.weatherTemp;
+                if (draft.weatherNotes) this.weatherNotes = draft.weatherNotes;
+                if (draft.weatherTags) this.weatherTags = draft.weatherTags;
+                if (draft.delays) this.delays = draft.delays;
+                if (draft.selectedBlocker) this.selectedBlocker = draft.selectedBlocker;
+                if (draft.createFollowup) this.createFollowup = draft.createFollowup;
+            } catch (e) { localStorage.removeItem(this._draftKey()); }
+        },
+
+        _clearDraft() {
+            localStorage.removeItem(this._draftKey());
+        },
+
+        _showSaved(msg) {
+            this.savedMessage = msg;
+            this.saved = true;
+            setTimeout(() => { this.saved = false; }, 3000);
+        },
+    };
+}
+</script>
+{% endblock %}

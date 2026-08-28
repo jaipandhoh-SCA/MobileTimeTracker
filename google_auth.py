@@ -125,6 +125,9 @@ def callback():
         user.last_name = users_last_name
         user.profile_image_url = profile_picture
         
+        # Staff via Google OAuth are always internal
+        user.is_external = False
+
         # Set role based on authorization or first user
         if user_count == 0:
             user.role = 'supervisor'

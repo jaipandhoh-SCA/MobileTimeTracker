@@ -102,6 +102,101 @@
     </div>
     {% endcall %}
 
+    {% call card(title="Smart Prompts") %}
+    <p class="text-xs text-txt-muted mb-4">Context-aware cards on the home screen. Disabling a prompt hides the card and stops notifications for it.</p>
+    <div class="space-y-4">
+        <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="prompt_notifications_enabled" value="1"
+                   class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20 w-5 h-5"
+                   {{ 'checked' if prefs.prompt_notifications_enabled }}>
+            <div>
+                <div class="text-sm font-medium text-txt-primary">Push notifications</div>
+                <div class="text-xs text-txt-muted">Also show prompts as notification bell items (cards always show)</div>
+            </div>
+        </label>
+
+        <hr class="border-hairline">
+
+        <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="prompt_geo_clock_in" value="1"
+                   class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20 w-5 h-5"
+                   {{ 'checked' if prefs.prompt_geo_clock_in }}>
+            <div>
+                <div class="text-sm font-medium text-txt-primary">Near-site clock-in</div>
+                <div class="text-xs text-txt-muted">Remind to clock in when near a jobsite</div>
+            </div>
+        </label>
+
+        <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="prompt_long_clock" value="1"
+                   class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20 w-5 h-5"
+                   {{ 'checked' if prefs.prompt_long_clock }}>
+            <div>
+                <div class="text-sm font-medium text-txt-primary">Long clock-in check</div>
+                <div class="text-xs text-txt-muted">Ask if still on site after 10+ hours clocked in</div>
+            </div>
+        </label>
+
+        <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="prompt_no_daily_log" value="1"
+                   class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20 w-5 h-5"
+                   {{ 'checked' if prefs.prompt_no_daily_log }}>
+            <div>
+                <div class="text-sm font-medium text-txt-primary">Missing daily log</div>
+                <div class="text-xs text-txt-muted">Remind to fill out a daily log after clocking out</div>
+            </div>
+        </label>
+
+        <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="prompt_geo_left_clocked" value="1"
+                   class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20 w-5 h-5"
+                   {{ 'checked' if prefs.prompt_geo_left_clocked }}>
+            <div>
+                <div class="text-sm font-medium text-txt-primary">Left site still clocked in</div>
+                <div class="text-xs text-txt-muted">Remind to clock out when you leave the jobsite</div>
+            </div>
+        </label>
+
+        <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="prompt_unattached_photos" value="1"
+                   class="rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20 w-5 h-5"
+                   {{ 'checked' if prefs.prompt_unattached_photos }}>
+            <div>
+                <div class="text-sm font-medium text-txt-primary">Unattached photos</div>
+                <div class="text-xs text-txt-muted">Remind to add camera photos to a daily log</div>
+            </div>
+        </label>
+
+        <hr class="border-hairline">
+
+        <div class="flex items-center gap-4">
+            <div>
+                <label class="text-sm font-medium text-txt-primary">Working hours</label>
+                <div class="text-xs text-txt-muted">Prompts only appear during these hours</div>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <select name="work_start_hour"
+                    class="rounded-lg border-gray-300 text-sm focus:ring-txt-primary/20 focus:border-txt-primary">
+                {% for h in range(0, 24) %}
+                <option value="{{ h }}" {{ 'selected' if prefs.work_start_hour == h }}>
+                    {{ '{} {}'.format(12 if h % 12 == 0 else h % 12, 'AM' if h < 12 else 'PM') }}
+                </option>
+                {% endfor %}
+            </select>
+            <span class="text-sm text-txt-muted">to</span>
+            <select name="work_end_hour"
+                    class="rounded-lg border-gray-300 text-sm focus:ring-txt-primary/20 focus:border-txt-primary">
+                {% for h in range(0, 24) %}
+                <option value="{{ h }}" {{ 'selected' if prefs.work_end_hour == h }}>
+                    {{ '{} {}'.format(12 if h % 12 == 0 else h % 12, 'AM' if h < 12 else 'PM') }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+    {% endcall %}
+
     <div class="mt-6">
         {{ form_actions(cancel_href=url_for('edit_profile'), submit_text="Save Preferences") }}
     </div>

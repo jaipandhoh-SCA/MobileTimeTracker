@@ -62,9 +62,57 @@
 
 
     <!-- ============================================================
-         CLOCK IN/OUT CARD
+         CONTEXTUAL PROMPTS
          ============================================================ -->
-    <section class="bg-white rounded-2xl shadow-card p-6" x-data="clockCard()" x-init="poll()">
+    <div x-data="promptCards()" x-init="init()">
+        <template x-for="prompt in prompts" :key="prompt.rule_key">
+            <div x-show="!isDismissed(prompt.rule_key)" x-transition
+                 class="flex items-center justify-between gap-3 p-4 rounded-2xl mb-3"
+                 :class="prompt.icon === 'clock' ? 'bg-blue-50' : (prompt.icon === 'log' ? 'bg-amber-50' : 'bg-emerald-50')">
+                <div class="flex items-center gap-3 flex-1 min-w-0">
+                    <!-- Icon -->
+                    <div class="flex-shrink-0">
+                        <template x-if="prompt.icon === 'clock'">
+                            <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="10"/><path stroke-linecap="round" d="M12 6v6l4 2"/>
+                            </svg>
+                        </template>
+                        <template x-if="prompt.icon === 'log'">
+                            <svg class="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                        </template>
+                        <template x-if="prompt.icon === 'photo'">
+                            <svg class="w-6 h-6 text-emerald-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z"/>
+                            </svg>
+                        </template>
+                    </div>
+                    <div class="min-w-0">
+                        <p class="text-sm font-semibold text-txt-primary" x-text="prompt.title"></p>
+                        <p class="text-xs text-txt-secondary mt-0.5" x-text="prompt.message" x-show="prompt.message"></p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                    <a :href="prompt.action_url"
+                       class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-txt-primary text-white"
+                       x-text="prompt.action_label"></a>
+                    <button @click="dismiss(prompt.rule_key)" class="text-txt-muted hover:text-txt-secondary p-1.5">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- ============================================================
+         CLOCK IN/OUT CARD — links to /clock
+         ============================================================ -->
+    <a href="{{ url_for('clock_page') }}" class="block bg-white rounded-2xl shadow-card p-6 hover:shadow-md transition-shadow"
+       x-data="clockWidget()" x-init="poll()">
         <div class="flex items-center justify-between">
             <div>
                 <p class="text-xs font-medium text-txt-muted uppercase tracking-wide mb-1">Time Clock</p>
@@ -78,31 +126,12 @@
                     <p class="text-sm text-txt-secondary">Not clocked in</p>
                 </template>
             </div>
-            <div class="flex items-center gap-2">
-                <template x-if="active">
-                    <div class="flex items-center gap-2">
-                        <button @click="takeBreak15()" :disabled="break15Taken" class="px-3 py-2 text-xs font-medium rounded-xl transition-colors duration-150" :class="break15Taken ? 'bg-pill text-txt-muted cursor-not-allowed' : 'bg-pill text-txt-secondary hover:bg-gray-200'">
-                            15m Break
-                        </button>
-                        <button @click="takeLunch()" :disabled="lunchTaken" class="px-3 py-2 text-xs font-medium rounded-xl transition-colors duration-150" :class="lunchTaken ? 'bg-pill text-txt-muted cursor-not-allowed' : 'bg-pill text-txt-secondary hover:bg-gray-200'">
-                            Lunch
-                        </button>
-                        <a href="{{ url_for('stop_clock') }}" class="px-4 py-2 bg-neg text-white text-sm font-medium rounded-xl hover:bg-neg/80 transition-colors duration-150">
-                            Stop
-                        </a>
-                    </div>
-                </template>
-                <template x-if="!active">
-                    <form method="POST" action="{{ url_for('start_clock') }}">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-                        <button type="submit" class="px-4 py-2 bg-txt-primary text-white text-sm font-medium rounded-xl hover:bg-txt-primary/80 transition-colors duration-150">
-                            Clock In
-                        </button>
-                    </form>
-                </template>
+            <div class="px-4 py-2 text-sm font-medium rounded-xl transition-colors duration-150"
+                 :class="active ? 'bg-neg text-white' : 'bg-txt-primary text-white'"
+                 x-text="active ? 'Clock Out' : 'Clock In'">
             </div>
         </div>
-    </section>
+    </a>
 
     <!-- ============================================================
          SUMMARY CARD: Overall ROI
@@ -720,13 +749,54 @@
 
 {% block scripts %}
 <script>
-function clockCard() {
+function promptCards() {
+    return {
+        prompts: [],
+        dismissed: {},
+        async init() {
+            const today = new Date().toISOString().slice(0, 10);
+            const stored = JSON.parse(localStorage.getItem('prompt_dismissed') || '{}');
+            this.dismissed = stored._date === today ? stored : { _date: today };
+
+            let lat = null, lng = null;
+            try {
+                const pos = await new Promise((res, rej) =>
+                    navigator.geolocation.getCurrentPosition(res, rej, { timeout: 5000, maximumAge: 60000 }));
+                lat = pos.coords.latitude;
+                lng = pos.coords.longitude;
+            } catch(e) {}
+
+            const photoStore = JSON.parse(localStorage.getItem('prompt_photos_today') || '{}');
+            const photoCount = photoStore._date === today ? (photoStore.count || 0) : 0;
+
+            const params = new URLSearchParams();
+            if (lat !== null) { params.set('lat', lat); params.set('lng', lng); }
+            if (photoCount > 0) params.set('photos_taken_today', photoCount);
+
+            try {
+                const res = await fetch('/api/prompts?' + params);
+                const data = await res.json();
+                this.prompts = data.prompts || [];
+            } catch(e) {}
+        },
+        isDismissed(key) { return !!this.dismissed[key]; },
+        async dismiss(key) {
+            this.dismissed[key] = true;
+            localStorage.setItem('prompt_dismissed', JSON.stringify(this.dismissed));
+            fetch('/api/prompts/dismiss', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
+                body: JSON.stringify({ rule_key: key })
+            });
+        }
+    };
+}
+
+function clockWidget() {
     return {
         active: false,
         elapsed: '00:00:00',
         startTime: '',
-        break15Taken: false,
-        lunchTaken: false,
         _interval: null,
 
         async poll() {
@@ -742,11 +812,21 @@ function clockCard() {
                 if (data.active) {
                     this.elapsed = data.elapsed;
                     this.startTime = data.start_time;
-                    this.break15Taken = data.break_15_taken;
-                    this.lunchTaken = data.lunch_taken;
                 }
             } catch(e) {}
         },
+    };
+}
+
+/* Legacy functions kept for backward compat — unused by new clock widget */
+function clockCard_legacy() {
+    return {
+        active: false,
+        elapsed: '00:00:00',
+        startTime: '',
+        break15Taken: false,
+        lunchTaken: false,
+        _interval: null,
 
         async takeBreak15() {
             const res = await fetch('{{ url_for("take_break_15") }}', {

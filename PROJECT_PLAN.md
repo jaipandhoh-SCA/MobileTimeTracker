@@ -50,6 +50,84 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-28 — Daily Log Guided Flow Refinements
+
+Targeted quality upgrades to the existing 7-step daily log wizard (`daily_log_field.html`) to make a "nothing changed" day completable in ~8 taps / under 15 seconds:
+- **Step 0 (Job):** One-tap confirm card when pre-filled from today's clock punch or active clock. "Not this job? Change" falls through to full chip list.
+- **Step 1 (Crew):** "Same as yesterday" label now shows crew count.
+- **Step 2 (Weather):** Reduced from 10 condition chips to 4 (Clear, Cloudy, Rain, Wind). Auto-advance after 2s on successful weather fetch. GPS coords used directly when available (skips geocoding).
+- **Step 3 (Work):** Compact inline hours stepper, phase chips ("Tap what you worked on"), large mic, textarea ("Or type it out").
+- **Step 4 (Blockers):** Follow-up toggle shows blocker type + job name context.
+- **Step 5 (Photos):** Camera auto-opens on first visit. Full-width Take Photo button; gallery as text link. Done shows photo count.
+- **routes.py:** `today_prefill_client` passed to template; `/api/weather` uses `jobsite_latitude`/`jobsite_longitude` when available.
+
+### 2026-08-28 — Contextual Prompt Engine
+
+Added a server-side prompt engine that evaluates 5 rules against time, GPS, punch state, and log state, surfacing dismissible action cards on the home screen.
+
+- **5 rules:** geo clock-in, long clock check (10h), missing daily log, left-site-still-clocked, unattached photos
+- **`prompt_engine.py`** — `PromptContext`, `evaluate_prompts()`, 5 evaluator functions, max 2 cards
+- **`PromptDismissal` model** — tracks dismissals per user/rule/date with weekly suppression (2 dismissals = suppressed for the week)
+- **`NotificationPreference`** extended — 5 per-rule toggles, master notification switch, working hours (start/end)
+- **API routes:** `GET /api/prompts?lat=X&lng=Y&photos_taken_today=N`, `POST /api/prompts/dismiss`
+- **Home screen:** Alpine.js `promptCards()` component with GPS request, localStorage dismissal cache, colored cards with icons
+- **Notification settings:** "Smart Prompts" card with per-rule toggles and working hours dropdowns
+- **Photo tracking:** `daily_log_field.html` camera input increments localStorage counter for unattached-photos rule
+- **`haversine()`** moved from routes.py to utils.py (shared by clock jobs + prompt engine)
+- **Notification bell:** optionally creates Notification rows for prompts (2/day cap, deduped by type)
+- Migration: `n5h7i8j69k20`
+
+### 2026-08-28 — Clock In/Out Rebuild
+
+Rebuilt the entire clock-in/out flow as a single-page Alpine.js component at `/clock`.
+- **One-tap clock in** with GPS-based job pre-fill and cost code memory
+- **Model changes:** Client gets `jobsite_latitude`/`jobsite_longitude`; ActiveClock gets `client_id`, `cost_code_id`, GPS, notes; TimeEntry gets GPS audit columns
+- **JSON API:** 7 endpoints (`/api/clock/state`, `/api/clock/jobs`, `/api/clock/in`, `/api/clock/out`, `/api/clock/switch`, `/api/clock/break`, `/api/clock/resolve`)
+- **Forgot-to-clock-out detection:** if active clock > 14h (configurable via AppSetting), prompts for end time
+- **Job switch:** atomic close-current + open-new in one action
+- **Offline-first:** clock-in/out queue via FieldQueue + localStorage timer mirror
+- **GPS non-blocking:** fires on page load, never blocks the punch
+- **Home dashboard:** clock card now links to `/clock` instead of inline form
+- **`/` redirect:** authenticated users go to `/clock` instead of `/welcome`
+- Migration: `m4g6h7i58j19`
+
+### 2026-08-28 — Sync Status UI Layer
+
+Added persistent sync state indicator and flow instrumentation for all field entry screens.
+
+- **`static/js/field-status.js`** — `syncStatus()` Alpine.js component for nav-bar indicator + `FieldInstrumentation` for taps-to-complete / time-to-complete tracking.
+- **Nav indicator** in `base.html` — cloud icon with badge count, tappable to expand detail panel. Shows pending/failed entries with one-tap retry. Invisible when synced (no green check, no celebration).
+- **Removed old per-page banners** from `daily_log_field.html` and `daily_logs_list.html` — replaced by global indicator.
+- **Flow instrumentation** wired into daily log form — tracks taps on job select, crew toggle, hours adjust, voice, and photo interactions. Records {type, taps, durationMs} to localStorage on save.
+- All 25 tests pass (field sync + authorization).
+
+### 2026-08-28 — Offline-First Field Data Capture Layer
+
+Built the offline-first data capture infrastructure for all field entry screens. No UI — queue, sync, and server-side upsert layer only.
+
+- **`static/js/field-queue.js`** — IndexedDB-backed local write queue. Per-entry status (pending/syncing/synced/failed), pub/sub, survives app kills.
+- **`static/js/field-sync.js`** — Background sync worker with exponential backoff (1s→5min cap), max 20 retries. Text records sync independently from photos.
+- **`field_sync_helpers.py`** — Server-side upsert helpers: `upsert_daily_log`, `upsert_time_punch`, `upsert_material_note`, `upsert_general_note`.
+- **Routes**: `POST /api/field/sync` + `POST /api/field/media` — unified entry upsert + media upload.
+- **Conflict policy**: Time punches = append-only. All others = last-write-wins on client_uuid.
+- **Migration `l3f5g6h47i08`** — `client_uuid` on TimeEntry and ClientActivity.
+- **`test_field_sync.py`** — 14 tests covering all sync scenarios.
+- Storage: IndexedDB. No new env vars needed.
+
+### 2026-08-26 — Authorization Model (Foundation)
+
+Built the full RBAC authorization system — schema, constants, guards, and tests. No UI screens yet; existing `is_supervisor` checks remain for backward compatibility.
+
+- **`permissions.py`** — 48 permission constants (`Perm` class), `Scope` enum (ALL/ASSIGNED/SELF), `ROLE_DEFAULTS` matrix for 5 roles (crew/foreman/pm/office_mgr/owner), `INTERNAL_ONLY_FIELDS` dict, `has_permission()`, `get_effective_permissions()`, `require_permission()` decorator, `safe_serialize()`.
+- **`auth_models.py`** — 7 new models: Role, Permission, RolePermission, UserRole, UserPermissionGrant, UserJobAssignment, AuditLog.
+- **`auth_guards.py`** — `@require_internal`, `@require_external`, `@require_perm`, `@require_any_perm`, `@require_all_perms` decorators; `register_external_firewall()` before_request handler; `log_auth_event()`.
+- **`portal_serializers.py`** — Deny-by-default serializer functions for Project, Invoice, ChangeOrder, ScheduleTask, Selection with runtime `_assert_no_internal_fields` safety net.
+- **Migration `k2e4f5g36h97`** — Creates 7 auth tables, adds `is_external` to User, seeds 56 permissions, 6 system roles, and full role-permission mappings.
+- **`models.py`** — Added `is_external` column to User, `__internal_fields__` sets to Project, Budget, CostEntry, EstimateLineItem, AssemblyItem, Invoice, User. Added `user_roles` and `job_assignments` relationships.
+- **`google_auth.py`** — New users via Google OAuth set `is_external=False`.
+- **`test_authorization.py`** — 11 tests: external user blocked, PM unassigned job denied, cross-client isolation, crew payroll denied, portal serializer safety, role switching, role defaults integrity.
+- All existing tests (39) pass with no regressions.
+
 ### 2026-08-13 — Prod Hardening: Auth, PWA, Notifications, Audit, Tests, Accessibility
 
 **Access-control tests** (`test_access_control.py` — 11 tests):

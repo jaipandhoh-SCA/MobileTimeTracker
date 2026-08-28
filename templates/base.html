@@ -266,8 +266,126 @@
                     </div>
                 </div>
 
-                <!-- Right: Notification bell + Profile -->
+                <!-- Right: Sync indicator + Notification bell + Profile -->
                 <div class="flex items-center gap-3">
+
+                    <!-- Sync status indicator -->
+                    <div class="relative" x-data="syncStatus()" @click.away="open = false" @keydown.escape.window="open = false">
+                        {# Invisible when synced. Shows only when items are pending/failed or offline. #}
+                        <button x-show="visible" x-cloak
+                                @click="toggle()"
+                                class="relative p-2 rounded-lg transition-colors duration-150 touch-target"
+                                :class="failed > 0
+                                    ? 'text-neg hover:bg-red-50'
+                                    : !online
+                                        ? 'text-amber-500 hover:bg-amber-50'
+                                        : 'text-txt-muted hover:text-txt-primary hover:bg-pill'"
+                                :aria-label="(total || 0) + ' items waiting to sync'"
+                                aria-haspopup="true"
+                                :aria-expanded="open">
+
+                            {# Cloud icon — offline #}
+                            <svg x-show="iconState === 'offline'" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.338-2.338 4.502 4.502 0 013.516 5.307A4.5 4.5 0 0118 19.5H6.75z"/>
+                            </svg>
+                            {# Cloud arrow — syncing #}
+                            <svg x-show="iconState === 'syncing'" class="w-5 h-5 animate-pulse" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.338-2.338 4.502 4.502 0 013.516 5.307A4.5 4.5 0 0118 19.5H6.75z"/>
+                            </svg>
+                            {# Cloud idle — pending #}
+                            <svg x-show="iconState === 'pending'" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z"/>
+                            </svg>
+                            {# Cloud X — failed #}
+                            <svg x-show="iconState === 'failed'" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 12.75l1.5 1.5m0-1.5l-1.5 1.5"/>
+                            </svg>
+
+                            {# Badge count #}
+                            <span x-show="badgeCount > 0" x-cloak
+                                  class="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full text-[10px] font-bold px-1"
+                                  :class="badgeClass"
+                                  x-text="badgeCount > 99 ? '99+' : badgeCount"></span>
+                        </button>
+
+                        {# ── Expandable detail panel ─────────────────────────── #}
+                        <div x-show="open" x-cloak
+                             x-transition:enter="transition ease-out duration-150"
+                             x-transition:enter-start="opacity-0 scale-95 -translate-y-1"
+                             x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+                             class="absolute right-0 mt-2 w-80 bg-white rounded-2xl shadow-card overflow-hidden z-50 max-h-[70vh] flex flex-col">
+
+                            {# Header #}
+                            <div class="flex items-center justify-between px-4 py-3 border-b border-hairline flex-shrink-0">
+                                <span class="text-sm font-semibold text-txt-primary">Sync queue</span>
+                                <div class="flex items-center gap-2">
+                                    <button x-show="failed > 0" @click="retryAll()"
+                                            class="text-xs text-neg hover:underline font-semibold min-h-[44px] flex items-center">
+                                        Retry all
+                                    </button>
+                                    <button x-show="pending > 0 && online" @click="syncNow()"
+                                            class="text-xs text-txt-secondary hover:text-txt-primary hover:underline font-semibold min-h-[44px] flex items-center">
+                                        Sync now
+                                    </button>
+                                </div>
+                            </div>
+
+                            {# Offline notice #}
+                            <div x-show="!online" class="px-4 py-2.5 bg-amber-50 text-amber-800 text-xs font-medium flex items-center gap-2 flex-shrink-0">
+                                <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 5.636a9 9 0 010 12.728M5.636 18.364a9 9 0 010-12.728"/>
+                                </svg>
+                                No signal — entries will sync when reconnected
+                            </div>
+
+                            {# Entry list #}
+                            <div class="overflow-y-auto flex-1">
+                                <template x-if="entries.length === 0">
+                                    <div class="px-4 py-8 text-center text-sm text-txt-muted">
+                                        Everything is synced.
+                                    </div>
+                                </template>
+
+                                <template x-for="entry in entries" :key="entry.clientUuid">
+                                    <div class="px-4 py-3 border-b border-hairline last:border-0">
+                                        <div class="flex items-start justify-between gap-2">
+                                            <div class="min-w-0 flex-1">
+                                                <div class="text-sm font-medium text-txt-primary truncate"
+                                                     x-text="typeLabel(entry.type)"></div>
+                                                <div class="text-xs text-txt-muted mt-0.5 flex items-center gap-2">
+                                                    <span x-text="timeAgo(entry.createdAt)"></span>
+                                                    <span class="font-medium" :class="statusClass(entry.status)"
+                                                          x-text="statusLabel(entry.status)"></span>
+                                                </div>
+                                                {# Error detail for failed entries #}
+                                                <div x-show="entry.status === 'failed' && entry.lastError"
+                                                     class="text-xs text-neg mt-1 break-words"
+                                                     x-text="entry.lastError"></div>
+                                            </div>
+
+                                            {# Retry button for failed entries #}
+                                            <button x-show="entry.status === 'failed'"
+                                                    @click="retryEntry(entry.clientUuid)"
+                                                    class="flex-shrink-0 text-xs font-semibold text-txt-primary bg-pill
+                                                           hover:bg-gray-200 rounded-lg px-3 py-2 min-h-[44px] min-w-[44px]
+                                                           flex items-center justify-center transition-colors"
+                                                    aria-label="Retry this entry">
+                                                Retry
+                                            </button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+
+                            {# Footer with media count #}
+                            <div x-show="mediaPending > 0" x-cloak
+                                 class="px-4 py-2.5 border-t border-hairline text-xs text-txt-muted flex-shrink-0">
+                                <span x-text="mediaPending"></span> photo<span x-show="mediaPending !== 1">s</span> waiting to upload
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Notification bell -->
                     <div class="relative" x-data="notifBell()">
                         <button @click="toggle()" class="relative p-2 rounded-lg text-txt-muted hover:text-txt-primary hover:bg-pill transition-colors duration-150 touch-target" aria-label="Notifications">
@@ -714,6 +832,12 @@
         if (banner) banner.classList.add('hidden');
     });
     </script>
+
+    <!-- Field queue + sync (offline-first data capture) -->
+    <script src="{{ url_for('static', filename='js/field-queue.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/field-sync.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/field-status.js') }}"></script>
+    <script>if (window.FieldSync) FieldSync.start();</script>
 
     {% if session.get('_demo_mode') %}
     <script src="{{ url_for('static', filename='demo-tour.js') }}"></script>
