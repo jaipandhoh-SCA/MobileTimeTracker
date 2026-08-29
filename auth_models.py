@@ -85,6 +85,8 @@ class UserJobAssignment(db.Model):
     assigned_at = db.Column(db.DateTime, default=_utcnow)
     assigned_by = db.Column(db.String, db.ForeignKey('users.id'), nullable=True)
 
+    project = db.relationship('Project', foreign_keys=[project_id], lazy='joined')
+
     __table_args__ = (
         UniqueConstraint('user_id', 'project_id', name='uq_user_job'),
         Index('idx_uja_user', 'user_id'),

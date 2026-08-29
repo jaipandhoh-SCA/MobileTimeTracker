@@ -2987,53 +2987,63 @@ def rep_time_entries(user_id):
 
 
 @app.route('/admin/users')
-@require_supervisor
+@require_login
 def manage_users():
     from models import AuthorizedUser
-    users = User.query.order_by(User.created_at.desc()).all()
+    from auth_models import UserRole, Role
+    from auth_guards import log_auth_event
+    from permissions import Perm, has_permission
+
+    # Permission gate: require user.manage OR legacy supervisor
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.USER_MANAGE):
+        abort(403)
+
+    show_inactive = request.args.get('show_inactive', '0') == '1'
+    all_db_users = User.query.order_by(User.created_at.desc()).all()
+    users = [u for u in all_db_users if u.is_active]
+    inactive_users = [u for u in all_db_users if not u.is_active] if show_inactive else []
+
+    # Attach role names to each user for display
+    all_roles = {r.id: r.name for r in Role.query.all()}
+    for u in (users + inactive_users):
+        ur_entries = UserRole.query.filter_by(user_id=u.id).all()
+        u._role_names = [all_roles.get(ur.role_id, '?') for ur in ur_entries]
+
+    # Count users with no role assigned
+    active_ids = {u.id for u in users}
+    users_with_roles = {ur.user_id for ur in UserRole.query.all()}
+    no_role_count = len(active_ids - users_with_roles)
+
     authorized_users = AuthorizedUser.query.order_by(AuthorizedUser.created_at.desc()).all()
-    
-    # Create a set of emails for users who have logged in
-    logged_in_emails = {user.email.lower() for user in users if user.email}
-    
-    # Add status to each authorized user
+    logged_in_emails = {u.email.lower() for u in all_db_users if u.email}
     for auth_user in authorized_users:
         auth_user.has_logged_in = auth_user.email.lower() in logged_in_emails
-    
-    return render_template('manage_users.html', users=users, authorized_users=authorized_users)
 
-
-@app.route('/admin/users/<user_id>/toggle-role', methods=['POST'])
-@require_supervisor
-def toggle_user_role(user_id):
-    user = User.query.get_or_404(user_id)
-    
-    if user.id == current_user.id:
-        flash('You cannot change your own role.', 'error')
-        return redirect(url_for('manage_users'))
-    
-    user.role = 'supervisor' if user.role == 'rep' else 'rep'
-    db.session.commit()
-    
-    flash(f'{user.display_name} is now a {user.role}.', 'success')
-    return redirect(url_for('manage_users'))
+    return render_template('manage_users.html', users=users, authorized_users=authorized_users,
+                           show_inactive=show_inactive, inactive_users=inactive_users,
+                           no_role_count=no_role_count)
 
 
 @app.route('/admin/users/add-authorized', methods=['POST'])
-@require_supervisor
+@require_login
 def add_authorized_user():
     from models import AuthorizedUser
-    
+    from permissions import Perm, has_permission
+    from auth_guards import log_auth_event
+
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.USER_MANAGE):
+        abort(403)
+
     email = request.form.get('email', '').strip().lower()
-    role = request.form.get('role', 'rep').strip()
+    auth_role_name = request.form.get('auth_role_name', '').strip()
 
     if not email:
         flash('Email address is required.', 'error')
         return redirect(url_for('manage_users'))
 
-    if role not in ['rep', 'supervisor']:
-        flash('Invalid role selected.', 'error')
-        return redirect(url_for('manage_users'))
+    # Map system role to legacy role for backward compat
+    SUPERVISOR_ROLES = {'owner', 'office_mgr'}
+    legacy_role = 'supervisor' if auth_role_name in SUPERVISOR_ROLES else 'rep'
 
     existing = AuthorizedUser.query.filter_by(email=email).first()
     if existing:
@@ -3043,33 +3053,46 @@ def add_authorized_user():
     hourly_rate = request.form.get('hourly_rate', '0').strip()
     try:
         hourly_rate_val = Decimal(hourly_rate) if hourly_rate else Decimal('0')
-    except:
+    except Exception:
         hourly_rate_val = Decimal('0')
 
     auth_user = AuthorizedUser(
         email=email,
-        role=role,
+        role=legacy_role,
         hourly_rate=hourly_rate_val,
-        added_by_user_id=current_user.id
+        added_by_user_id=current_user.id,
+        auth_role_name=auth_role_name or None,
     )
     db.session.add(auth_user)
     db.session.commit()
 
-    flash(f'Successfully authorized {email} as {role.title()}.', 'success')
+    log_auth_event('user_invited', entity_type='authorized_user', entity_id=auth_user.id,
+                   detail={'email': email, 'auth_role_name': auth_role_name})
+
+    role_label = auth_role_name.replace('_', ' ').title() if auth_role_name else legacy_role.title()
+    flash(f'Successfully authorized {email} as {role_label}.', 'success')
     return redirect(url_for('manage_users'))
 
 
 @app.route('/admin/users/remove-authorized/<int:auth_id>', methods=['POST'])
-@require_supervisor
+@require_login
 def remove_authorized_user(auth_id):
     from models import AuthorizedUser
-    
+    from permissions import Perm, has_permission
+    from auth_guards import log_auth_event
+
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.USER_MANAGE):
+        abort(403)
+
     auth_user = AuthorizedUser.query.get_or_404(auth_id)
     email = auth_user.email
-    
+
     db.session.delete(auth_user)
     db.session.commit()
-    
+
+    log_auth_event('authorized_user_removed', entity_type='authorized_user',
+                   entity_id=auth_id, detail={'email': email})
+
     flash(f'Removed authorization for {email}. They will no longer be able to sign in.', 'success')
     return redirect(url_for('manage_users'))
 
@@ -3195,20 +3218,38 @@ def view_profile_picture(filename):
 
 
 @app.route('/admin/users/<user_id>/edit', methods=['GET', 'POST'])
-@require_supervisor
+@require_login
 def edit_user_profile(user_id):
+    from auth_models import UserRole, Role, UserJobAssignment
+    from permissions import Perm, has_permission
+    from auth_guards import log_auth_event
+
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.USER_MANAGE):
+        abort(403)
+
     user = User.query.get_or_404(user_id)
-    
+
+    # Load system roles (exclude 'client')
+    system_roles = Role.query.filter(Role.name != 'client').order_by(Role.name).all()
+    current_role_ids = {ur.role_id for ur in UserRole.query.filter_by(user_id=user.id).all()}
+
+    # Load job assignments
+    job_assignments = UserJobAssignment.query.filter_by(user_id=user.id).all()
+    assigned_project_ids = {ja.project_id for ja in job_assignments}
+    available_projects = Project.query.filter(
+        Project.status != 'Closed',
+        ~Project.id.in_(assigned_project_ids) if assigned_project_ids else True
+    ).order_by(Project.id).all()
+
     if request.method == 'POST':
         first_name = request.form.get('first_name', '').strip()
         last_name = request.form.get('last_name', '').strip()
         email = request.form.get('email', '').strip()
         phone = request.form.get('phone', '').strip()
         address = request.form.get('address', '').strip()
-        role = request.form.get('role', '').strip()
 
-        if not first_name or not last_name or not email or not phone or not address:
-            flash('All fields are required.', 'error')
+        if not first_name or not last_name or not email:
+            flash('First name, last name, and email are required.', 'error')
             return redirect(url_for('edit_user_profile', user_id=user_id))
 
         if email != user.email:
@@ -3217,14 +3258,10 @@ def edit_user_profile(user_id):
                 flash('This email is already in use by another user.', 'error')
                 return redirect(url_for('edit_user_profile', user_id=user_id))
 
-        if role not in ['rep', 'supervisor']:
-            flash('Invalid role selected.', 'error')
-            return redirect(url_for('edit_user_profile', user_id=user_id))
-
         hourly_rate = request.form.get('hourly_rate', '0').strip()
         try:
             hourly_rate_val = Decimal(hourly_rate) if hourly_rate else Decimal('0')
-        except:
+        except Exception:
             hourly_rate_val = Decimal('0')
 
         burden_str = request.form.get('burden_multiplier', '').strip()
@@ -3232,7 +3269,7 @@ def edit_user_profile(user_id):
         if burden_str:
             try:
                 burden_val = Decimal(burden_str)
-            except:
+            except Exception:
                 pass
 
         user.first_name = first_name
@@ -3240,61 +3277,210 @@ def edit_user_profile(user_id):
         user.email = email
         user.phone = phone
         user.address = address
-        user.role = role
         user.hourly_rate = hourly_rate_val
         user.burden_multiplier = burden_val
 
+        # Sync roles from checkboxes
+        submitted_role_ids = set()
+        for r in system_roles:
+            if request.form.get(f'role_{r.id}'):
+                submitted_role_ids.add(r.id)
+
+        # Add new roles
+        for rid in submitted_role_ids - current_role_ids:
+            ur = UserRole(user_id=user.id, role_id=rid, assigned_by=current_user.id)
+            db.session.add(ur)
+        # Remove unchecked roles
+        for rid in current_role_ids - submitted_role_ids:
+            UserRole.query.filter_by(user_id=user.id, role_id=rid).delete()
+
+        # Keep legacy role field in sync
+        submitted_role_names = {r.name for r in system_roles if r.id in submitted_role_ids}
+        if submitted_role_names & {'owner', 'office_mgr'}:
+            user.role = 'supervisor'
+        else:
+            user.role = 'rep'
+
         user.updated_at = datetime.now(timezone.utc)
         db.session.commit()
+
+        log_auth_event('user_profile_updated', entity_type='user', entity_id=user.id,
+                       detail={'roles': list(submitted_role_names)})
 
         flash(f'Profile for {user.display_name} updated successfully!', 'success')
         return redirect(url_for('edit_user_profile', user_id=user_id))
 
     default_burden = AppSetting.get('labor_burden_multiplier', '1.25')
-    all_users = User.query.order_by(User.first_name, User.last_name).all()
+    all_users = User.query.filter_by(is_active=True).order_by(User.first_name, User.last_name).all()
     clients_assigned_count = Client.query.filter_by(assigned_to_user_id=user.id, is_active=True).count()
-    
+
     return render_template('edit_user_profile.html', user=user, editing_user=user,
-                          all_users=all_users, clients_assigned_count=clients_assigned_count,
-                          default_burden=default_burden)
+                           all_users=all_users, clients_assigned_count=clients_assigned_count,
+                           default_burden=default_burden, system_roles=system_roles,
+                           current_role_ids=current_role_ids, job_assignments=job_assignments,
+                           available_projects=available_projects)
 
 
-@app.route('/admin/users/<user_id>/remove', methods=['POST'])
-@require_supervisor
-def remove_user(user_id):
+@app.route('/admin/users/<user_id>/deactivate', methods=['POST'])
+@require_login
+def deactivate_user(user_id):
+    from models import AuthorizedUser
+    from auth_models import UserRole, UserJobAssignment
+    from permissions import Perm, has_permission
+    from auth_guards import log_auth_event
+
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.USER_MANAGE):
+        abort(403)
+
     user = User.query.get_or_404(user_id)
-    
+
     if user.id == current_user.id:
-        flash('You cannot remove yourself.', 'error')
+        flash('You cannot deactivate yourself.', 'error')
         return redirect(url_for('manage_users'))
-    
+
     user_name = user.display_name
     reassign_to_id = request.form.get('reassign_to', '').strip()
-    
+
     if reassign_to_id:
         reassign_to_user = User.query.get(reassign_to_id)
         if not reassign_to_user:
             flash('Invalid user selected for client reassignment.', 'error')
             return redirect(url_for('edit_user_profile', user_id=user_id))
-        
+
         clients_count = Client.query.filter_by(assigned_to_user_id=user.id).count()
         Client.query.filter_by(assigned_to_user_id=user.id).update({'assigned_to_user_id': reassign_to_id})
-        
-        flash_message = f'Successfully removed user {user_name}. {clients_count} client(s) have been reassigned to {reassign_to_user.display_name}.'
     else:
+        clients_count = 0
         Client.query.filter_by(assigned_to_user_id=user.id).update({'assigned_to_user_id': None})
-        flash_message = f'Successfully removed user {user_name}. Clients have been unassigned.'
-    
-    Client.query.filter_by(created_by_user_id=user.id).update({'created_by_user_id': None})
-    
-    from models import AuthorizedUser
+
+    # Deactivate instead of delete
+    user.is_active = False
+
+    # Revoke AuthorizedUser entry to prevent re-provisioning
     AuthorizedUser.query.filter_by(email=user.email).delete()
-    
-    db.session.delete(user)
+
+    # Remove role and job assignment entries
+    UserRole.query.filter_by(user_id=user.id).delete()
+    UserJobAssignment.query.filter_by(user_id=user.id).delete()
+
     db.session.commit()
-    
-    flash(flash_message, 'success')
+
+    log_auth_event('user_deactivated', entity_type='user', entity_id=user.id,
+                   detail={'name': user_name, 'reassigned_clients': clients_count})
+
+    msg = f'User {user_name} has been deactivated.'
+    if reassign_to_id and clients_count > 0:
+        msg += f' {clients_count} client(s) reassigned to {reassign_to_user.display_name}.'
+    flash(msg, 'success')
     return redirect(url_for('manage_users'))
+
+
+@app.route('/admin/users/<user_id>/reactivate', methods=['POST'])
+@require_login
+def reactivate_user(user_id):
+    from permissions import Perm, has_permission
+    from auth_guards import log_auth_event
+
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.USER_MANAGE):
+        abort(403)
+
+    user = User.query.get_or_404(user_id)
+    user.is_active = True
+    db.session.commit()
+
+    log_auth_event('user_reactivated', entity_type='user', entity_id=user.id,
+                   detail={'name': user.display_name})
+
+    flash(f'{user.display_name} has been reactivated. Re-add them to Authorized Users to allow login.', 'success')
+    return redirect(url_for('edit_user_profile', user_id=user_id))
+
+
+@app.route('/admin/users/<user_id>/assignments/add', methods=['POST'])
+@require_login
+def add_job_assignment(user_id):
+    from auth_models import UserJobAssignment
+    from permissions import Perm, has_permission
+    from auth_guards import log_auth_event
+
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.USER_MANAGE):
+        abort(403)
+
+    user = User.query.get_or_404(user_id)
+    project_id = request.form.get('project_id', type=int)
+    if not project_id:
+        flash('Please select a project.', 'error')
+        return redirect(url_for('edit_user_profile', user_id=user_id))
+
+    project = Project.query.get_or_404(project_id)
+    existing = UserJobAssignment.query.filter_by(user_id=user.id, project_id=project_id).first()
+    if existing:
+        flash('User is already assigned to this project.', 'error')
+        return redirect(url_for('edit_user_profile', user_id=user_id))
+
+    ja = UserJobAssignment(user_id=user.id, project_id=project_id, assigned_by=current_user.id)
+    db.session.add(ja)
+    db.session.commit()
+
+    log_auth_event('job_assignment_added', entity_type='user_job_assignment', entity_id=ja.id,
+                   detail={'user_id': user.id, 'project_id': project_id})
+
+    flash(f'Assigned {user.display_name} to project #{project_id}.', 'success')
+    return redirect(url_for('edit_user_profile', user_id=user_id))
+
+
+@app.route('/admin/users/<user_id>/assignments/<int:assignment_id>/remove', methods=['POST'])
+@require_login
+def remove_job_assignment(user_id, assignment_id):
+    from auth_models import UserJobAssignment
+    from permissions import Perm, has_permission
+    from auth_guards import log_auth_event
+
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.USER_MANAGE):
+        abort(403)
+
+    ja = UserJobAssignment.query.get_or_404(assignment_id)
+    if ja.user_id != user_id:
+        abort(403)
+
+    log_auth_event('job_assignment_removed', entity_type='user_job_assignment', entity_id=ja.id,
+                   detail={'user_id': user_id, 'project_id': ja.project_id})
+
+    db.session.delete(ja)
+    db.session.commit()
+
+    flash('Job assignment removed.', 'success')
+    return redirect(url_for('edit_user_profile', user_id=user_id))
+
+
+@app.route('/admin/users/<user_id>/permissions')
+@require_login
+def view_user_permissions(user_id):
+    from auth_models import UserRole, Role, UserJobAssignment
+    from permissions import (Perm, Scope, has_permission, get_effective_permissions,
+                             PERMISSION_CATEGORIES, PERMISSION_DESCRIPTIONS)
+
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.USER_MANAGE):
+        abort(403)
+
+    user = User.query.get_or_404(user_id)
+
+    effective = get_effective_permissions(user)
+
+    # Load role names
+    user_roles = UserRole.query.filter_by(user_id=user.id).all()
+    role_ids = [ur.role_id for ur in user_roles]
+    roles = Role.query.filter(Role.id.in_(role_ids)).all() if role_ids else []
+    role_names = [r.name for r in roles]
+
+    # Load job assignments
+    job_assignments = UserJobAssignment.query.filter_by(user_id=user.id).all()
+
+    return render_template('user_permissions.html', editing_user=user,
+                           effective=effective, role_names=role_names,
+                           job_assignments=job_assignments,
+                           PERMISSION_CATEGORIES=PERMISSION_CATEGORIES,
+                           PERMISSION_DESCRIPTIONS=PERMISSION_DESCRIPTIONS,
+                           Scope=Scope)
 
 
 @app.template_filter('format_date')
@@ -8688,9 +8874,13 @@ def qbo_sync_dashboard():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route('/clients/<int:client_id>/portal-users', methods=['POST'])
-@require_supervisor
+@require_login
 def add_portal_user(client_id):
     """Create a ClientUser for the client portal."""
+    from permissions import Perm, has_permission
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.PORTAL_USER_MANAGE):
+        abort(403)
+
     client = Client.query.get_or_404(client_id)
     email = request.form.get('email', '').strip().lower()
     name = request.form.get('name', '').strip()
@@ -8711,8 +8901,12 @@ def add_portal_user(client_id):
 
 
 @app.route('/clients/<int:client_id>/portal-users/<int:cu_id>/delete', methods=['POST'])
-@require_supervisor
+@require_login
 def remove_portal_user(client_id, cu_id):
+    from permissions import Perm, has_permission
+    if not current_user.is_supervisor and not has_permission(current_user, Perm.PORTAL_USER_MANAGE):
+        abort(403)
+
     cu = ClientUser.query.get_or_404(cu_id)
     if cu.client_id != client_id:
         abort(403)

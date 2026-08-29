@@ -50,6 +50,18 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-28 — User Administration
+
+Wired the authorization system to user admin routes. Replaces the old rep/supervisor toggle with proper role-based user management:
+- **Deactivation over deletion:** `deactivate_user` replaces `remove_user` — sets `is_active=False`, revokes AuthorizedUser entry, clears roles/job assignments. Data (time entries, logs) preserved. `reactivate_user` route for reversing.
+- **Role management:** Edit page shows system role checkboxes (crew, foreman, pm, office_mgr, owner) synced to UserRole entries. Legacy `user.role` kept in sync for backward compat.
+- **Job assignments:** Inline add/remove of UserJobAssignment on edit page, controls ASSIGNED-scope permissions.
+- **Effective permissions view:** Read-only page at `/admin/users/<id>/permissions` shows resolved permissions by category with scope badges.
+- **Manage Users overhaul:** Active/inactive toggle, role badges per user, no-role warning banner, invite form with system role selector + auth_role_name auto-provisioning.
+- **Guard swap:** Admin routes use `Perm.USER_MANAGE` (with `is_supervisor` fallback). Portal user routes use `Perm.PORTAL_USER_MANAGE`.
+- **Auth enforcement:** `user_loader` returns None for inactive users. Google OAuth callback blocks deactivated users. New users auto-get UserRole from `auth_role_name` on AuthorizedUser.
+- **Migration:** `o6i8j9k70l31` adds `users.is_active` (bool, default true) and `authorized_users.auth_role_name` (varchar(50)).
+
 ### 2026-08-28 — Daily Log Guided Flow Refinements
 
 Targeted quality upgrades to the existing 7-step daily log wizard (`daily_log_field.html`) to make a "nothing changed" day completable in ~8 taps / under 15 seconds:

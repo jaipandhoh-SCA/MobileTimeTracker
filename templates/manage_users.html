@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="max-w-6xl mx-auto">
+<div class="max-w-6xl mx-auto" x-data="{ showInactive: {{ 'true' if show_inactive else 'false' }} }">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-3xl font-bold text-txt-primary">Manage Users</h1>
         <a href="{{ url_for('home') }}" class="bg-txt-primary hover:bg-txt-primary/80 text-white font-semibold py-2 px-6 rounded-lg">
@@ -9,14 +9,36 @@
         </a>
     </div>
 
+    {% if no_role_count > 0 %}
+    <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6 rounded-r-lg">
+        <div class="flex items-center">
+            <span class="text-yellow-600 font-semibold">{{ no_role_count }} user{{ 's' if no_role_count != 1 }} ha{{ 've' if no_role_count != 1 else 's' }} no role assigned.</span>
+            <span class="text-yellow-700 text-sm ml-2">Assign roles to enable permission-based access.</span>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Active/Inactive toggle -->
+    <div class="flex items-center gap-3 mb-4">
+        <a href="{{ url_for('manage_users', show_inactive='0') }}"
+           class="px-4 py-2 rounded-lg text-sm font-medium {{ 'bg-txt-primary text-white' if not show_inactive else 'bg-pill text-txt-secondary hover:bg-gray-200' }}">
+            Active Users
+        </a>
+        <a href="{{ url_for('manage_users', show_inactive='1') }}"
+           class="px-4 py-2 rounded-lg text-sm font-medium {{ 'bg-txt-primary text-white' if show_inactive else 'bg-pill text-txt-secondary hover:bg-gray-200' }}">
+            Show Inactive
+        </a>
+    </div>
+
+    <!-- Users table -->
     <div class="bg-white rounded-2xl shadow-card overflow-hidden">
         <table class="min-w-full divide-y divide-hairline">
             <thead class="bg-pill">
                 <tr>
                     <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Name</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Email</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Role</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Rate</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Roles</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Status</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Last Login</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Actions</th>
                 </tr>
@@ -31,27 +53,66 @@
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-txt-secondary">{{ user.email or 'N/A' }}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm">
-                        {% if user.role == 'supervisor' %}
-                        <span class="px-2 py-1 text-xs font-semibold rounded-full bg-pill text-txt-primary">Supervisor</span>
+                        {% if user._role_names %}
+                            {% for rn in user._role_names %}
+                            <span class="inline-block px-2 py-0.5 text-xs font-semibold rounded-full
+                                {% if rn == 'owner' %}bg-purple-100 text-purple-700
+                                {% elif rn == 'office_mgr' %}bg-blue-100 text-blue-700
+                                {% elif rn == 'pm' %}bg-green-100 text-green-700
+                                {% elif rn == 'foreman' %}bg-yellow-100 text-yellow-700
+                                {% else %}bg-gray-100 text-gray-700{% endif %} mr-1">
+                                {{ rn.replace('_', ' ').title() }}
+                            </span>
+                            {% endfor %}
                         {% else %}
-                        <span class="px-2 py-1 text-xs font-semibold rounded-full bg-pill text-txt-secondary">Rep</span>
+                            <span class="text-xs text-txt-muted italic">No role</span>
                         {% endif %}
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-txt-secondary">${{ "%.2f"|format(user.hourly_rate|float) if user.hourly_rate else '0.00' }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                        {% if user.is_active %}
+                        <span class="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-700">Active</span>
+                        {% else %}
+                        <span class="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-700">Inactive</span>
+                        {% endif %}
+                    </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-txt-secondary">{{ user.last_login|format_datetime if user.last_login else 'Never' }}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm">
                         <a href="{{ url_for('edit_user_profile', user_id=user.id) }}" class="text-txt-secondary hover:text-txt-primary hover:underline">
-                            Edit Profile
+                            Edit
                         </a>
                     </td>
                 </tr>
                 {% endfor %}
+
+                {% if show_inactive %}
+                {% for user in inactive_users %}
+                <tr class="hover:bg-pill bg-gray-50/50">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-txt-muted">
+                        <a href="{{ url_for('edit_user_profile', user_id=user.id) }}" class="hover:text-txt-primary hover:underline">
+                            {{ user.display_name }}
+                        </a>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-txt-muted">{{ user.email or 'N/A' }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-txt-muted italic">--</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                        <span class="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-700">Inactive</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-txt-muted">{{ user.last_login|format_datetime if user.last_login else 'Never' }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                        <a href="{{ url_for('edit_user_profile', user_id=user.id) }}" class="text-txt-secondary hover:text-txt-primary hover:underline">
+                            Edit
+                        </a>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% endif %}
             </tbody>
         </table>
     </div>
 
+    <!-- Invite new user -->
     <div class="mt-8">
-        <h2 class="text-2xl font-bold text-txt-primary mb-4">Authorized Users</h2>
+        <h2 class="text-2xl font-bold text-txt-primary mb-4">Invite Users</h2>
 
         <div class="bg-white rounded-2xl shadow-card p-6 mb-4">
             <h3 class="font-semibold text-txt-primary mb-3">Add New Authorized User</h3>
@@ -60,10 +121,14 @@
                 <div class="flex flex-wrap gap-3">
                     <input type="email" name="email" placeholder="user@example.com" required
                            class="flex-1 min-w-[200px] px-4 py-2 border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20">
-                    <select name="role" required
+                    <select name="auth_role_name" required
                             class="px-4 py-2 border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20">
-                        <option value="rep">Rep</option>
-                        <option value="supervisor">Supervisor</option>
+                        <option value="">-- Select Role --</option>
+                        <option value="crew">Crew</option>
+                        <option value="foreman">Foreman</option>
+                        <option value="pm">Project Manager</option>
+                        <option value="office_mgr">Office Manager</option>
+                        <option value="owner">Owner</option>
                     </select>
                     <input type="number" name="hourly_rate" placeholder="$/hr" step="0.01" min="0"
                            class="w-24 px-4 py-2 border border-hairline rounded-lg focus:ring-2 focus:ring-txt-primary/20">
@@ -71,17 +136,18 @@
                         Add User
                     </button>
                 </div>
-                <p class="text-sm text-txt-muted">Add authorized users with their role and hourly rate. They'll receive these settings on first login.</p>
+                <p class="text-sm text-txt-muted">Add authorized users with their role and hourly rate. They'll receive these settings on first Google login.</p>
             </form>
         </div>
 
+        <!-- Pending invitations -->
         <div class="bg-white rounded-2xl shadow-card overflow-hidden">
             <table class="min-w-full divide-y divide-hairline">
                 <thead class="bg-pill">
                     <tr>
                         <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Email Address</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Status</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Role</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Intended Role</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Added By</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Date Added</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-txt-muted uppercase">Actions</th>
@@ -93,16 +159,18 @@
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-txt-primary">{{ auth.email }}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm">
                             {% if auth.has_logged_in %}
-                            <span class="px-2 py-1 text-xs font-semibold rounded-full bg-pill text-txt-secondary">Active</span>
+                            <span class="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-700">Active</span>
                             {% else %}
-                            <span class="px-2 py-1 text-xs font-semibold rounded-full bg-pill text-txt-secondary">Pending</span>
+                            <span class="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-700">Pending</span>
                             {% endif %}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm">
-                            {% if auth.role == 'supervisor' %}
-                            <span class="px-2 py-1 text-xs font-semibold rounded-full bg-pill text-txt-primary">Supervisor</span>
+                            {% if auth.auth_role_name %}
+                            <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-pill text-txt-primary">
+                                {{ auth.auth_role_name.replace('_', ' ').title() }}
+                            </span>
                             {% else %}
-                            <span class="px-2 py-1 text-xs font-semibold rounded-full bg-pill text-txt-secondary">Rep</span>
+                            <span class="text-xs text-txt-muted">{{ auth.role|title }}</span>
                             {% endif %}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-txt-secondary">{{ auth.added_by.display_name if auth.added_by else 'System' }}</td>
@@ -132,13 +200,11 @@
     <div class="mt-6 p-4 bg-pill rounded-2xl">
         <h2 class="font-semibold text-txt-primary mb-2">How to manage users:</h2>
         <ul class="text-sm text-txt-secondary space-y-1">
-            <li>• The first user to sign in automatically becomes a supervisor</li>
-            <li>• Add email addresses to the "Authorized Users" list with their role</li>
-            <li>• New users will receive the assigned role when they first sign in</li>
-            <li>• Click on a user's name or "Edit Profile" to view and edit their details</li>
-            <li>• On the edit page, you can change role, contact information, and remove the user</li>
-            <li>• Before removing a user with assigned clients, you'll be prompted to reassign those clients</li>
-            <li>• Supervisors can view all data, manage clients, and export reports</li>
+            <li>&#8226; Add email addresses with a system role. When they sign in via Google, they'll receive that role automatically.</li>
+            <li>&#8226; Roles control permissions: Owner has all, Office Mgr has most, PM/Foreman/Crew have progressively narrower access.</li>
+            <li>&#8226; Click Edit to change roles, assign job projects, or deactivate a user.</li>
+            <li>&#8226; Deactivating a user preserves their data (time entries, logs) but blocks login.</li>
+            <li>&#8226; View a user's effective permissions from their edit page.</li>
         </ul>
     </div>
 </div>

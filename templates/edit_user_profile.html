@@ -27,8 +27,18 @@
                 </div>
                 <div class="flex-1">
                     <h2 class="text-xl font-semibold text-txt-primary">{{ editing_user.display_name }}</h2>
-                    <p class="text-txt-secondary">{{ editing_user.role|title }}</p>
+                    <div class="flex items-center gap-2 mt-1">
+                        {% if editing_user.is_active %}
+                        <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-green-100 text-green-700">Active</span>
+                        {% else %}
+                        <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-red-100 text-red-700">Inactive</span>
+                        {% endif %}
+                    </div>
                     <p class="text-sm text-txt-muted mt-1">User ID: {{ editing_user.id }}</p>
+                    <a href="{{ url_for('view_user_permissions', user_id=editing_user.id) }}"
+                       class="inline-block mt-2 text-sm text-txt-secondary hover:text-txt-primary hover:underline">
+                        View Effective Permissions →
+                    </a>
                 </div>
             </div>
 
@@ -37,39 +47,24 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
 
                 <div class="space-y-6">
-                    <div class="bg-pill border-l-4 border-hairline p-4 mb-6">
-                        <p class="text-sm text-txt-secondary">
-                            <strong>Supervisor Mode:</strong> You can edit all profile details including role and hourly rate.
-                        </p>
-                    </div>
-
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
                             <label for="first_name" class="block text-sm font-semibold text-txt-secondary mb-2">
                                 First Name <span class="text-neg">*</span>
                             </label>
-                            <input
-                                type="text"
-                                id="first_name"
-                                name="first_name"
-                                value="{{ editing_user.first_name or '' }}"
-                                required
-                                class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                                placeholder="Enter first name">
+                            <input type="text" id="first_name" name="first_name"
+                                   value="{{ editing_user.first_name or '' }}" required
+                                   class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                                   placeholder="Enter first name">
                         </div>
-
                         <div>
                             <label for="last_name" class="block text-sm font-semibold text-txt-secondary mb-2">
                                 Last Name <span class="text-neg">*</span>
                             </label>
-                            <input
-                                type="text"
-                                id="last_name"
-                                name="last_name"
-                                value="{{ editing_user.last_name or '' }}"
-                                required
-                                class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                                placeholder="Enter last name">
+                            <input type="text" id="last_name" name="last_name"
+                                   value="{{ editing_user.last_name or '' }}" required
+                                   class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                                   placeholder="Enter last name">
                         </div>
                     </div>
 
@@ -77,98 +72,133 @@
                         <label for="email" class="block text-sm font-semibold text-txt-secondary mb-2">
                             Email Address <span class="text-neg">*</span>
                         </label>
-                        <input
-                            type="email"
-                            id="email"
-                            name="email"
-                            value="{{ editing_user.email or '' }}"
-                            required
-                            class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                            placeholder="your.email@example.com">
-                        <p class="mt-1 text-xs text-txt-muted">This email will be used for login and communication</p>
+                        <input type="email" id="email" name="email"
+                               value="{{ editing_user.email or '' }}" required
+                               class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                               placeholder="your.email@example.com">
+                        <p class="mt-1 text-xs text-txt-muted">This email is used for Google OAuth login</p>
                     </div>
 
-                    <div>
-                        <label for="phone" class="block text-sm font-semibold text-txt-secondary mb-2">
-                            Phone Number <span class="text-neg">*</span>
-                        </label>
-                        <input
-                            type="tel"
-                            id="phone"
-                            name="phone"
-                            value="{{ editing_user.phone or '' }}"
-                            required
-                            class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                            placeholder="(555) 123-4567">
-                        <p class="mt-1 text-xs text-txt-muted">Format: (555) 123-4567 or 555-123-4567</p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label for="phone" class="block text-sm font-semibold text-txt-secondary mb-2">Phone Number</label>
+                            <input type="tel" id="phone" name="phone"
+                                   value="{{ editing_user.phone or '' }}"
+                                   class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                                   placeholder="(555) 123-4567">
+                        </div>
+                        <div>
+                            <label for="address" class="block text-sm font-semibold text-txt-secondary mb-2">Address</label>
+                            <input type="text" id="address" name="address"
+                                   value="{{ editing_user.address or '' }}"
+                                   class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                                   placeholder="123 Main St, City, State ZIP">
+                        </div>
                     </div>
 
-                    <div>
-                        <label for="address" class="block text-sm font-semibold text-txt-secondary mb-2">
-                            Address <span class="text-neg">*</span>
-                        </label>
-                        <textarea
-                            id="address"
-                            name="address"
-                            rows="3"
-                            required
-                            class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                            placeholder="123 Main Street, City, State ZIP">{{ editing_user.address or '' }}</textarea>
-                        <p class="mt-1 text-xs text-txt-muted">User's full mailing address</p>
-                    </div>
-
+                    <!-- System Roles -->
                     <div class="pt-4 border-t border-hairline">
-                        <h3 class="text-lg font-semibold text-txt-primary mb-4">Supervisor Controls</h3>
+                        <h3 class="text-lg font-semibold text-txt-primary mb-3">System Roles</h3>
+                        <p class="text-sm text-txt-muted mb-4">Select the roles for this user. Roles determine which permissions they have.</p>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {% for role in system_roles %}
+                            <label class="flex items-start gap-3 p-3 rounded-lg border border-hairline hover:bg-pill cursor-pointer">
+                                <input type="checkbox" name="role_{{ role.id }}" value="1"
+                                       {% if role.id in current_role_ids %}checked{% endif %}
+                                       class="mt-0.5 rounded border-gray-300 text-txt-primary focus:ring-txt-primary/20">
+                                <div>
+                                    <span class="text-sm font-medium text-txt-primary">{{ role.name.replace('_', ' ').title() }}</span>
+                                    <p class="text-xs text-txt-muted mt-0.5">
+                                        {% if role.name == 'crew' %}Field worker — own time, assigned jobs
+                                        {% elif role.name == 'foreman' %}Field lead — crew time approval, daily logs
+                                        {% elif role.name == 'pm' %}Project manager — full project access
+                                        {% elif role.name == 'office_mgr' %}Office — billing, payroll, settings
+                                        {% elif role.name == 'owner' %}Full access to everything
+                                        {% else %}{{ role.description or '' }}{% endif %}
+                                    </p>
+                                </div>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </div>
 
+                    <!-- Compensation -->
+                    <div class="pt-4 border-t border-hairline">
+                        <h3 class="text-lg font-semibold text-txt-primary mb-3">Compensation</h3>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
-                                <label for="role" class="block text-sm font-semibold text-txt-secondary mb-2">
-                                    Role <span class="text-neg">*</span>
-                                </label>
-                                <select
-                                    id="role"
-                                    name="role"
-                                    required
-                                    class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20">
-                                    <option value="rep" {% if editing_user.role == 'rep' %}selected{% endif %}>Rep</option>
-                                    <option value="supervisor" {% if editing_user.role == 'supervisor' %}selected{% endif %}>Supervisor</option>
-                                </select>
-                                <p class="mt-1 text-xs text-txt-muted">Change user's role and permissions</p>
-                            </div>
-
-                            <div>
-                                <label for="hourly_rate" class="block text-sm font-semibold text-txt-secondary mb-2">
-                                    Hourly Rate ($)
-                                </label>
-                                <input
-                                    type="number"
-                                    id="hourly_rate"
-                                    name="hourly_rate"
-                                    value="{{ editing_user.hourly_rate or '0' }}"
-                                    step="0.01"
-                                    min="0"
-                                    class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                                    placeholder="0.00">
+                                <label for="hourly_rate" class="block text-sm font-semibold text-txt-secondary mb-2">Hourly Rate ($)</label>
+                                <input type="number" id="hourly_rate" name="hourly_rate"
+                                       value="{{ editing_user.hourly_rate or '0' }}" step="0.01" min="0"
+                                       class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                                       placeholder="0.00">
                                 <p class="mt-1 text-xs text-txt-muted">Used for payroll calculations</p>
                             </div>
                             <div>
-                                <label for="burden_multiplier" class="block text-sm font-semibold text-txt-secondary mb-2">
-                                    Burden Multiplier (override)
-                                </label>
-                                <input
-                                    type="number"
-                                    id="burden_multiplier"
-                                    name="burden_multiplier"
-                                    value="{{ editing_user.burden_multiplier or '' }}"
-                                    step="0.01"
-                                    min="0"
-                                    class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
-                                    placeholder="{{ default_burden }}">
-                                <p class="mt-1 text-xs text-txt-muted">Leave blank to use company default ({{ default_burden }}x). Burdened rate = hourly &times; multiplier.</p>
+                                <label for="burden_multiplier" class="block text-sm font-semibold text-txt-secondary mb-2">Burden Multiplier (override)</label>
+                                <input type="number" id="burden_multiplier" name="burden_multiplier"
+                                       value="{{ editing_user.burden_multiplier or '' }}" step="0.01" min="0"
+                                       class="w-full px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20"
+                                       placeholder="{{ default_burden }}">
+                                <p class="mt-1 text-xs text-txt-muted">Leave blank to use company default ({{ default_burden }}x)</p>
                             </div>
                         </div>
                     </div>
 
+                    <!-- Job Assignments -->
+                    <div class="pt-4 border-t border-hairline">
+                        <h3 class="text-lg font-semibold text-txt-primary mb-3">Job Assignments</h3>
+                        <p class="text-sm text-txt-muted mb-4">Job assignments control what this user can access when they have ASSIGNED-scope permissions.</p>
+
+                        {% if job_assignments %}
+                        <div class="space-y-2 mb-4">
+                            {% for ja in job_assignments %}
+                            <div class="flex items-center justify-between p-3 bg-pill rounded-lg">
+                                <div>
+                                    <span class="text-sm font-medium text-txt-primary">
+                                        Project #{{ ja.project_id }}
+                                        {% if ja.project %}
+                                        — {{ ja.project.client.company_name if ja.project.client else '' }}
+                                        {% endif %}
+                                    </span>
+                                    <span class="text-xs text-txt-muted ml-2">
+                                        Assigned {{ ja.assigned_at|format_datetime if ja.assigned_at else '' }}
+                                    </span>
+                                </div>
+                                <form method="POST" action="{{ url_for('remove_job_assignment', user_id=editing_user.id, assignment_id=ja.id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                                    <button type="submit" class="text-xs text-neg hover:text-neg/80"
+                                            onclick="return confirm('Remove this assignment?')">Remove</button>
+                                </form>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <p class="text-sm text-txt-muted italic mb-4">No job assignments yet.</p>
+                        {% endif %}
+
+                        {% if available_projects %}
+                        <form method="POST" action="{{ url_for('add_job_assignment', user_id=editing_user.id) }}" class="flex gap-3">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                            <select name="project_id" required
+                                    class="flex-1 px-3 py-2 border border-hairline rounded-md focus:outline-none focus:ring-2 focus:ring-txt-primary/20 text-sm">
+                                <option value="">-- Select Project --</option>
+                                {% for p in available_projects %}
+                                <option value="{{ p.id }}">
+                                    #{{ p.id }}
+                                    {% if p.client %} — {{ p.client.company_name }}{% endif %}
+                                    {% if p.name %} ({{ p.name }}){% endif %}
+                                </option>
+                                {% endfor %}
+                            </select>
+                            <button type="submit" class="px-4 py-2 bg-txt-primary text-white rounded-md text-sm font-medium hover:bg-txt-primary/80">
+                                Add
+                            </button>
+                        </form>
+                        {% endif %}
+                    </div>
+
+                    <!-- Account Info -->
                     <div class="pt-4 border-t border-hairline">
                         <h3 class="text-lg font-semibold text-txt-primary mb-2">Account Information</h3>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
@@ -183,23 +213,32 @@
                         </div>
                     </div>
 
+                    <!-- Actions -->
                     <div class="flex items-center justify-between pt-6 border-t border-hairline">
                         <div class="flex items-center gap-3">
                             <a href="{{ url_for('manage_users') }}" class="px-6 py-2 bg-pill text-txt-secondary rounded-md font-medium hover:bg-gray-200">
                                 Cancel
                             </a>
                             {% if editing_user.id != current_user.id %}
-                            <button
-                                type="button"
-                                onclick="initiateUserRemoval()"
-                                class="px-6 py-2 bg-neg text-white rounded-md font-medium hover:bg-neg/80">
-                                Remove User
-                            </button>
+                                {% if editing_user.is_active %}
+                                <button type="button" onclick="initiateDeactivation()"
+                                        class="px-6 py-2 bg-neg text-white rounded-md font-medium hover:bg-neg/80">
+                                    Deactivate User
+                                </button>
+                                {% else %}
+                                <form method="POST" action="{{ url_for('reactivate_user', user_id=editing_user.id) }}" class="inline">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                                    <button type="submit"
+                                            class="px-6 py-2 bg-green-600 text-white rounded-md font-medium hover:bg-green-700"
+                                            onclick="return confirm('Reactivate {{ editing_user.display_name }}? You will also need to re-add them to Authorized Users for login.')">
+                                        Reactivate User
+                                    </button>
+                                </form>
+                                {% endif %}
                             {% endif %}
                         </div>
-                        <button
-                            type="submit"
-                            class="px-6 py-2 bg-txt-primary text-white rounded-md font-medium hover:bg-txt-primary/80">
+                        <button type="submit"
+                                class="px-6 py-2 bg-txt-primary text-white rounded-md font-medium hover:bg-txt-primary/80">
                             Update User Profile
                         </button>
                     </div>
@@ -216,7 +255,7 @@
             <h3 class="text-lg font-semibold text-txt-primary mb-4">Reassign Clients</h3>
             <p class="text-sm text-txt-secondary mb-4">
                 <span id="clientCount"></span> client(s) are currently assigned to <strong>{{ editing_user.display_name }}</strong>.
-                Please select a user to reassign these clients to before removing this user.
+                Please select a user to reassign these clients to before deactivating.
             </p>
 
             <div class="mb-4">
@@ -227,25 +266,17 @@
                     <option value="">-- Select a user --</option>
                     {% for user in all_users %}
                     {% if user.id != editing_user.id %}
-                    <option value="{{ user.id }}">{{ user.display_name }} ({{ user.role|title }})</option>
+                    <option value="{{ user.id }}">{{ user.display_name }}</option>
                     {% endif %}
                     {% endfor %}
                 </select>
             </div>
 
             <div class="flex items-center justify-end gap-3 mt-6">
-                <button
-                    type="button"
-                    onclick="closeReassignModal()"
-                    class="px-4 py-2 bg-pill text-txt-secondary rounded-md hover:bg-gray-200">
-                    Cancel
-                </button>
-                <button
-                    type="button"
-                    onclick="confirmUserRemoval()"
-                    class="px-4 py-2 bg-neg text-white rounded-md hover:bg-neg/80">
-                    Continue Removal
-                </button>
+                <button type="button" onclick="closeReassignModal()"
+                        class="px-4 py-2 bg-pill text-txt-secondary rounded-md hover:bg-gray-200">Cancel</button>
+                <button type="button" onclick="confirmDeactivation()"
+                        class="px-4 py-2 bg-neg text-white rounded-md hover:bg-neg/80">Continue</button>
             </div>
         </div>
     </div>
@@ -254,13 +285,13 @@
 <script>
 let clientsAssignedCount = {{ clients_assigned_count }};
 
-async function initiateUserRemoval() {
+function initiateDeactivation() {
     if (clientsAssignedCount > 0) {
         document.getElementById('clientCount').textContent = clientsAssignedCount;
         document.getElementById('reassignModal').classList.remove('hidden');
     } else {
-        if (confirm('Are you sure you want to remove {{ editing_user.display_name }}? This will delete all their time entries. This action cannot be undone.')) {
-            removeUser(null);
+        if (confirm('Deactivate {{ editing_user.display_name }}? They will no longer be able to log in. Their data (time entries, logs) will be preserved.')) {
+            submitDeactivation(null);
         }
     }
 }
@@ -269,25 +300,22 @@ function closeReassignModal() {
     document.getElementById('reassignModal').classList.add('hidden');
 }
 
-async function confirmUserRemoval() {
+function confirmDeactivation() {
     const reassignToUserId = document.getElementById('reassignTo').value;
-
     if (!reassignToUserId) {
         alert('Please select a user to reassign clients to.');
         return;
     }
-
     closeReassignModal();
-
-    if (confirm('Are you sure you want to remove {{ editing_user.display_name }}? All clients will be reassigned and all time entries will be deleted. This action cannot be undone.')) {
-        removeUser(reassignToUserId);
+    if (confirm('Deactivate {{ editing_user.display_name }}? Clients will be reassigned and login will be blocked.')) {
+        submitDeactivation(reassignToUserId);
     }
 }
 
-async function removeUser(reassignToUserId) {
+function submitDeactivation(reassignToUserId) {
     const form = document.createElement('form');
     form.method = 'POST';
-    form.action = '{{ url_for("remove_user", user_id=editing_user.id) }}';
+    form.action = '{{ url_for("deactivate_user", user_id=editing_user.id) }}';
 
     const csrfToken = document.createElement('input');
     csrfToken.type = 'hidden';
@@ -296,11 +324,11 @@ async function removeUser(reassignToUserId) {
     form.appendChild(csrfToken);
 
     if (reassignToUserId) {
-        const reassignInput = document.createElement('input');
-        reassignInput.type = 'hidden';
-        reassignInput.name = 'reassign_to';
-        reassignInput.value = reassignToUserId;
-        form.appendChild(reassignInput);
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'reassign_to';
+        input.value = reassignToUserId;
+        form.appendChild(input);
     }
 
     document.body.appendChild(form);

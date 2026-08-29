@@ -54,7 +54,10 @@ login_manager = LoginManager(app)
 @login_manager.user_loader
 def load_user(user_id):
     from models import User
-    return User.query.get(user_id)
+    user = User.query.get(user_id)
+    if user and not getattr(user, 'is_active', True):
+        return None
+    return user
 
 with app.app_context():
     import models
@@ -86,7 +89,14 @@ with app.app_context():
     if 'hourly_rate' not in auth_user_cols:
         db.session.execute(text('ALTER TABLE authorized_users ADD COLUMN hourly_rate NUMERIC(8, 2) DEFAULT 0'))
         logging.info("Added hourly_rate column to authorized_users")
+    if 'auth_role_name' not in auth_user_cols:
+        db.session.execute(text('ALTER TABLE authorized_users ADD COLUMN auth_role_name VARCHAR(50)'))
+        logging.info("Added auth_role_name column to authorized_users")
 
+    # Auto-migrate: add is_active to users if missing
+    if 'is_active' not in user_cols:
+        db.session.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"))
+        logging.info("Added is_active column to users")
 
     # Auto-migrate: add payroll/job-costing columns to time_entries if missing
     te_cols = [c['name'] for c in inspector.get_columns('time_entries')]

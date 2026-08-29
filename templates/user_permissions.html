@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}Permissions - {{ editing_user.display_name }}{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto">
+    <div class="bg-white shadow-card rounded-2xl">
+        <!-- Header -->
+        <div class="border-b border-hairline px-6 py-4 flex justify-between items-center">
+            <h1 class="text-2xl font-semibold text-txt-primary">Effective Permissions</h1>
+            <a href="{{ url_for('edit_user_profile', user_id=editing_user.id) }}" class="text-txt-secondary hover:text-txt-primary hover:underline">
+                ← Back to Edit Profile
+            </a>
+        </div>
+
+        <div class="p-6">
+            <!-- User info -->
+            <div class="flex items-center gap-4 mb-6">
+                {% if editing_user.profile_image_url %}
+                <img src="{{ editing_user.profile_image_url }}" alt="{{ editing_user.display_name }}" class="w-12 h-12 rounded-full">
+                {% else %}
+                <div class="w-12 h-12 rounded-full bg-pill flex items-center justify-center text-txt-secondary font-semibold text-lg">
+                    {{ editing_user.first_name[0] if editing_user.first_name else 'U' }}
+                </div>
+                {% endif %}
+                <div>
+                    <h2 class="text-lg font-semibold text-txt-primary">{{ editing_user.display_name }}</h2>
+                    <div class="flex items-center gap-2 mt-1">
+                        {% for rn in role_names %}
+                        <span class="inline-block px-2 py-0.5 text-xs font-semibold rounded-full
+                            {% if rn == 'owner' %}bg-purple-100 text-purple-700
+                            {% elif rn == 'office_mgr' %}bg-blue-100 text-blue-700
+                            {% elif rn == 'pm' %}bg-green-100 text-green-700
+                            {% elif rn == 'foreman' %}bg-yellow-100 text-yellow-700
+                            {% else %}bg-gray-100 text-gray-700{% endif %}">
+                            {{ rn.replace('_', ' ').title() }}
+                        </span>
+                        {% endfor %}
+                        {% if not role_names %}
+                        <span class="text-xs text-txt-muted italic">No roles assigned</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Job assignments context -->
+            {% if job_assignments %}
+            <div class="mb-6 p-4 bg-pill rounded-lg">
+                <h3 class="text-sm font-semibold text-txt-primary mb-2">Job Assignments (for ASSIGNED scope)</h3>
+                <div class="flex flex-wrap gap-2">
+                    {% for ja in job_assignments %}
+                    <span class="inline-block px-3 py-1 text-xs font-medium rounded-full bg-white text-txt-secondary border border-hairline">
+                        Project #{{ ja.project_id }}
+                        {% if ja.project and ja.project.client %} — {{ ja.project.client.company_name }}{% endif %}
+                    </span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            <p class="text-sm text-txt-muted mb-6">
+                This is a read-only view. Permissions are derived from assigned roles. To change permissions, update the user's roles on the edit page.
+            </p>
+
+            <!-- Permissions grid by category -->
+            {% for category, perms in PERMISSION_CATEGORIES.items() %}
+            <div class="mb-6">
+                <h3 class="text-sm font-semibold text-txt-primary mb-2 uppercase tracking-wide">{{ category }}</h3>
+                <div class="border border-hairline rounded-lg overflow-hidden">
+                    <table class="min-w-full divide-y divide-hairline">
+                        <tbody class="divide-y divide-hairline">
+                            {% for perm in perms %}
+                            <tr class="{% if perm in effective %}bg-white{% else %}bg-gray-50/50{% endif %}">
+                                <td class="px-4 py-2.5 text-sm {% if perm in effective %}text-txt-primary{% else %}text-txt-muted{% endif %}">
+                                    {{ PERMISSION_DESCRIPTIONS.get(perm, perm) }}
+                                </td>
+                                <td class="px-4 py-2.5 text-right">
+                                    {% if perm in effective %}
+                                        {% set scope = effective[perm] %}
+                                        {% if scope == Scope.ALL %}
+                                        <span class="inline-block px-2 py-0.5 text-xs font-semibold rounded-full bg-green-100 text-green-700">ALL</span>
+                                        {% elif scope == Scope.ASSIGNED %}
+                                        <span class="inline-block px-2 py-0.5 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-700">ASSIGNED</span>
+                                        {% elif scope == Scope.SELF %}
+                                        <span class="inline-block px-2 py-0.5 text-xs font-semibold rounded-full bg-blue-100 text-blue-700">SELF</span>
+                                        {% endif %}
+                                    {% else %}
+                                        <span class="inline-block px-2 py-0.5 text-xs font-semibold rounded-full bg-gray-100 text-gray-400">—</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {% endfor %}
+
+            <!-- Legend -->
+            <div class="mt-6 p-4 bg-pill rounded-lg">
+                <h3 class="text-sm font-semibold text-txt-primary mb-2">Scope Legend</h3>
+                <div class="flex flex-wrap gap-4 text-xs text-txt-secondary">
+                    <div class="flex items-center gap-1">
+                        <span class="inline-block px-2 py-0.5 font-semibold rounded-full bg-green-100 text-green-700">ALL</span>
+                        Access to all records
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <span class="inline-block px-2 py-0.5 font-semibold rounded-full bg-yellow-100 text-yellow-700">ASSIGNED</span>
+                        Only assigned projects
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <span class="inline-block px-2 py-0.5 font-semibold rounded-full bg-blue-100 text-blue-700">SELF</span>
+                        Only own records
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <span class="inline-block px-2 py-0.5 font-semibold rounded-full bg-gray-100 text-gray-400">—</span>
+                        No access
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

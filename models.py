@@ -26,6 +26,7 @@ class User(UserMixin, db.Model):
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
     last_login = db.Column(db.DateTime, nullable=True)
     is_external = db.Column(db.Boolean, default=False, nullable=False)
+    is_active = db.Column(db.Boolean, default=True, nullable=False, server_default='true')
 
     __internal_fields__ = {'hourly_rate', 'burden_multiplier'}
 
@@ -789,8 +790,10 @@ class AuthorizedUser(db.Model):
     added_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=True)
     created_at = db.Column(db.DateTime, default=_utcnow)
     
+    auth_role_name = db.Column(db.String(50), nullable=True)
+
     added_by = db.relationship('User', foreign_keys=[added_by_user_id])
-    
+
     def __repr__(self):
         return f'<AuthorizedUser {self.email}>'
 
@@ -876,6 +879,7 @@ class DailyLogPhoto(db.Model):
     caption = db.Column(db.String(500), nullable=True)
     sort_order = db.Column(db.Integer, default=0)
     uploaded_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    client_visible = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=_utcnow)
 
     client = db.relationship('Client')
@@ -894,6 +898,84 @@ class DailyLogPhoto(db.Model):
 TASK_STATUSES = ['Not Started', 'In Progress', 'Complete', 'Blocked']
 TASK_PRIORITIES = ['Low', 'Medium', 'High']
 
+# ── Camera-first photo capture constants ────────────────────────────────────
+PHOTO_CATEGORIES = [
+    'progress', 'delivery', 'issue', 'safety',
+    'inspection', 'before_after', 'uncategorized',
+]
+FIELD_ISSUE_STATUSES = ['Open', 'In Progress', 'Resolved', 'Closed']
+FIELD_ISSUE_PRIORITIES = ['Low', 'Medium', 'High', 'Critical']
+
+
+class FieldIssue(db.Model):
+    """Lightweight field issue tracker, often created from photo capture."""
+    __tablename__ = 'field_issues'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=True)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=True)
+    title = db.Column(db.String(300), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(20), nullable=False, default='Open')
+    priority = db.Column(db.String(10), nullable=False, default='Medium')
+    reported_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    assigned_to_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=True)
+    resolved_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+    client_uuid = db.Column(db.String(36), nullable=True, unique=True)
+
+    client = db.relationship('Client', backref=db.backref('field_issues', lazy='dynamic'))
+    project = db.relationship('Project')
+    cost_code = db.relationship('CostCode')
+    reported_by = db.relationship('User', foreign_keys=[reported_by_user_id])
+    assigned_to = db.relationship('User', foreign_keys=[assigned_to_user_id])
+    photos = db.relationship('JobPhoto', backref='field_issue', lazy='dynamic')
+
+    __table_args__ = (
+        Index('idx_fi_client_status', 'client_id', 'status'),
+        Index('idx_fi_assigned_status', 'assigned_to_user_id', 'status'),
+    )
+
+    def __repr__(self):
+        return f'<FieldIssue {self.id} - {self.title}>'
+
+
+class JobPhoto(db.Model):
+    """Independent job photo — not tied to a daily log."""
+    __tablename__ = 'job_photos'
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=True)
+    cost_code_id = db.Column(db.Integer, db.ForeignKey('cost_codes.id'), nullable=True)
+    field_issue_id = db.Column(db.Integer, db.ForeignKey('field_issues.id'), nullable=True)
+    batch_uuid = db.Column(db.String(36), nullable=True)
+    category = db.Column(db.String(30), nullable=False, default='uncategorized')
+    storage_key = db.Column(db.String(500), nullable=False)
+    file_name = db.Column(db.String(255), nullable=False)
+    caption = db.Column(db.String(500), nullable=True)
+    latitude = db.Column(db.Float, nullable=True)
+    longitude = db.Column(db.Float, nullable=True)
+    taken_at = db.Column(db.DateTime, nullable=False)
+    uploaded_by_user_id = db.Column(db.String, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    media_uuid = db.Column(db.String(36), nullable=True, unique=True)
+
+    client = db.relationship('Client', backref=db.backref('job_photos', lazy='dynamic'))
+    project = db.relationship('Project')
+    cost_code = db.relationship('CostCode')
+    uploaded_by = db.relationship('User', foreign_keys=[uploaded_by_user_id])
+
+    __table_args__ = (
+        Index('idx_jp_client_taken', 'client_id', 'taken_at'),
+        Index('idx_jp_batch', 'batch_uuid'),
+        Index('idx_jp_client_cat', 'client_id', 'category'),
+        Index('idx_jp_issue', 'field_issue_id'),
+    )
+
+    def __repr__(self):
+        return f'<JobPhoto {self.id} - {self.file_name}>'
+
 
 class SchedulePhase(db.Model):
     """A phase/stage within a project schedule (e.g. Foundation, Framing)."""
@@ -903,6 +985,8 @@ class SchedulePhase(db.Model):
     name = db.Column(db.String(200), nullable=False)
     sort_order = db.Column(db.Integer, default=0)
     color = db.Column(db.String(7), default='#6366f1')
+    client_label = db.Column(db.String(200), nullable=True)
+    client_description = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=_utcnow)
 
     project = db.relationship('Project', backref=db.backref(
@@ -1462,6 +1546,8 @@ class SelectionCategory(db.Model):
     description = db.Column(db.Text, nullable=True)
     sort_order = db.Column(db.Integer, nullable=False, default=0)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
+    deadline = db.Column(db.Date, nullable=True)
+    late_impact = db.Column(db.Text, nullable=True)
 
     options = db.relationship('SelectionOption', backref='category',
                                lazy='dynamic', order_by='SelectionOption.sort_order')

@@ -139,11 +139,27 @@ def callback():
 
         # Set last_login timestamp for new users
         user.last_login = datetime.now(timezone.utc)
-        
+
         db.session.add(user)
+        db.session.flush()  # get user.id before creating UserRole
+
+        # Auto-assign UserRole if auth_role_name is set on the invitation
+        if user_count > 0:
+            authorized_user = AuthorizedUser.query.filter_by(email=user_email).first()
+            if authorized_user and authorized_user.auth_role_name:
+                from auth_models import Role, UserRole
+                role = Role.query.filter_by(name=authorized_user.auth_role_name).first()
+                if role:
+                    ur = UserRole(user_id=user.id, role_id=role.id)
+                    db.session.add(ur)
+
         db.session.commit()
     else:
-        # Existing user found by email - update last login and profile picture
+        # Existing user found by email — block if deactivated
+        if not getattr(user, 'is_active', True):
+            return redirect(url_for('google_auth.access_denied'))
+
+        # Update last login and profile picture
         user.last_login = datetime.now(timezone.utc)
         if profile_picture and not user.profile_image_url:
             user.profile_image_url = profile_picture
