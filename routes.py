@@ -29,6 +29,7 @@ from models import (
     ClientUser, MagicLink, SelectionCategory, SelectionOption,
     ClientSelection, PortalMessage, SELECTION_STATUSES,
     PromptDismissal,
+    JobPhoto, FieldIssue, PHOTO_CATEGORIES,
 )
 from google_auth import require_login, require_supervisor, google_auth
 from utils import (
@@ -6897,6 +6898,19 @@ def delete_daily_log_photo(photo_id):
     return redirect(url_for('edit_daily_log', log_id=log_id))
 
 
+@app.route('/daily-logs/photos/<int:photo_id>/toggle-client-visible', methods=['POST'])
+@require_login
+def toggle_photo_client_visible(photo_id):
+    """Toggle whether a photo is visible on the client portal."""
+    photo = DailyLogPhoto.query.get_or_404(photo_id)
+    photo.client_visible = not photo.client_visible
+    db.session.commit()
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify(ok=True, client_visible=photo.client_visible)
+    flash(f'Photo {"published to" if photo.client_visible else "hidden from"} client portal.', 'success')
+    return redirect(url_for('view_daily_log', log_id=photo.daily_log_id))
+
+
 # ── Daily Log View (read-only) ──────────────────────────────────────────────
 
 @app.route('/daily-logs/<int:log_id>')
@@ -7088,6 +7102,7 @@ def field_sync():
     from field_sync_helpers import (
         upsert_daily_log, upsert_time_punch,
         upsert_material_note, upsert_general_note,
+        upsert_photo_batch,
     )
 
     if not request.is_json:
@@ -7112,6 +7127,8 @@ def field_sync():
             result = upsert_material_note(client_uuid, data)
         elif entry_type == 'general_note':
             result = upsert_general_note(client_uuid, data)
+        elif entry_type == 'photo_batch':
+            result = upsert_photo_batch(client_uuid, data)
         else:
             return jsonify(ok=False, error=f'Unknown type: {entry_type}'), 400
 
@@ -7147,19 +7164,6 @@ def field_media_upload():
     if not f:
         return jsonify(ok=False, error='file is required'), 400
 
-    # Dedup by media_uuid
-    if media_uuid:
-        existing_photo = DailyLogPhoto.query.filter_by(
-            storage_key=f'field-media/{media_uuid}'
-        ).first()
-        if existing_photo:
-            return jsonify(ok=True, status='duplicate', id=existing_photo.id)
-
-    # Find the parent daily log by client_uuid
-    parent_log = DailyLog.query.filter_by(client_uuid=parent_uuid).first()
-    if not parent_log:
-        return jsonify(ok=False, error='Parent entry not found. Sync the log first.'), 404
-
     # Parse optional metadata
     import json as json_mod
     meta = {}
@@ -7170,12 +7174,40 @@ def field_media_upload():
         except (json_mod.JSONDecodeError, TypeError):
             pass
 
-    # Upload to R2
-    client = Client.query.get(parent_log.client_id)
-    prefix = getattr(client, 'storage_prefix', '') or f'client-{client.id}'
+    # Dedup by media_uuid
+    if media_uuid:
+        existing_photo = DailyLogPhoto.query.filter_by(
+            storage_key=f'field-media/{media_uuid}'
+        ).first()
+        if existing_photo:
+            return jsonify(ok=True, status='duplicate', id=existing_photo.id)
+        existing_jp = JobPhoto.query.filter_by(media_uuid=meta.get('media_uuid') or media_uuid).first()
+        if existing_jp:
+            return jsonify(ok=True, status='duplicate', id=existing_jp.id)
+
+    # Waterfall: try DailyLog first, then photo_batch ClientActivity
+    parent_log = DailyLog.query.filter_by(client_uuid=parent_uuid).first()
+    parent_batch = None
+    if not parent_log:
+        parent_batch = ClientActivity.query.filter_by(
+            client_uuid=parent_uuid, activity_type='Photo Batch'
+        ).first()
+
+    if not parent_log and not parent_batch:
+        return jsonify(ok=False, error='Parent entry not found. Sync the log first.'), 404
+
+    # Determine client + storage path
     import uuid as uuid_mod
-    ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in (f.filename or '') else 'jpg'
-    storage_key = f'{prefix}/daily-logs/{media_uuid or uuid_mod.uuid4().hex}.{ext}'
+    if parent_log:
+        client = Client.query.get(parent_log.client_id)
+        prefix = getattr(client, 'storage_prefix', '') or f'client-{client.id}'
+        ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in (f.filename or '') else 'jpg'
+        storage_key = f'{prefix}/daily-logs/{media_uuid or uuid_mod.uuid4().hex}.{ext}'
+    else:
+        client = Client.query.get(parent_batch.client_id)
+        prefix = getattr(client, 'storage_prefix', '') or f'client-{client.id}'
+        ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in (f.filename or '') else 'jpg'
+        storage_key = f'{prefix}/photos/{media_uuid or uuid_mod.uuid4().hex}.{ext}'
 
     try:
         from r2_storage_helper import upload_file
@@ -7183,21 +7215,65 @@ def field_media_upload():
     except Exception as e:
         return jsonify(ok=False, error=f'Upload failed: {str(e)}'), 500
 
-    # Create photo record
-    photo = DailyLogPhoto(
-        daily_log_id=parent_log.id,
-        client_id=parent_log.client_id,
-        cost_code_id=meta.get('cost_code_id'),
-        storage_key=storage_key,
-        file_name=f.filename or 'photo.jpg',
-        caption=meta.get('caption', ''),
-        sort_order=meta.get('sort_order', 0),
-        uploaded_by_user_id=current_user.id,
-    )
-    db.session.add(photo)
-    db.session.commit()
+    if parent_log:
+        # DailyLogPhoto (existing behavior)
+        photo = DailyLogPhoto(
+            daily_log_id=parent_log.id,
+            client_id=parent_log.client_id,
+            cost_code_id=meta.get('cost_code_id'),
+            storage_key=storage_key,
+            file_name=f.filename or 'photo.jpg',
+            caption=meta.get('caption', ''),
+            sort_order=meta.get('sort_order', 0),
+            uploaded_by_user_id=current_user.id,
+        )
+        db.session.add(photo)
+        db.session.commit()
+        return jsonify(ok=True, status='created', id=photo.id)
+    else:
+        # JobPhoto (camera-first)
+        # Extract batch metadata from activity note for field_issue_id
+        field_issue_id = None
+        if parent_batch.note_text and 'issue_id=' in parent_batch.note_text:
+            try:
+                field_issue_id = int(parent_batch.note_text.split('issue_id=')[1].split('|')[0].strip())
+            except (ValueError, IndexError):
+                pass
 
-    return jsonify(ok=True, status='created', id=photo.id)
+        # Parse category from activity note
+        category = 'uncategorized'
+        note = parent_batch.note_text or ''
+        for cat in ['progress', 'delivery', 'issue', 'safety', 'inspection', 'before_after']:
+            if cat in note:
+                category = cat
+                break
+
+        from datetime import datetime as dt_cls
+        taken_at_str = meta.get('taken_at')
+        try:
+            taken_at = dt_cls.fromisoformat(taken_at_str.replace('Z', '+00:00')) if taken_at_str else datetime.now(timezone.utc)
+        except (ValueError, AttributeError):
+            taken_at = datetime.now(timezone.utc)
+
+        jp = JobPhoto(
+            client_id=parent_batch.client_id,
+            project_id=None,
+            cost_code_id=meta.get('cost_code_id'),
+            field_issue_id=field_issue_id,
+            batch_uuid=parent_uuid,
+            category=category,
+            storage_key=storage_key,
+            file_name=f.filename or 'photo.jpg',
+            caption=meta.get('caption', ''),
+            latitude=meta.get('latitude'),
+            longitude=meta.get('longitude'),
+            taken_at=taken_at,
+            uploaded_by_user_id=current_user.id,
+            media_uuid=meta.get('media_uuid') or media_uuid,
+        )
+        db.session.add(jp)
+        db.session.commit()
+        return jsonify(ok=True, status='created', id=jp.id)
 
 
 # ── PDF Generation ───────────────────────────────────────────────────────────
@@ -9020,3 +9096,195 @@ def reject_selection(client_id, sel_id):
     db.session.commit()
     flash(f'Selection rejected: {sel.category.name}', 'info')
     return redirect(url_for('view_client', client_id=client_id))
+
+
+# ── CAMERA-FIRST PHOTO CAPTURE API ──────────────────────────────────────────
+
+@app.route('/api/camera/infer-job')
+@require_login
+@csrf.exempt
+def camera_infer_job():
+    """Infer which job/client photos belong to.
+
+    Priority: 1) active clock, 2) GPS proximity, 3) recent clients list.
+    """
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+
+    # 1. Check active clock
+    clock = ActiveClock.query.filter_by(user_id=current_user.id).first()
+    if clock and clock.client_id:
+        client = Client.query.get(clock.client_id)
+        project = Project.query.filter_by(client_id=clock.client_id, is_default=True).first()
+        return jsonify(
+            client_id=clock.client_id,
+            client_name=client.name if client else None,
+            project_id=project.id if project else None,
+            method='clock',
+            clients=[],
+        )
+
+    # 2. GPS proximity
+    if lat is not None and lng is not None:
+        radius = float(AppSetting.get('clock_gps_radius_meters', '150'))
+        # Use wider radius for photo inference (300m)
+        photo_radius = max(radius, 300)
+        best = None
+        best_dist = photo_radius + 1
+
+        for c in Client.query.filter_by(is_active=True).all():
+            if c.jobsite_latitude and c.jobsite_longitude:
+                dist = _haversine(lat, lng, c.jobsite_latitude, c.jobsite_longitude)
+                if dist < photo_radius and dist < best_dist:
+                    best = c
+                    best_dist = dist
+
+        if best:
+            project = Project.query.filter_by(client_id=best.id, is_default=True).first()
+            return jsonify(
+                client_id=best.id,
+                client_name=best.name,
+                project_id=project.id if project else None,
+                method='gps',
+                clients=[],
+            )
+
+    # 3. Fallback — return recent/active clients for picker
+    active_clients = Client.query.filter_by(is_active=True).filter(
+        Client.status.in_(['Active', 'In Progress', 'Under Construction'])
+    ).order_by(Client.updated_at.desc()).limit(10).all()
+
+    clients_list = []
+    for c in active_clients:
+        project = Project.query.filter_by(client_id=c.id, is_default=True).first()
+        clients_list.append({
+            'client_id': c.id,
+            'name': c.name,
+            'project_id': project.id if project else None,
+        })
+
+    return jsonify(
+        client_id=None,
+        client_name=None,
+        project_id=None,
+        method='none',
+        clients=clients_list,
+    )
+
+
+@app.route('/api/camera/cost-codes')
+@require_login
+@csrf.exempt
+def camera_cost_codes():
+    """Return cost codes for a client's project (used by delivery sub-flow)."""
+    codes = CostCode.query.filter_by(is_active=True).order_by(CostCode.code).all()
+    return jsonify(cost_codes=[
+        {'id': cc.id, 'code': cc.code, 'name': cc.name}
+        for cc in codes
+    ])
+
+
+# ── Photo Gallery ────────────────────────────────────────────────────────────
+
+@app.route('/clients/<int:client_id>/photos')
+@require_login
+def client_photo_gallery(client_id):
+    """Per-job photo gallery combining JobPhoto and DailyLogPhoto."""
+    client = Client.query.get_or_404(client_id)
+
+    category_filter = request.args.get('category', '')
+    date_from = request.args.get('date_from', '')
+    date_to = request.args.get('date_to', '')
+
+    # Query JobPhotos
+    jp_q = JobPhoto.query.filter_by(client_id=client_id)
+    if category_filter:
+        jp_q = jp_q.filter_by(category=category_filter)
+    if date_from:
+        try:
+            jp_q = jp_q.filter(JobPhoto.taken_at >= datetime.fromisoformat(date_from))
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            jp_q = jp_q.filter(JobPhoto.taken_at <= datetime.fromisoformat(date_to + 'T23:59:59'))
+        except ValueError:
+            pass
+    job_photos = jp_q.order_by(JobPhoto.taken_at.desc()).all()
+
+    # Query DailyLogPhotos
+    dlp_q = DailyLogPhoto.query.filter_by(client_id=client_id)
+    daily_photos = dlp_q.order_by(DailyLogPhoto.created_at.desc()).all()
+
+    # Generate presigned URLs
+    from r2_storage_helper import generate_presigned_url
+
+    all_photos = []
+    for p in job_photos:
+        all_photos.append({
+            'id': p.id,
+            'type': 'job',
+            'url': generate_presigned_url(p.storage_key),
+            'category': p.category,
+            'caption': p.caption,
+            'taken_at': p.taken_at,
+            'uploaded_by': p.uploaded_by.display_name if p.uploaded_by else 'Unknown',
+            'field_issue_id': p.field_issue_id,
+        })
+
+    if not category_filter:  # Include daily log photos when no category filter
+        for p in daily_photos:
+            all_photos.append({
+                'id': p.id,
+                'type': 'daily_log',
+                'url': generate_presigned_url(p.storage_key),
+                'category': 'daily_log',
+                'caption': p.caption,
+                'taken_at': p.created_at,
+                'uploaded_by': p.uploaded_by.display_name if p.uploaded_by else 'Unknown',
+                'field_issue_id': None,
+            })
+
+    # Sort by date descending
+    all_photos.sort(key=lambda x: x['taken_at'] or datetime.min, reverse=True)
+
+    return render_template('photo_gallery.html',
+                           client=client,
+                           photos=all_photos,
+                           categories=PHOTO_CATEGORIES,
+                           category_filter=category_filter,
+                           date_from=date_from,
+                           date_to=date_to)
+
+
+@app.route('/api/clients/<int:client_id>/photos')
+@require_login
+@csrf.exempt
+def api_client_photos(client_id):
+    """JSON API for lazy-loading photos (infinite scroll)."""
+    client = Client.query.get_or_404(client_id)
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    category = request.args.get('category', '')
+
+    q = JobPhoto.query.filter_by(client_id=client_id)
+    if category:
+        q = q.filter_by(category=category)
+    q = q.order_by(JobPhoto.taken_at.desc())
+
+    total = q.count()
+    photos = q.offset((page - 1) * per_page).limit(per_page).all()
+
+    from r2_storage_helper import generate_presigned_url
+
+    return jsonify(
+        photos=[{
+            'id': p.id,
+            'url': generate_presigned_url(p.storage_key),
+            'category': p.category,
+            'taken_at': p.taken_at.isoformat() if p.taken_at else None,
+            'caption': p.caption,
+            'uploaded_by': p.uploaded_by.display_name if p.uploaded_by else 'Unknown',
+        } for p in photos],
+        has_more=(page * per_page < total),
+    )

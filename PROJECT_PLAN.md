@@ -50,6 +50,20 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-28 — Client Portal Rebuild
+
+Full rebuild of the client-facing portal for homeowners checking build progress on mobile:
+- **Migration `p7j0k1l81m42`:** Added 5 columns — `client_visible` on DailyLogPhoto, `client_label`/`client_description` on SchedulePhase, `deadline`/`late_impact` on SelectionCategory.
+- **Mobile-first base layout:** Bottom tab bar (Home, Photos, Docs, Messages, Selections) with fixed nav, slim top header.
+- **Dashboard:** Build stage tracker (using `client_label` fallback), "What's next" with fuzzy dates, action items (pending selections, CO approvals, due invoices, unread messages), recent photos (`client_visible=True` only), empty state for permitting phase.
+- **Photos gallery:** `client_visible=True` filter, month grouping, phase filter pills, lightbox viewer.
+- **Documents:** `visibility='client'` filter, approved COs (title + price_to_client only), invoices with balance/status.
+- **Messages:** Redesigned thread with empty state, mark-as-read on view.
+- **Selections:** Deadline dates, late impact warnings, status badges, option cards with "Additional $X" / "Included" pricing.
+- **Staff publish controls:** Toggle button on daily log view to publish/hide photos to client portal. New route `toggle_photo_client_visible`.
+- **Field gating:** No internal fields leak to portal pages.
+- **Removed:** `/portal/progress` route (folded into dashboard).
+
 ### 2026-08-28 — User Administration
 
 Wired the authorization system to user admin routes. Replaces the old rep/supervisor toggle with proper role-based user management:

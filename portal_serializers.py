@@ -32,8 +32,6 @@ def serialize_project_for_portal(project):
         'id': project.id,
         'name': project.name,
         'status': project.status,
-        'start_date': str(project.start_date) if project.start_date else None,
-        'end_date': str(project.end_date) if project.end_date else None,
     }
     _assert_no_internal_fields(data, 'Project')
     return data
@@ -42,52 +40,46 @@ def serialize_project_for_portal(project):
 def serialize_invoice_for_portal(invoice):
     """Safe invoice data for client portal."""
     data = {
-        'id': invoice.id,
         'invoice_number': invoice.invoice_number,
         'status': invoice.status,
-        'subtotal': str(invoice.subtotal),
         'total_due': str(invoice.total_due),
-        'amount_paid': str(invoice.amount_paid),
         'balance_due': str(invoice.balance_due),
-        'issued_date': str(invoice.issued_date) if invoice.issued_date else None,
         'due_date': str(invoice.due_date) if invoice.due_date else None,
-        'notes': invoice.notes,
     }
     _assert_no_internal_fields(data, 'Invoice')
     return data
 
 
 def serialize_change_order_for_portal(co):
-    """Safe change order data for client portal."""
+    """Safe change order data for client portal — title + total only."""
     data = {
-        'id': co.id,
-        'co_number': co.co_number,
         'title': co.title,
         'status': co.status,
         'description': getattr(co, 'description', None),
+        'price_to_client': str(co.price_to_client),
+        'approved_at': str(co.approved_at) if co.approved_at else None,
     }
     _assert_no_internal_fields(data, 'ChangeOrder')
     return data
 
 
-def serialize_schedule_task_for_portal(task):
-    """Safe schedule task data for client portal."""
+def serialize_phase_for_portal(phase):
+    """Safe schedule phase data for client portal."""
     data = {
-        'id': task.id,
-        'name': task.name,
-        'status': task.status,
-        'start_date': str(task.start_date) if task.start_date else None,
-        'end_date': str(task.end_date) if task.end_date else None,
+        'name': phase.client_label or phase.name,
+        'color': phase.color,
+        'status': getattr(phase, '_status', 'Coming up'),
+        'done': getattr(phase, '_done', 0),
+        'total': getattr(phase, '_total', 0),
     }
-    _assert_no_internal_fields(data, 'ScheduleTask')
     return data
 
 
 def serialize_selection_for_portal(selection):
     """Safe selection data for client portal."""
     data = {
-        'id': selection.id,
         'status': selection.status,
+        'note': selection.note,
     }
     _assert_no_internal_fields(data, 'ClientSelection')
     return data

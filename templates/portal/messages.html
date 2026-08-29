@@ -2,37 +2,41 @@
 {% block title %}Messages — {{ client.name }}{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-bold text-gray-900 mb-6">Messages</h1>
+<h1 class="text-xl font-bold text-gray-900 mb-4">Messages</h1>
 
-<div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-    {# ── Message thread ──────────────────────────────────────── #}
-    <div class="p-5 space-y-3 max-h-[60vh] overflow-y-auto" id="messageThread">
+<div class="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+    {# ── Thread ───────────────────────────────────────────── #}
+    <div class="p-4 space-y-3 max-h-[60vh] overflow-y-auto" id="messageThread">
         {% if messages %}
         {% for msg in messages %}
         <div class="flex {% if msg.sender_type == 'client' %}justify-end{% else %}justify-start{% endif %}">
-            <div class="max-w-[80%] rounded-2xl px-4 py-2.5
-                        {% if msg.sender_type == 'client' %}bg-blue-500 text-white{% else %}bg-gray-100 text-gray-800{% endif %}">
-                <div class="text-xs {% if msg.sender_type == 'client' %}text-blue-100{% else %}text-gray-400{% endif %} mb-0.5">
+            <div class="max-w-[85%] rounded-2xl px-3.5 py-2.5
+                        {% if msg.sender_type == 'client' %}bg-gray-900 text-white{% else %}bg-gray-100 text-gray-800{% endif %}">
+                <div class="text-[10px] {% if msg.sender_type == 'client' %}text-gray-400{% else %}text-gray-400{% endif %} mb-0.5">
                     {{ msg.sender_name }} &middot; {{ msg.created_at.strftime('%m/%d %I:%M %p') if msg.created_at }}
                 </div>
-                <div class="text-sm whitespace-pre-line">{{ msg.message }}</div>
+                <div class="text-sm whitespace-pre-line leading-relaxed">{{ msg.message }}</div>
             </div>
         </div>
         {% endfor %}
         {% else %}
-        <div class="text-center py-8 text-gray-400 text-sm">No messages yet. Send one below.</div>
+        <div class="text-center py-12">
+            <div class="text-3xl mb-2">💬</div>
+            <p class="text-sm text-gray-500">No messages yet.</p>
+            <p class="text-xs text-gray-400 mt-1">Send a message and our team will get back to you.</p>
+        </div>
         {% endif %}
     </div>
 
-    {# ── Compose ─────────────────────────────────────────────── #}
-    <div class="border-t border-gray-200 p-4">
+    {# ── Compose ──────────────────────────────────────────── #}
+    <div class="border-t border-gray-200 p-3">
         <form method="POST" class="flex gap-2">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <input type="text" name="message" required autofocus
-                   class="flex-1 px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+            <input type="text" name="message" required autocomplete="off"
+                   class="flex-1 px-3 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 focus:border-gray-900 text-sm bg-gray-50"
                    placeholder="Type a message...">
             <button type="submit"
-                    class="px-4 py-2 bg-gray-900 text-white font-medium rounded-xl hover:bg-gray-800 transition-colors text-sm">
+                    class="px-4 py-2.5 bg-gray-900 text-white font-medium rounded-xl hover:bg-gray-800 transition-colors text-sm flex-shrink-0">
                 Send
             </button>
         </form>

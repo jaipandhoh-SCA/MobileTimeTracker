@@ -2,82 +2,119 @@
 {% block title %}Documents — {{ client.name }}{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-bold text-gray-900 mb-6">Documents</h1>
+<h1 class="text-xl font-bold text-gray-900 mb-1">Documents</h1>
+<p class="text-sm text-gray-500 mb-5">Plans, contracts, and project files shared with you.</p>
 
-{% if contracts %}
-<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 mb-4">
-    <h2 class="text-sm font-semibold text-gray-900 mb-3">Contracts</h2>
-    <div class="space-y-2">
-        {% for c in contracts %}
-        <div class="flex items-center justify-between p-2 bg-gray-50 rounded-lg text-sm">
-            <span class="text-gray-700">{{ c.contract_number }}</span>
-            <div class="flex items-center gap-2">
-                <span class="text-xs {% if c.status == 'Signed' %}text-green-600{% else %}text-gray-400{% endif %}">{{ c.status }}</span>
-                {% if c.share_token %}
-                <a href="{{ url_for('public_contract', token=c.share_token) }}" class="text-xs text-blue-600 hover:underline">View</a>
-                {% endif %}
+{% set has_content = shared_docs or approved_cos or invoices %}
+
+{% if has_content %}
+    {# ── Shared documents by folder ──────────────────────────── #}
+    {% if shared_docs %}
+    {% set folders = {} %}
+    {% for doc in shared_docs %}
+        {% set folder_label = doc.folder|capitalize if doc.folder else 'Other' %}
+        {% if folder_label not in folders %}{% set _ = folders.update({folder_label: []}) %}{% endif %}
+        {% set _ = folders[folder_label].append(doc) %}
+    {% endfor %}
+
+    {% for folder_label, docs in folders.items() %}
+    <div class="mb-4">
+        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{{ folder_label }}</h2>
+        <div class="space-y-1.5">
+            {% for doc in docs %}
+            <div class="bg-white rounded-xl border border-gray-200 p-3">
+                <div class="flex items-start gap-3">
+                    <div class="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+                        </svg>
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-medium text-gray-900">{{ doc.title }}</div>
+                        {% if doc.description %}
+                        <div class="text-xs text-gray-500 mt-0.5">{{ doc.description }}</div>
+                        {% endif %}
+                        <div class="text-[10px] text-gray-400 mt-1">{{ doc.created_at.strftime('%m/%d/%Y') if doc.created_at }}</div>
+                    </div>
+                </div>
             </div>
+            {% endfor %}
         </div>
-        {% endfor %}
     </div>
-</div>
-{% endif %}
+    {% endfor %}
+    {% endif %}
 
-{% if approved_cos %}
-<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 mb-4">
-    <h2 class="text-sm font-semibold text-gray-900 mb-3">Approved Change Orders</h2>
-    <div class="space-y-2">
-        {% for co in approved_cos %}
-        <div class="flex items-center justify-between p-2 bg-gray-50 rounded-lg text-sm">
-            <div>
-                <span class="font-mono text-xs text-gray-400">{{ co.co_number }}</span>
-                <span class="text-gray-700 ml-1">{{ co.title }}</span>
+    {# ── Change Orders ───────────────────────────────────────── #}
+    {% if approved_cos %}
+    <div class="mb-4">
+        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Change Orders</h2>
+        <div class="space-y-1.5">
+            {% for co in approved_cos %}
+            <div class="bg-white rounded-xl border border-gray-200 p-3">
+                <div class="flex items-center justify-between">
+                    <div class="min-w-0 flex-1">
+                        <div class="text-sm font-medium text-gray-900">{{ co.title }}</div>
+                        {% if co.description %}
+                        <div class="text-xs text-gray-500 mt-0.5 line-clamp-2">{{ co.description }}</div>
+                        {% endif %}
+                        <div class="flex items-center gap-2 mt-1">
+                            <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-50 text-green-700">{{ co.status }}</span>
+                            {% if co.approved_at %}
+                            <span class="text-[10px] text-gray-400">{{ co.approved_at.strftime('%m/%d/%Y') }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="text-sm font-semibold text-gray-900 ml-3">${{ '{:,.0f}'.format(co.price_to_client) }}</div>
+                </div>
             </div>
-            <span class="text-gray-700 font-medium">${{ '{:,.2f}'.format(co.price_to_client) }}</span>
+            {% endfor %}
         </div>
-        {% endfor %}
     </div>
-</div>
-{% endif %}
+    {% endif %}
 
-{% if invoices %}
-<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 mb-4">
-    <h2 class="text-sm font-semibold text-gray-900 mb-3">Invoices</h2>
-    <div class="space-y-2">
-        {% for inv in invoices %}
-        <div class="flex items-center justify-between p-2 bg-gray-50 rounded-lg text-sm">
-            <span class="text-gray-700">{{ inv.invoice_number }}</span>
-            <div class="flex items-center gap-3">
-                <span class="font-medium text-gray-700">${{ '{:,.2f}'.format(inv.total_due) }}</span>
-                <span class="text-xs {% if inv.status == 'Paid' %}text-green-600{% elif inv.status in ('Overdue',) %}text-red-600{% else %}text-gray-400{% endif %}">{{ inv.status }}</span>
-                {% if inv.share_token and inv.status != 'Draft' %}
-                <a href="{{ url_for('public_invoice', token=inv.share_token) }}" class="text-xs text-blue-600 hover:underline">View</a>
-                {% endif %}
-            </div>
+    {# ── Invoices ────────────────────────────────────────────── #}
+    {% if invoices %}
+    <div class="mb-4">
+        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Invoices</h2>
+        <div class="space-y-1.5">
+            {% for inv in invoices %}
+            <{% if inv.share_token %}a href="{{ url_for('public_invoice', token=inv.share_token) }}"{% else %}div{% endif %}
+               class="bg-white rounded-xl border border-gray-200 p-3 block">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <div class="text-sm font-medium text-gray-900">{{ inv.invoice_number }}</div>
+                        <div class="flex items-center gap-2 mt-1">
+                            {% if inv.status == 'Paid' %}
+                            <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-50 text-green-700">Paid</span>
+                            {% elif inv.status == 'Overdue' %}
+                            <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-red-50 text-red-700">Overdue</span>
+                            {% else %}
+                            <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700">{{ inv.status }}</span>
+                            {% endif %}
+                            {% if inv.due_date %}
+                            <span class="text-[10px] text-gray-400">Due {{ inv.due_date.strftime('%m/%d/%Y') }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="text-right ml-3">
+                        <div class="text-sm font-semibold text-gray-900">${{ '{:,.2f}'.format(inv.balance_due) }}</div>
+                        {% if inv.balance_due != inv.total_due %}
+                        <div class="text-[10px] text-gray-400">of ${{ '{:,.2f}'.format(inv.total_due) }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </{% if inv.share_token %}a{% else %}div{% endif %}>
+            {% endfor %}
         </div>
-        {% endfor %}
     </div>
+    {% endif %}
+{% else %}
+<div class="text-center py-16">
+    <div class="text-4xl mb-3">📄</div>
+    <h2 class="text-sm font-semibold text-gray-900 mb-1">No documents yet</h2>
+    <p class="text-xs text-gray-500 max-w-xs mx-auto">
+        Contracts, plans, and project files will appear here once they're ready for you.
+    </p>
 </div>
-{% endif %}
-
-{% if shared_docs %}
-<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
-    <h2 class="text-sm font-semibold text-gray-900 mb-3">Project Documents</h2>
-    <div class="space-y-2">
-        {% for doc in shared_docs %}
-        <div class="flex items-center justify-between p-2 bg-gray-50 rounded-lg text-sm">
-            <div class="flex items-center gap-2">
-                <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
-                <span class="text-gray-700">{{ doc.file_name }}</span>
-            </div>
-            <span class="text-xs text-gray-400 capitalize">{{ doc.folder }}</span>
-        </div>
-        {% endfor %}
-    </div>
-</div>
-{% endif %}
-
-{% if not contracts and not approved_cos and not invoices and not shared_docs %}
-<div class="text-center py-12 text-gray-400">No documents available yet.</div>
 {% endif %}
 {% endblock %}

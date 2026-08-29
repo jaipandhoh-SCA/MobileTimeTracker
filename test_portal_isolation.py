@@ -173,7 +173,6 @@ class PortalIsolationTestCase(unittest.TestCase):
         '/portal/documents',
         '/portal/selections',
         '/portal/messages',
-        '/portal/progress',
         '/portal/photos',
     ]
 

@@ -2,27 +2,86 @@
 {% block title %}Photos — {{ client.name }}{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-bold text-gray-900 mb-6">Construction Photos</h1>
+<h1 class="text-xl font-bold text-gray-900 mb-1">Construction Photos</h1>
+<p class="text-sm text-gray-500 mb-5">Photos from your build, updated by our team.</p>
 
-{% if photos %}
-<div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-    {% for photo in photos %}
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-        <div class="aspect-square bg-gray-100">
-            <img src="{{ generate_presigned_url(photo.storage_key) if photo.storage_key else '' }}"
-                 alt="{{ photo.caption or 'Construction photo' }}"
-                 class="w-full h-full object-cover" loading="lazy">
+{% if photo_months %}
+    {# ── Phase filter ─────────────────────────────────────── #}
+    {% if phase_labels|length > 1 %}
+    <div class="flex gap-2 overflow-x-auto pb-2 mb-4 -mx-4 px-4 no-scrollbar">
+        <a href="{{ url_for('portal.photos') }}"
+           class="flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium border
+                  {% if not active_phase %}bg-gray-900 text-white border-gray-900{% else %}bg-white text-gray-600 border-gray-200{% endif %}">
+            All
+        </a>
+        {% for label in phase_labels %}
+        <a href="{{ url_for('portal.photos', phase=label) }}"
+           class="flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium border
+                  {% if active_phase == label %}bg-gray-900 text-white border-gray-900{% else %}bg-white text-gray-600 border-gray-200{% endif %}">
+            {{ label }}
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {# ── Photos grouped by month ──────────────────────────── #}
+    {% for month_label, month_photos in photo_months %}
+    <div class="mb-5">
+        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{{ month_label }}</h2>
+        <div class="grid grid-cols-3 gap-1.5">
+            {% for photo in month_photos %}
+            <div class="relative aspect-square bg-gray-100 rounded-lg overflow-hidden group"
+                 onclick="openPhoto(this)" data-src="{{ generate_presigned_url(photo.storage_key) }}"
+                 data-caption="{{ photo.caption or '' }}" data-date="{{ photo.created_at.strftime('%m/%d/%Y') if photo.created_at else '' }}">
+                <img src="{{ generate_presigned_url(photo.storage_key) if photo.storage_key else '' }}"
+                     alt="{{ photo.caption or 'Progress photo' }}"
+                     class="w-full h-full object-cover" loading="lazy">
+                {% if photo.caption %}
+                <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent p-2 opacity-0 group-hover:opacity-100 sm:opacity-100 transition-opacity">
+                    <span class="text-[10px] text-white">{{ photo.caption }}</span>
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
         </div>
-        {% if photo.caption %}
-        <div class="p-2">
-            <p class="text-xs text-gray-600">{{ photo.caption }}</p>
-            <p class="text-[10px] text-gray-400 mt-0.5">{{ photo.created_at.strftime('%m/%d/%Y') if photo.created_at }}</p>
-        </div>
-        {% endif %}
     </div>
     {% endfor %}
-</div>
 {% else %}
-<div class="text-center py-12 text-gray-400">No photos shared yet.</div>
+<div class="text-center py-16">
+    <div class="text-4xl mb-3">📷</div>
+    <h2 class="text-sm font-semibold text-gray-900 mb-1">No photos yet</h2>
+    <p class="text-xs text-gray-500 max-w-xs mx-auto">
+        Our team will share photos of your build progress here as work gets underway.
+    </p>
+</div>
 {% endif %}
+
+{# ── Lightbox modal ───────────────────────────────────────── #}
+<div id="lightbox" class="fixed inset-0 bg-black/90 z-[100] hidden items-center justify-center" onclick="closeLightbox(event)">
+    <button class="absolute top-4 right-4 text-white/70 hover:text-white z-10" onclick="closeLightbox(event)">
+        <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>
+    <img id="lightbox-img" class="max-w-full max-h-[85vh] object-contain">
+    <div id="lightbox-caption" class="absolute bottom-6 inset-x-0 text-center text-white text-sm"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function openPhoto(el) {
+    const lb = document.getElementById('lightbox');
+    document.getElementById('lightbox-img').src = el.dataset.src;
+    const cap = [el.dataset.caption, el.dataset.date].filter(Boolean).join(' — ');
+    document.getElementById('lightbox-caption').textContent = cap;
+    lb.classList.remove('hidden');
+    lb.classList.add('flex');
+}
+function closeLightbox(e) {
+    if (e.target === e.currentTarget || e.target.closest('button')) {
+        const lb = document.getElementById('lightbox');
+        lb.classList.add('hidden');
+        lb.classList.remove('flex');
+    }
+}
+</script>
 {% endblock %}

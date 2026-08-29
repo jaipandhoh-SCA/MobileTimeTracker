@@ -1,97 +1,124 @@
 {% extends "portal/base.html" %}
-{% block title %}{{ client.name }} — Portal{% endblock %}
+{% block title %}{{ client.name }} — Your Build{% endblock %}
 
 {% block content %}
-<div class="mb-6">
-    <h1 class="text-2xl font-bold text-gray-900">Welcome, {{ client.contact_name or client.name }}</h1>
-    <p class="text-gray-500 mt-1">{{ client.address }}</p>
+<div class="mb-5">
+    <h1 class="text-xl font-bold text-gray-900">Hi, {{ client.contact_name or client.name }}</h1>
+    <p class="text-sm text-gray-500 mt-0.5">Here's where things stand with your ADU.</p>
 </div>
 
-{# ── Quick Stats ─────────────────────────────────────────────── #}
-<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 text-center">
-        <div class="text-2xl font-bold text-gray-900">
-            {% set total_tasks = 0 %}{% set done_tasks = 0 %}
-            {% for p in phases %}{% set total_tasks = total_tasks + p._total %}{% set done_tasks = done_tasks + p._done %}{% endfor %}
-            {% if total_tasks %}{{ ((done_tasks / total_tasks) * 100)|round|int }}%{% else %}—{% endif %}
-        </div>
-        <div class="text-xs text-gray-500 mt-1">Complete</div>
+{# ═══ ACTION ITEMS ═══════════════════════════════════════════ #}
+{% if action_items %}
+<div class="mb-5">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Needs your attention</h2>
+    <div class="space-y-2">
+        {% for item in action_items %}
+        <a href="{{ item.link }}" class="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl p-3">
+            <div class="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                <span class="text-amber-600 text-sm">{{ item.icon }}</span>
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium text-gray-900">{{ item.title }}</div>
+                <div class="text-xs text-gray-500">{{ item.detail }}</div>
+            </div>
+            <svg class="w-4 h-4 text-gray-300 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+        </a>
+        {% endfor %}
     </div>
-    <a href="{{ url_for('portal.selections') }}" class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 text-center hover:shadow-md transition-shadow">
-        <div class="text-2xl font-bold {% if pending_selections %}text-amber-600{% else %}text-gray-900{% endif %}">{{ pending_selections }}</div>
-        <div class="text-xs text-gray-500 mt-1">Pending Selections</div>
-    </a>
-    <a href="{{ url_for('portal.messages') }}" class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 text-center hover:shadow-md transition-shadow">
-        <div class="text-2xl font-bold {% if unread_count %}text-blue-600{% else %}text-gray-900{% endif %}">{{ unread_count }}</div>
-        <div class="text-xs text-gray-500 mt-1">Unread Messages</div>
-    </a>
-    <a href="{{ url_for('portal.documents') }}" class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 text-center hover:shadow-md transition-shadow">
-        <div class="text-2xl font-bold text-gray-900">{{ draws|length }}</div>
-        <div class="text-xs text-gray-500 mt-1">Milestones</div>
-    </a>
 </div>
+{% endif %}
 
-{# ── Phase Progress ──────────────────────────────────────────── #}
+{# ═══ BUILD STAGE ════════════════════════════════════════════ #}
 {% if phases %}
-<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 mb-6">
-    <h2 class="text-sm font-semibold text-gray-900 mb-4">Project Progress</h2>
+<div class="bg-white rounded-2xl border border-gray-200 p-4 mb-5">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Build progress</h2>
     <div class="space-y-3">
         {% for phase in phases %}
+        {% set pct = (phase._done / phase._total * 100)|round|int if phase._total else 0 %}
+        {% if pct == 100 %}
+            {% set status_label = "Done" %}
+            {% set status_color = "text-green-600" %}
+            {% set bar_color = "bg-green-500" %}
+        {% elif phase._done > 0 %}
+            {% set status_label = "In progress" %}
+            {% set status_color = "text-blue-600" %}
+            {% set bar_color = "bg-blue-500" %}
+        {% else %}
+            {% set status_label = "Coming up" %}
+            {% set status_color = "text-gray-400" %}
+            {% set bar_color = "bg-gray-200" %}
+        {% endif %}
         <div>
-            <div class="flex justify-between text-sm mb-1">
-                <span class="font-medium text-gray-700">{{ phase.name }}</span>
-                <span class="text-gray-400">{{ phase._done }}/{{ phase._total }}</span>
+            <div class="flex justify-between items-center mb-1">
+                <span class="text-sm font-medium text-gray-700">{{ phase.client_label or phase.name }}</span>
+                <span class="text-xs {{ status_color }}">{{ status_label }}</span>
             </div>
-            <div class="w-full bg-gray-100 rounded-full h-2">
-                {% set pct = (phase._done / phase._total * 100) if phase._total else 0 %}
-                <div class="h-2 rounded-full transition-all duration-500 {% if pct == 100 %}bg-green-500{% elif pct > 0 %}bg-blue-500{% else %}bg-gray-200{% endif %}"
-                     style="width: {{ pct|round|int }}%"></div>
+            <div class="w-full bg-gray-100 rounded-full h-1.5">
+                <div class="h-1.5 rounded-full {{ bar_color }} transition-all" style="width: {{ pct }}%"></div>
             </div>
         </div>
         {% endfor %}
     </div>
 </div>
-{% endif %}
-
-{# ── Milestones ──────────────────────────────────────────────── #}
-{% if draws %}
-<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 mb-6">
-    <h2 class="text-sm font-semibold text-gray-900 mb-4">Payment Milestones</h2>
-    <div class="space-y-2">
-        {% for draw in draws %}
-        <div class="flex items-center justify-between text-sm p-2 rounded-lg {% if draw.paid_at %}bg-green-50{% else %}bg-gray-50{% endif %}">
-            <div class="flex items-center gap-2">
-                {% if draw.paid_at %}
-                <svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd"/></svg>
-                {% else %}
-                <div class="w-4 h-4 border-2 border-gray-300 rounded-full"></div>
-                {% endif %}
-                <span class="text-gray-700">{{ draw.milestone }}</span>
-            </div>
-            <span class="text-gray-500 font-medium">${{ '{:,.0f}'.format(draw.amount) }}</span>
-        </div>
-        {% endfor %}
-    </div>
+{% else %}
+{# ── Empty: no schedule yet (likely permitting) ─────────── #}
+<div class="bg-white rounded-2xl border border-gray-200 p-5 mb-5 text-center">
+    <div class="text-3xl mb-3">📋</div>
+    <h2 class="text-sm font-semibold text-gray-900 mb-1">Your project is getting started</h2>
+    <p class="text-xs text-gray-500 leading-relaxed max-w-xs mx-auto">
+        We're working on plans and permits right now. This is when the city reviews your project —
+        it typically takes 4-8 weeks. We'll update you here as soon as there's news.
+    </p>
 </div>
 {% endif %}
 
-{# ── Recent Photos ───────────────────────────────────────────── #}
+{# ═══ WHAT'S NEXT ════════════════════════════════════════════ #}
+{% if next_phase %}
+<div class="bg-blue-50 border border-blue-100 rounded-2xl p-4 mb-5">
+    <h2 class="text-xs font-semibold text-blue-600 uppercase tracking-wide mb-1">What's next</h2>
+    <div class="text-sm font-medium text-gray-900">{{ next_phase.client_label or next_phase.name }}</div>
+    {% if next_phase.client_description %}
+    <p class="text-xs text-gray-600 mt-1">{{ next_phase.client_description }}</p>
+    {% endif %}
+    {% if next_phase._window %}
+    <p class="text-xs text-gray-500 mt-1">{{ next_phase._window }}</p>
+    {% endif %}
+</div>
+{% endif %}
+
+{# ═══ RECENT PHOTOS ══════════════════════════════════════════ #}
 {% if shared_photos %}
-<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
-    <div class="flex justify-between items-center mb-4">
-        <h2 class="text-sm font-semibold text-gray-900">Recent Photos</h2>
-        <a href="{{ url_for('portal.photos') }}" class="text-xs text-blue-600 hover:underline">View all</a>
+<div class="mb-5">
+    <div class="flex justify-between items-center mb-2">
+        <h2 class="text-sm font-semibold text-gray-900">Recent photos</h2>
+        <a href="{{ url_for('portal.photos') }}" class="text-xs text-blue-600">View all</a>
     </div>
-    <div class="grid grid-cols-3 gap-2">
+    <div class="grid grid-cols-3 gap-1.5 rounded-xl overflow-hidden">
         {% for photo in shared_photos %}
-        <div class="aspect-square bg-gray-100 rounded-lg overflow-hidden">
+        <div class="aspect-square bg-gray-100">
             <img src="{{ generate_presigned_url(photo.storage_key) if photo.storage_key else '' }}"
-                 alt="{{ photo.caption or 'Photo' }}"
-                 class="w-full h-full object-cover"
-                 loading="lazy">
+                 alt="{{ photo.caption or 'Progress photo' }}"
+                 class="w-full h-full object-cover" loading="lazy">
         </div>
         {% endfor %}
     </div>
 </div>
+{% endif %}
+
+{# ═══ UNREAD MESSAGES ════════════════════════════════════════ #}
+{% if unread_count %}
+<a href="{{ url_for('portal.messages') }}"
+   class="flex items-center gap-3 bg-white rounded-2xl border border-gray-200 p-4 mb-5 hover:shadow-sm transition-shadow">
+    <div class="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+        <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z"/>
+        </svg>
+    </div>
+    <div class="flex-1">
+        <div class="text-sm font-medium text-gray-900">{{ unread_count }} new message{{ 's' if unread_count != 1 }}</div>
+        <div class="text-xs text-gray-500">Tap to read</div>
+    </div>
+    <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+</a>
 {% endif %}
 {% endblock %}

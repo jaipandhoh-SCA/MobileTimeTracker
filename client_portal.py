@@ -9,14 +9,19 @@ Architecture:
   `current_user.is_authenticated` via flask-login, which is structurally
   impossible for a ClientUser because ClientUser is never loaded by the
   flask-login user_loader (it only loads User by PK).
+
+Field gating:
+- Every route explicitly selects safe fields for the template.
+- Internal fields (cost_code_id, user IDs, task names, dates used only
+  for computation) are NEVER passed to the template context.
+- Photos require `client_visible=True`.
+- Documents require `visibility='client'`.
 """
 
-import hashlib
-import hmac
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from collections import OrderedDict
+from datetime import datetime, date, timedelta, timezone
 from functools import wraps
 
 from flask import (Blueprint, abort, flash, g, jsonify, redirect,
@@ -27,13 +32,27 @@ from app import app, csrf, db
 from models import (
     ChangeOrder, Client, ClientActivity, ClientSelection, ClientUser,
     Contract, DailyLog, DailyLogPhoto, Document, DrawScheduleItem,
-    Invoice, MagicLink, Notification, PortalMessage, SelectionCategory,
-    SelectionOption, SELECTION_STATUSES,
+    Invoice, MagicLink, Notification, PortalMessage, SchedulePhase,
+    ScheduleTask, SelectionCategory, SelectionOption, SELECTION_STATUSES,
 )
 
 log = logging.getLogger(__name__)
 
 portal = Blueprint('portal', __name__, url_prefix='/portal')
+
+
+@portal.app_context_processor
+def inject_portal_unread():
+    """Inject unread message count into all portal templates."""
+    cuid = session.get('client_user_id')
+    if not cuid:
+        return {}
+    cu = ClientUser.query.get(cuid)
+    if not cu or not cu.is_active:
+        return {}
+    count = PortalMessage.query.filter_by(
+        client_id=cu.client_id, sender_type='staff', is_read=False).count()
+    return {'unread_msg_count': count}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -79,7 +98,6 @@ def login_page():
 
     cu = ClientUser.query.filter_by(email=email, is_active=True).first()
     if cu:
-        # Generate magic link
         token = secrets.token_urlsafe(32)
         ml = MagicLink(
             client_user_id=cu.id,
@@ -90,16 +108,12 @@ def login_page():
         db.session.commit()
 
         link = url_for('portal.magic_login', token=token, _external=True)
-
-        # In production, send via email.  For now, flash + log it.
         log.info('Magic link for %s: %s', email, link)
         flash(f'Login link sent to {email}. Check your email.', 'success')
 
-        # Store the link in a dev-friendly way
         if app.debug:
             flash(f'DEV: {link}', 'info')
     else:
-        # Don't reveal whether the email exists
         flash(f'If an account exists for {email}, a login link has been sent.', 'success')
 
     return render_template('portal/login.html')
@@ -127,9 +141,8 @@ def magic_login(token):
     cu.last_login = now
     db.session.commit()
 
-    # Set client session — NOT flask-login
     session['client_user_id'] = cu.id
-    session['_client_portal'] = True  # Tag for isolation checks
+    session['_client_portal'] = True
 
     return redirect(url_for('portal.dashboard'))
 
@@ -143,6 +156,118 @@ def logout():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  HELPERS — fuzzy dates, phase computation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _fuzzy_window(start_date):
+    """Convert a start_date into a client-friendly fuzzy string.
+    Never exposes the actual date."""
+    if not start_date:
+        return None
+    today = date.today()
+    delta = (start_date - today).days
+    if delta < 0:
+        return None  # already started
+    if delta <= 14:
+        return 'Starting in the next couple of weeks'
+    if delta <= 30:
+        return 'Starting in the next few weeks'
+    if delta <= 60:
+        return f'Starting around {start_date.strftime("%B")}'
+    return f'Expected around {start_date.strftime("%B %Y")}'
+
+
+def _build_phases(project):
+    """Build phase data for the dashboard. Returns (phases, next_phase)."""
+    if not project:
+        return [], None
+
+    phases = SchedulePhase.query.filter_by(project_id=project.id).order_by(
+        SchedulePhase.sort_order).all()
+
+    next_phase = None
+    for phase in phases:
+        tasks = ScheduleTask.query.filter_by(
+            project_id=project.id, phase_id=phase.id).all()
+        phase._total = len(tasks)
+        phase._done = sum(1 for t in tasks if t.status == 'Done')
+
+        # Compute status
+        if phase._total and phase._done == phase._total:
+            phase._status = 'Done'
+        elif phase._done > 0:
+            phase._status = 'In progress'
+        else:
+            phase._status = 'Coming up'
+
+        # First non-done phase with tasks is "what's next"
+        if not next_phase and phase._status != 'Done' and phase._total > 0:
+            # Find earliest start date from tasks for fuzzy window
+            task_starts = [t.start_date for t in tasks if t.start_date]
+            earliest = min(task_starts) if task_starts else None
+            phase._window = _fuzzy_window(earliest)
+            if phase._status == 'Coming up':
+                next_phase = phase
+
+    return phases, next_phase
+
+
+def _build_action_items(client):
+    """Build action items that need the client's attention."""
+    items = []
+
+    # Pending selections
+    pending = ClientSelection.query.filter_by(
+        client_id=client.id, status='Pending').count()
+    if pending:
+        items.append({
+            'icon': '🎨',
+            'title': f'{pending} selection{"s" if pending != 1 else ""} awaiting your review',
+            'detail': 'Choose your finishes and fixtures',
+            'link': url_for('portal.selections'),
+        })
+
+    # Change orders awaiting approval
+    cos = ChangeOrder.query.filter_by(
+        client_id=client.id, status='Sent').all()
+    for co in cos:
+        items.append({
+            'icon': '📝',
+            'title': co.title,
+            'detail': f'Change order — ${co.price_to_client:,.0f}',
+            'link': url_for('public_change_order', token=co.share_token) if co.share_token else url_for('portal.documents'),
+        })
+
+    # Invoices due
+    invoices = Invoice.query.filter_by(client_id=client.id).filter(
+        Invoice.status.in_(['Sent', 'Viewed', 'Partial', 'Overdue'])
+    ).all()
+    for inv in invoices:
+        detail = f'${inv.balance_due:,.2f}'
+        if inv.due_date:
+            detail += f' — due {inv.due_date.strftime("%m/%d/%Y")}'
+        items.append({
+            'icon': '💰',
+            'title': f'Invoice {inv.invoice_number}',
+            'detail': detail,
+            'link': url_for('public_invoice', token=inv.share_token) if inv.share_token else url_for('portal.documents'),
+        })
+
+    # Unread messages
+    unread = PortalMessage.query.filter_by(
+        client_id=client.id, sender_type='staff', is_read=False).count()
+    if unread:
+        items.append({
+            'icon': '💬',
+            'title': f'{unread} new message{"s" if unread != 1 else ""}',
+            'detail': 'From your build team',
+            'link': url_for('portal.messages'),
+        })
+
+    return items
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  PORTAL DASHBOARD
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -153,43 +278,87 @@ def dashboard():
     client = g.client
     project = client.default_project()
 
-    # Progress phases from schedule
-    from models import SchedulePhase, ScheduleTask
-    phases = []
-    if project:
-        phases = SchedulePhase.query.filter_by(project_id=project.id).order_by(
-            SchedulePhase.sort_order).all()
-        for phase in phases:
-            tasks = ScheduleTask.query.filter_by(project_id=project.id, phase_id=phase.id).all()
-            phase._total = len(tasks)
-            phase._done = sum(1 for t in tasks if t.status == 'Done')
+    # Build stage
+    phases, next_phase = _build_phases(project)
 
-    # Milestones (draw schedule)
-    contract = client.contracts.filter_by(status='Signed').first() or \
-               client.contracts.filter_by(status='Executed').first()
-    draws = []
-    if contract:
-        draws = contract.draw_schedule.order_by(DrawScheduleItem.sort_order).all()
+    # Action items
+    action_items = _build_action_items(client)
 
-    # Recent shared photos
-    shared_photos = DailyLogPhoto.query.filter_by(client_id=client.id).order_by(
-        DailyLogPhoto.created_at.desc()).limit(6).all()
+    # Recent photos (client_visible only)
+    shared_photos = DailyLogPhoto.query.filter_by(
+        client_id=client.id, client_visible=True
+    ).order_by(DailyLogPhoto.created_at.desc()).limit(6).all()
 
     # Unread messages
     unread_count = PortalMessage.query.filter_by(
         client_id=client.id, sender_type='staff', is_read=False).count()
 
-    # Pending selections
-    pending_selections = ClientSelection.query.filter_by(
-        client_id=client.id, status='Pending').count()
-
     from r2_storage_helper import generate_presigned_url
     return render_template('portal/dashboard.html',
                            client=client, project=project,
-                           phases=phases, draws=draws,
+                           phases=phases, next_phase=next_phase,
+                           action_items=action_items,
                            shared_photos=shared_photos,
                            unread_count=unread_count,
-                           pending_selections=pending_selections,
+                           generate_presigned_url=generate_presigned_url)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PHOTOS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@portal.route('/photos')
+@require_client_login
+def photos():
+    """Construction photos — client_visible only, grouped by month."""
+    client = g.client
+    project = client.default_project()
+
+    query = DailyLogPhoto.query.filter_by(
+        client_id=client.id, client_visible=True
+    ).order_by(DailyLogPhoto.created_at.desc())
+
+    # Build phase labels for filtering
+    phase_labels = []
+    phase_map = {}  # cost_code_id -> phase client_label
+    if project:
+        for phase in SchedulePhase.query.filter_by(project_id=project.id).order_by(
+                SchedulePhase.sort_order).all():
+            label = phase.client_label or phase.name
+            if label not in phase_labels:
+                phase_labels.append(label)
+            # Map cost codes in this phase's tasks to the phase label
+            for task in ScheduleTask.query.filter_by(
+                    project_id=project.id, phase_id=phase.id).all():
+                if task.cost_code_id:
+                    phase_map[task.cost_code_id] = label
+
+    # Apply phase filter if requested
+    active_phase = request.args.get('phase')
+    if active_phase and phase_map:
+        matching_cc_ids = [cc_id for cc_id, lbl in phase_map.items() if lbl == active_phase]
+        if matching_cc_ids:
+            query = query.filter(DailyLogPhoto.cost_code_id.in_(matching_cc_ids))
+
+    all_photos = query.limit(200).all()
+
+    # Group by month
+    photo_months = OrderedDict()
+    for photo in all_photos:
+        if photo.created_at:
+            month_key = photo.created_at.strftime('%B %Y')
+        else:
+            month_key = 'Undated'
+        if month_key not in photo_months:
+            photo_months[month_key] = []
+        photo_months[month_key].append(photo)
+
+    from r2_storage_helper import generate_presigned_url
+    return render_template('portal/photos.html',
+                           client=client,
+                           photo_months=list(photo_months.items()),
+                           phase_labels=phase_labels,
+                           active_phase=active_phase,
                            generate_presigned_url=generate_presigned_url)
 
 
@@ -200,22 +369,28 @@ def dashboard():
 @portal.route('/documents')
 @require_client_login
 def documents():
-    """Shared documents — contracts, approved COs, invoices."""
+    """Shared documents — visibility='client' filter, approved COs, invoices."""
     client = g.client
 
-    contracts = client.contracts.all()
-    approved_cos = client.change_orders.filter_by(status='Approved').all()
-    invoices = client.invoices.filter(Invoice.status != 'Draft').all()
-
-    # Shared documents (plans, specs, etc. marked for portal)
-    shared_docs = Document.query.filter_by(client_id=client.id).filter(
-        Document.folder.in_(['plans', 'contracts', 'specs'])
+    # Documents explicitly marked for client visibility
+    shared_docs = Document.query.filter_by(
+        client_id=client.id, visibility='client'
     ).order_by(Document.created_at.desc()).all()
 
+    # Approved change orders (title + price_to_client only, no line items)
+    approved_cos = ChangeOrder.query.filter_by(
+        client_id=client.id, status='Approved').all()
+
+    # Non-draft invoices
+    invoices = Invoice.query.filter_by(client_id=client.id).filter(
+        Invoice.status != 'Draft'
+    ).order_by(Invoice.created_at.desc()).all()
+
     return render_template('portal/documents.html',
-                           client=client, contracts=contracts,
-                           approved_cos=approved_cos, invoices=invoices,
-                           shared_docs=shared_docs)
+                           client=client,
+                           shared_docs=shared_docs,
+                           approved_cos=approved_cos,
+                           invoices=invoices)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -230,7 +405,6 @@ def selections():
     categories = SelectionCategory.query.filter_by(is_active=True).order_by(
         SelectionCategory.sort_order).all()
 
-    # Current selections by category
     current = {}
     for sel in client.selections.all():
         current[sel.category_id] = sel
@@ -271,17 +445,16 @@ def selection_detail(category_id):
             )
             db.session.add(current)
 
-        # Log activity
         activity = ClientActivity(
             client_id=client.id,
             activity_type='Selection Made',
             note_text=f'{category.name}: {option.name}'
-                      f'{" (+$" + str(option.price_delta) + ")" if option.price_delta else ""}',
+                      f'{" (Additional $" + str(option.price_delta) + ")" if option.price_delta else ""}',
             activity_date=datetime.now(timezone.utc),
         )
         db.session.add(activity)
 
-        # Notify staff (respecting preferences)
+        # Notify staff
         from models import User, NotificationPreference
         for staff in User.query.filter_by(role='supervisor').all():
             prefs = NotificationPreference.query.filter_by(user_id=staff.id).first()
@@ -291,7 +464,7 @@ def selection_detail(category_id):
                 user_id=staff.id,
                 type='selection_made',
                 title=f'Selection: {client.name}',
-                message=f'{category.name} → {option.name}',
+                message=f'{category.name}: {option.name}',
                 link=url_for('view_client', client_id=client.id),
             )
             db.session.add(notif)
@@ -329,7 +502,6 @@ def messages():
             )
             db.session.add(msg)
 
-            # Notify staff (respecting preferences)
             from models import User, NotificationPreference
             for staff in User.query.filter_by(role='supervisor').all():
                 prefs = NotificationPreference.query.filter_by(user_id=staff.id).first()
@@ -360,46 +532,3 @@ def messages():
     return render_template('portal/messages.html',
                            client=client, messages=all_messages,
                            client_user=cu)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PROGRESS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@portal.route('/progress')
-@require_client_login
-def progress():
-    """Detailed project progress view."""
-    client = g.client
-    project = client.default_project()
-
-    from models import SchedulePhase, ScheduleTask
-    phases = []
-    if project:
-        phases = SchedulePhase.query.filter_by(project_id=project.id).order_by(
-            SchedulePhase.sort_order).all()
-        for phase in phases:
-            phase._tasks = ScheduleTask.query.filter_by(
-                project_id=project.id, phase_id=phase.id
-            ).order_by(ScheduleTask.start_date).all()
-
-    return render_template('portal/progress.html',
-                           client=client, project=project, phases=phases)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PHOTOS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@portal.route('/photos')
-@require_client_login
-def photos():
-    """Shared construction photos."""
-    client = g.client
-    photos = DailyLogPhoto.query.filter_by(client_id=client.id).order_by(
-        DailyLogPhoto.created_at.desc()).limit(50).all()
-
-    from r2_storage_helper import generate_presigned_url
-    return render_template('portal/photos.html',
-                           client=client, photos=photos,
-                           generate_presigned_url=generate_presigned_url)
