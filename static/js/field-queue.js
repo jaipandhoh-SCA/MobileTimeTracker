@@ -52,6 +52,7 @@ const ENTRY_TYPE = Object.freeze({
   CLOCK_OUT:   'clock_out',
   MATERIAL:    'material_note',
   NOTE:        'general_note',
+  PHOTO_BATCH: 'photo_batch',
 });
 
 // ── Database handle (singleton) ─────────────────────────────────────────

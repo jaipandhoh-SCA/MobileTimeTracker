@@ -50,6 +50,19 @@ _No items currently active. See Backlog for next candidates._
 
 ## 4. Changelog
 
+### 2026-08-28 — Camera-First Photo Capture
+
+One-tap photo capture from any page, independent of daily logs:
+- **Migration `p7j9k0l81m42`:** New `job_photos` + `field_issues` tables with indexes.
+- **Models:** `JobPhoto` (independent photo with category, GPS, batch_uuid), `FieldIssue` (lightweight issue tracker). Constants: `PHOTO_CATEGORIES`, `FIELD_ISSUE_STATUSES`, `FIELD_ISSUE_PRIORITIES`.
+- **FAB + overlay:** Camera FAB on all internal pages (`templates/partials/camera_overlay.html`). Alpine.js component with states: shooting → categorizing → delivery_detail/issue_detail → done.
+- **Client-side compression:** `compressImage()` in `static/js/camera-capture.js` — JPEG resize to 1920px max, 0.82 quality. Also wired into daily log photo handler.
+- **Rapid-fire shooting:** Re-triggers camera input after each capture, thumbnail strip preview, IndexedDB persistence via FieldQueue.
+- **Job inference API:** `GET /api/camera/infer-job` — priority: active clock → GPS proximity (300m) → client picker.
+- **Category flow:** 6 categories (progress/delivery/issue/safety/inspection/before-after) + skip. Delivery sub-flow creates `CostEntry`. Issue sub-flow creates `FieldIssue` with linked photos.
+- **Server sync:** `PHOTO_BATCH` entry type in field-queue.js. `upsert_photo_batch()` in field_sync_helpers.py. `/api/field/media` extended with waterfall: DailyLog → Photo Batch → 404.
+- **Photo gallery:** `GET /clients/<id>/photos` with masonry grid, category chips, date filters, lightbox modal. JSON API for infinite scroll. Photos link added to client detail page.
+
 ### 2026-08-28 — Client Portal Rebuild
 
 Full rebuild of the client-facing portal for homeowners checking build progress on mobile:

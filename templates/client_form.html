@@ -544,6 +544,19 @@
                 </div>
             </div>
 
+            {# Photos quick access #}
+            {% set photo_count = (client.job_photos.count() if client.job_photos else 0) %}
+            <div class="bg-white rounded-2xl shadow-card p-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-sm font-semibold text-txt-primary">Photos</h3>
+                        <p class="text-xs text-txt-muted mt-0.5">{{ photo_count }} photo{{ 's' if photo_count != 1 else '' }}</p>
+                    </div>
+                    <a href="{{ url_for('client_photo_gallery', client_id=client.id) }}"
+                       class="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-medium bg-pill text-txt-secondary hover:bg-gray-200 transition-colors touch-target">View</a>
+                </div>
+            </div>
+
             <div class="bg-white rounded-2xl shadow-card">
                 <div class="px-4 py-3 bg-pill rounded-t-2xl">
                     <h2 class="text-base font-semibold text-txt-primary">Client Status</h2>

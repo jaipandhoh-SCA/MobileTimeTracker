@@ -1,0 +1,302 @@
+{# Camera-first photo capture — FAB + full-screen overlay.
+   Included in base.html inside the auth check. #}
+
+<div x-data="cameraCapture()" x-cloak>
+
+  {# ── FAB ─────────────────────────────────────────────────────────────── #}
+  <button @click="open()" x-show="state === 'idle'"
+          class="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-txt-primary text-white
+                 shadow-lg flex items-center justify-center active:scale-95 transition-transform"
+          aria-label="Take photos">
+    <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round"
+            d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"/>
+      <path stroke-linecap="round" stroke-linejoin="round"
+            d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z"/>
+    </svg>
+  </button>
+
+  {# ── Hidden camera input ─────────────────────────────────────────────── #}
+  <input type="file" accept="image/*" capture="environment" multiple
+         x-ref="cameraInput" class="hidden"
+         @change="onFileSelected($event)">
+
+  {# ── Full-screen overlay ─────────────────────────────────────────────── #}
+  <div x-show="state !== 'idle'"
+       x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="opacity-0"
+       x-transition:enter-end="opacity-100"
+       x-transition:leave="transition ease-in duration-150"
+       x-transition:leave-start="opacity-100"
+       x-transition:leave-end="opacity-0"
+       class="fixed inset-0 z-[60] bg-canvas flex flex-col overflow-hidden">
+
+    {# ── Header ──────────────────────────────────────────────────────── #}
+    <div class="flex items-center justify-between px-4 py-3 bg-white border-b border-hairline shadow-sm">
+      <button @click="close()" class="p-2 -ml-2 rounded-lg text-txt-muted hover:bg-pill">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+      <div class="text-sm font-semibold text-txt-primary">
+        <template x-if="state === 'shooting'">
+          <span>Take Photos</span>
+        </template>
+        <template x-if="state === 'categorizing'">
+          <span>Categorize</span>
+        </template>
+        <template x-if="state === 'delivery_detail'">
+          <span>Delivery Details</span>
+        </template>
+        <template x-if="state === 'issue_detail'">
+          <span>Report Issue</span>
+        </template>
+        <template x-if="state === 'done'">
+          <span>Saved</span>
+        </template>
+      </div>
+      <div class="w-10"></div>
+    </div>
+
+    {# ── Job tag ─────────────────────────────────────────────────────── #}
+    <template x-if="clientName && state !== 'done'">
+      <div class="px-4 py-2 bg-pill/50 border-b border-hairline">
+        <div class="flex items-center gap-2 text-sm">
+          <svg class="w-4 h-4 text-pos flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z"/>
+          </svg>
+          <span class="font-medium text-txt-primary" x-text="clientName"></span>
+          <span class="text-txt-muted text-xs" x-text="inferMethod === 'clock' ? '(clocked in)' : inferMethod === 'gps' ? '(nearby)' : ''"></span>
+        </div>
+      </div>
+    </template>
+
+    {# ── Job picker (when no job inferred) ───────────────────────────── #}
+    <template x-if="inferMethod === 'none' && clientList.length > 0 && state === 'shooting'">
+      <div class="px-4 py-3 bg-white border-b border-hairline">
+        <p class="text-xs text-txt-muted mb-2">Select job:</p>
+        <div class="flex flex-wrap gap-2">
+          <template x-for="c in clientList" :key="c.client_id">
+            <button @click="pickClient(c)"
+                    :class="clientId === c.client_id ? 'bg-txt-primary text-white' : 'bg-pill text-txt-secondary hover:bg-hairline'"
+                    class="px-3 py-1.5 rounded-full text-sm font-medium transition-colors"
+                    x-text="c.name">
+            </button>
+          </template>
+        </div>
+      </div>
+    </template>
+
+    {# ── SHOOTING state ──────────────────────────────────────────────── #}
+    <template x-if="state === 'shooting'">
+      <div class="flex-1 flex flex-col items-center justify-center px-4">
+        {# Thumbnail strip #}
+        <template x-if="photos.length > 0">
+          <div class="w-full mb-6">
+            <div class="flex gap-2 overflow-x-auto pb-2 px-1 -mx-1">
+              <template x-for="(p, idx) in lastPhotos" :key="idx">
+                <div class="w-20 h-20 rounded-xl overflow-hidden flex-shrink-0 ring-1 ring-hairline">
+                  <img :src="p.preview" class="w-full h-full object-cover" alt="">
+                </div>
+              </template>
+              <template x-if="photos.length > 4">
+                <div class="w-20 h-20 rounded-xl bg-pill flex items-center justify-center flex-shrink-0 ring-1 ring-hairline">
+                  <span class="text-sm font-semibold text-txt-secondary" x-text="'+' + (photos.length - 4)"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        {# Camera prompt #}
+        <div class="text-center mb-8">
+          <div class="w-20 h-20 rounded-full bg-pill flex items-center justify-center mx-auto mb-4">
+            <svg class="w-10 h-10 text-txt-muted" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"/>
+              <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z"/>
+            </svg>
+          </div>
+          <p class="text-txt-secondary text-sm" x-text="photos.length === 0 ? 'Camera will open automatically' : 'Tap below to take another'"></p>
+        </div>
+
+        {# Action buttons #}
+        <div class="flex gap-3 w-full max-w-sm">
+          <button @click="_triggerCamera()"
+                  class="flex-1 py-3 rounded-2xl bg-pill text-txt-primary font-semibold text-sm hover:bg-hairline transition-colors">
+            + Add Photo
+          </button>
+          <button @click="doneShooting()" x-show="photos.length > 0"
+                  class="flex-1 py-3 rounded-2xl bg-txt-primary text-white font-semibold text-sm active:scale-95 transition-transform">
+            Done (<span x-text="photos.length"></span>)
+          </button>
+        </div>
+      </div>
+    </template>
+
+    {# ── CATEGORIZING state ──────────────────────────────────────────── #}
+    <template x-if="state === 'categorizing'">
+      <div class="flex-1 flex flex-col px-4 py-6">
+        <p class="text-txt-secondary text-sm mb-4">What kind of photos are these?</p>
+
+        <div class="grid grid-cols-2 gap-3 mb-6">
+          <button @click="selectCategory('progress')"
+                  class="flex items-center gap-3 p-4 rounded-2xl bg-white border border-hairline hover:border-txt-primary/30 transition-colors">
+            <span class="text-2xl">🔨</span>
+            <span class="text-sm font-medium text-txt-primary">Progress</span>
+          </button>
+          <button @click="selectCategory('delivery')"
+                  class="flex items-center gap-3 p-4 rounded-2xl bg-white border border-hairline hover:border-txt-primary/30 transition-colors">
+            <span class="text-2xl">📦</span>
+            <span class="text-sm font-medium text-txt-primary">Delivery</span>
+          </button>
+          <button @click="selectCategory('issue')"
+                  class="flex items-center gap-3 p-4 rounded-2xl bg-white border border-hairline hover:border-txt-primary/30 transition-colors">
+            <span class="text-2xl">⚠️</span>
+            <span class="text-sm font-medium text-txt-primary">Issue</span>
+          </button>
+          <button @click="selectCategory('safety')"
+                  class="flex items-center gap-3 p-4 rounded-2xl bg-white border border-hairline hover:border-txt-primary/30 transition-colors">
+            <span class="text-2xl">🦺</span>
+            <span class="text-sm font-medium text-txt-primary">Safety</span>
+          </button>
+          <button @click="selectCategory('inspection')"
+                  class="flex items-center gap-3 p-4 rounded-2xl bg-white border border-hairline hover:border-txt-primary/30 transition-colors">
+            <span class="text-2xl">🔍</span>
+            <span class="text-sm font-medium text-txt-primary">Inspection</span>
+          </button>
+          <button @click="selectCategory('before_after')"
+                  class="flex items-center gap-3 p-4 rounded-2xl bg-white border border-hairline hover:border-txt-primary/30 transition-colors">
+            <span class="text-2xl">🔄</span>
+            <span class="text-sm font-medium text-txt-primary">Before/After</span>
+          </button>
+        </div>
+
+        <button @click="skipCategory()"
+                class="text-sm text-txt-muted hover:text-txt-secondary text-center py-2">
+          Skip &mdash; save as uncategorized
+        </button>
+      </div>
+    </template>
+
+    {# ── DELIVERY DETAIL state ───────────────────────────────────────── #}
+    <template x-if="state === 'delivery_detail'">
+      <div class="flex-1 flex flex-col px-4 py-6 overflow-y-auto">
+        <div class="space-y-4 max-w-lg">
+          {# Supplier #}
+          <div>
+            <label class="block text-sm font-medium text-txt-primary mb-1">Supplier</label>
+            <input type="text" x-model="supplier" list="recent-suppliers-list"
+                   placeholder="e.g. Home Depot, ABC Supply"
+                   class="w-full px-4 py-3 rounded-xl border border-hairline bg-white text-sm
+                          text-txt-primary placeholder-txt-muted
+                          focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary/30">
+            <datalist id="recent-suppliers-list">
+              <template x-for="s in getRecentSuppliers()" :key="s">
+                <option :value="s"></option>
+              </template>
+            </datalist>
+          </div>
+
+          {# Cost code #}
+          <div>
+            <label class="block text-sm font-medium text-txt-primary mb-1">Cost Code</label>
+            <select x-model="costCodeId"
+                    class="w-full px-4 py-3 rounded-xl border border-hairline bg-white text-sm
+                           text-txt-primary focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary/30">
+              <option value="">Select cost code...</option>
+              <template x-for="cc in costCodes" :key="cc.id">
+                <option :value="cc.id" x-text="cc.code + ' - ' + cc.name"></option>
+              </template>
+            </select>
+          </div>
+
+          {# Quantity note #}
+          <div>
+            <label class="block text-sm font-medium text-txt-primary mb-1">Quantity / Notes</label>
+            <textarea x-model="quantityNote" rows="2"
+                      placeholder="e.g. 20 sheets 4x8 plywood"
+                      class="w-full px-4 py-3 rounded-xl border border-hairline bg-white text-sm
+                             text-txt-primary placeholder-txt-muted
+                             focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary/30"></textarea>
+          </div>
+        </div>
+
+        {# Save button #}
+        <div class="mt-auto pt-4">
+          <button @click="saveDelivery()"
+                  class="w-full py-3.5 rounded-2xl bg-txt-primary text-white font-semibold text-sm
+                         active:scale-[0.98] transition-transform">
+            Save Delivery Photos
+          </button>
+        </div>
+      </div>
+    </template>
+
+    {# ── ISSUE DETAIL state ──────────────────────────────────────────── #}
+    <template x-if="state === 'issue_detail'">
+      <div class="flex-1 flex flex-col px-4 py-6 overflow-y-auto">
+        <div class="space-y-4 max-w-lg">
+          {# Title #}
+          <div>
+            <label class="block text-sm font-medium text-txt-primary mb-1">Issue Title</label>
+            <input type="text" x-model="issueTitle"
+                   class="w-full px-4 py-3 rounded-xl border border-hairline bg-white text-sm
+                          text-txt-primary focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary/30">
+          </div>
+
+          {# Description #}
+          <div>
+            <label class="block text-sm font-medium text-txt-primary mb-1">Description</label>
+            <textarea x-model="issueDescription" rows="3"
+                      placeholder="Describe the issue..."
+                      class="w-full px-4 py-3 rounded-xl border border-hairline bg-white text-sm
+                             text-txt-primary placeholder-txt-muted
+                             focus:ring-2 focus:ring-txt-primary/20 focus:border-txt-primary/30"></textarea>
+          </div>
+
+          {# Priority chips #}
+          <div>
+            <label class="block text-sm font-medium text-txt-primary mb-2">Priority</label>
+            <div class="flex gap-2">
+              <template x-for="p in ['Low', 'Medium', 'High', 'Critical']" :key="p">
+                <button @click="issuePriority = p"
+                        :class="issuePriority === p
+                          ? (p === 'Critical' ? 'bg-neg text-white' : p === 'High' ? 'bg-amber-500 text-white' : 'bg-txt-primary text-white')
+                          : 'bg-pill text-txt-secondary hover:bg-hairline'"
+                        class="px-3 py-1.5 rounded-full text-sm font-medium transition-colors"
+                        x-text="p">
+                </button>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        {# Save button #}
+        <div class="mt-auto pt-4">
+          <button @click="saveIssue()"
+                  class="w-full py-3.5 rounded-2xl bg-neg text-white font-semibold text-sm
+                         active:scale-[0.98] transition-transform">
+            Report Issue
+          </button>
+        </div>
+      </div>
+    </template>
+
+    {# ── DONE state ──────────────────────────────────────────────────── #}
+    <template x-if="state === 'done'">
+      <div class="flex-1 flex flex-col items-center justify-center px-4">
+        <div class="w-20 h-20 rounded-full bg-pos/10 flex items-center justify-center mb-4">
+          <svg class="w-10 h-10 text-pos" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+        </div>
+        <p class="text-lg font-semibold text-txt-primary" x-text="photoCountLabel + ' queued'"></p>
+        <p class="text-sm text-txt-muted mt-1">Will sync when online</p>
+      </div>
+    </template>
+
+  </div>
+</div>

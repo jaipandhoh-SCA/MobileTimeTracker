@@ -15,7 +15,7 @@ from flask_login import current_user
 from app import db
 from models import (
     DailyLog, TimeEntry, ClientActivity, Client, Project, ActiveClock,
-    DAILY_LOG_STATUSES,
+    CostEntry, FieldIssue, DAILY_LOG_STATUSES,
 )
 from utils import calculate_duration, utc_to_pacific
 
@@ -273,6 +273,99 @@ def upsert_clock_out(client_uuid, data):
         db.session.delete(active)
     db.session.flush()
     return {'status': 'created', 'id': entry.id}
+
+
+def upsert_photo_batch(client_uuid, data):
+    """Upsert a photo batch record. Creates ClientActivity as anchor, plus
+    optional CostEntry (delivery) or FieldIssue (issue)."""
+    existing = ClientActivity.query.filter_by(client_uuid=client_uuid).first()
+    if existing:
+        return {'status': 'duplicate', 'id': existing.id}
+
+    cid = data.get('client_id')
+    if not cid:
+        raise ValueError('client_id is required')
+
+    client = Client.query.get(cid)
+    if not client:
+        raise ValueError(f'Client {cid} not found')
+
+    category = data.get('category', 'uncategorized')
+    photo_count = data.get('photo_count', 0)
+    project_id = data.get('project_id')
+
+    # If no project_id, try default project
+    if not project_id:
+        proj = Project.query.filter_by(client_id=cid, is_default=True).first()
+        project_id = proj.id if proj else None
+
+    note = f"[Photo Batch] {photo_count} {category} photo(s)"
+
+    # Create anchor activity
+    activity = ClientActivity(
+        client_id=cid,
+        user_id=current_user.id,
+        activity_type='Photo Batch',
+        note_text=note,
+        activity_date=datetime.now(timezone.utc),
+        client_uuid=client_uuid,
+    )
+    db.session.add(activity)
+    db.session.flush()
+
+    result_extra = {}
+
+    # Delivery → CostEntry (only if we have the required fields)
+    if category == 'delivery' and project_id:
+        cost_code_id = data.get('cost_code_id')
+        if cost_code_id:
+            cost_code_id = int(cost_code_id)
+        else:
+            # Skip CostEntry if no cost code — can't satisfy NOT NULL
+            cost_code_id = None
+
+        if cost_code_id:
+            desc_parts = []
+            if data.get('supplier'):
+                desc_parts.append(f"Supplier: {data['supplier']}")
+            if data.get('quantity_note'):
+                desc_parts.append(data['quantity_note'])
+            description = ' | '.join(desc_parts) or 'Delivery (photo batch)'
+
+            entry = CostEntry(
+                project_id=project_id,
+                cost_code_id=cost_code_id,
+                cost_type='Material',
+                description=description,
+                amount=Decimal('0'),
+                source='photo_batch',
+                source_ref_type='photo_batch',
+                source_ref_id=activity.id,
+                entry_date=date.today(),
+                created_by_user_id=current_user.id,
+            )
+            db.session.add(entry)
+            db.session.flush()
+            result_extra['cost_entry_id'] = entry.id
+
+    # Issue → FieldIssue
+    if category == 'issue':
+        issue = FieldIssue(
+            client_id=cid,
+            project_id=project_id,
+            title=data.get('issue_title', 'Field issue'),
+            description=data.get('issue_description'),
+            priority=data.get('priority', 'Medium'),
+            reported_by_user_id=current_user.id,
+            client_uuid=client_uuid + '-issue',
+        )
+        db.session.add(issue)
+        db.session.flush()
+        result_extra['field_issue_id'] = issue.id
+        # Store issue ID in activity note for photo linking
+        activity.note_text = f"{note} | issue_id={issue.id}"
+
+    return {'status': 'created', 'id': activity.id, **result_extra}
 
 
 def _create_log_activity(log, client):

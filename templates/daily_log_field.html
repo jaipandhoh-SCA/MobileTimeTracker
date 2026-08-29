@@ -1126,13 +1126,14 @@ function dailyLogWizard() {
             this.$refs.cameraInput.click();
         },
 
-        handlePhotos(e) {
+        async handlePhotos(e) {
             this._tap();
             const files = e.target.files;
             for (const f of files) {
                 if (!f.type.startsWith('image/') && !f.name.match(/\.(heic|heif)$/i)) continue;
                 if (f.size > 16 * 1024 * 1024) continue;
-                this.photos.push({ file: f, preview: URL.createObjectURL(f) });
+                const compressed = window.compressImage ? await window.compressImage(f) : f;
+                this.photos.push({ file: compressed, preview: URL.createObjectURL(compressed) });
             }
             // Track camera photos for prompt engine (not gallery)
             if (e.target === this.$refs.cameraInput) {

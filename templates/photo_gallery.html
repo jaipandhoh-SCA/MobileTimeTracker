@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Photos — {{ client.name }}{% endblock %}
+
+{% block content %}
+<div x-data="{ modalOpen: false, modalPhoto: null }">
+
+  {# ── Header ────────────────────────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <a href="{{ url_for('view_client', client_id=client.id) }}"
+         class="text-sm text-txt-muted hover:text-txt-secondary mb-1 inline-flex items-center gap-1">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+        </svg>
+        {{ client.name }}
+      </a>
+      <h1 class="text-xl font-bold text-txt-primary">Photos</h1>
+    </div>
+    <span class="text-sm text-txt-muted">{{ photos|length }} photo{{ 's' if photos|length != 1 }}</span>
+  </div>
+
+  {# ── Filter bar ────────────────────────────────────────────────────────── #}
+  <form method="get" class="mb-6">
+    <div class="flex flex-wrap gap-2 mb-3">
+      <a href="{{ url_for('client_photo_gallery', client_id=client.id) }}"
+         class="px-3 py-1.5 rounded-full text-sm font-medium transition-colors
+                {{ 'bg-txt-primary text-white' if not category_filter else 'bg-pill text-txt-secondary hover:bg-hairline' }}">
+        All
+      </a>
+      {% for cat in categories %}
+      <a href="{{ url_for('client_photo_gallery', client_id=client.id, category=cat) }}"
+         class="px-3 py-1.5 rounded-full text-sm font-medium transition-colors capitalize
+                {{ 'bg-txt-primary text-white' if category_filter == cat else 'bg-pill text-txt-secondary hover:bg-hairline' }}">
+        {{ cat|replace('_', ' ') }}
+      </a>
+      {% endfor %}
+    </div>
+
+    <div class="flex gap-2 items-center">
+      <input type="date" name="date_from" value="{{ date_from }}"
+             class="px-3 py-1.5 rounded-xl border border-hairline bg-white text-sm text-txt-primary
+                    focus:ring-2 focus:ring-txt-primary/20">
+      <span class="text-txt-muted text-sm">to</span>
+      <input type="date" name="date_to" value="{{ date_to }}"
+             class="px-3 py-1.5 rounded-xl border border-hairline bg-white text-sm text-txt-primary
+                    focus:ring-2 focus:ring-txt-primary/20">
+      {% if category_filter %}
+      <input type="hidden" name="category" value="{{ category_filter }}">
+      {% endif %}
+      <button type="submit"
+              class="px-4 py-1.5 rounded-xl bg-pill text-txt-secondary text-sm font-medium hover:bg-hairline transition-colors">
+        Filter
+      </button>
+    </div>
+  </form>
+
+  {# ── Photo grid ────────────────────────────────────────────────────────── #}
+  {% if photos %}
+  <div class="columns-2 md:columns-3 gap-3 space-y-3">
+    {% for p in photos %}
+    <div class="break-inside-avoid cursor-pointer group"
+         @click="modalPhoto = {{ p|tojson }}; modalOpen = true">
+      <div class="relative rounded-2xl overflow-hidden ring-1 ring-hairline">
+        <img src="{{ p.url }}" alt="{{ p.caption or '' }}" loading="lazy"
+             class="w-full object-cover group-hover:scale-105 transition-transform duration-300">
+        {# Category badge #}
+        <div class="absolute top-2 left-2">
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide
+                       bg-black/50 text-white backdrop-blur-sm capitalize">
+            {{ p.category|replace('_', ' ') }}
+          </span>
+        </div>
+      </div>
+      {% if p.caption %}
+      <p class="text-xs text-txt-muted mt-1 px-1 truncate">{{ p.caption }}</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="text-center py-16">
+    <div class="w-16 h-16 rounded-full bg-pill flex items-center justify-center mx-auto mb-4">
+      <svg class="w-8 h-8 text-txt-muted" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round"
+              d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"/>
+        <path stroke-linecap="round" stroke-linejoin="round"
+              d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z"/>
+      </svg>
+    </div>
+    <p class="text-txt-secondary font-medium">No photos yet</p>
+    <p class="text-sm text-txt-muted mt-1">Use the camera button to take photos on site</p>
+  </div>
+  {% endif %}
+
+  {# ── Photo modal ───────────────────────────────────────────────────────── #}
+  <div x-show="modalOpen" x-cloak
+       x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="opacity-0"
+       x-transition:enter-end="opacity-100"
+       x-transition:leave="transition ease-in duration-150"
+       x-transition:leave-start="opacity-100"
+       x-transition:leave-end="opacity-0"
+       @click.self="modalOpen = false"
+       @keydown.escape.window="modalOpen = false"
+       class="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-4">
+
+    <div class="relative max-w-3xl w-full max-h-[90vh] flex flex-col bg-white rounded-2xl overflow-hidden shadow-xl"
+         @click.stop>
+      {# Close button #}
+      <button @click="modalOpen = false"
+              class="absolute top-3 right-3 z-10 w-8 h-8 rounded-full bg-black/40 text-white flex items-center justify-center hover:bg-black/60">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+
+      {# Image #}
+      <div class="flex-1 overflow-hidden bg-black flex items-center justify-center">
+        <img :src="modalPhoto?.url" :alt="modalPhoto?.caption || ''" class="max-w-full max-h-[70vh] object-contain">
+      </div>
+
+      {# Metadata #}
+      <div class="p-4 border-t border-hairline">
+        <div class="flex items-center justify-between mb-1">
+          <span class="px-2 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wide bg-pill text-txt-secondary capitalize"
+                x-text="(modalPhoto?.category || '').replace('_', ' ')"></span>
+          <span class="text-xs text-txt-muted" x-text="modalPhoto?.uploaded_by"></span>
+        </div>
+        <template x-if="modalPhoto?.caption">
+          <p class="text-sm text-txt-primary mt-1" x-text="modalPhoto.caption"></p>
+        </template>
+        <p class="text-xs text-txt-muted mt-1" x-text="modalPhoto?.taken_at ? new Date(modalPhoto.taken_at).toLocaleString() : ''"></p>
+        <template x-if="modalPhoto?.field_issue_id">
+          <a :href="'#issue-' + modalPhoto.field_issue_id"
+             class="text-xs text-accent hover:underline mt-1 inline-block">
+            View linked issue
+          </a>
+        </template>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

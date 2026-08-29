@@ -837,7 +837,12 @@
     <script src="{{ url_for('static', filename='js/field-queue.js') }}"></script>
     <script src="{{ url_for('static', filename='js/field-sync.js') }}"></script>
     <script src="{{ url_for('static', filename='js/field-status.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/camera-capture.js') }}"></script>
     <script>if (window.FieldSync) FieldSync.start();</script>
+
+    {% if current_user.is_authenticated %}
+    {% include 'partials/camera_overlay.html' %}
+    {% endif %}
 
     {% if session.get('_demo_mode') %}
     <script src="{{ url_for('static', filename='demo-tour.js') }}"></script>
